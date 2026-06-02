@@ -16,7 +16,8 @@ import {
   StrategyRouter,
   TradeJournal,
 } from './components/OperationalModules';
-import { type ModuleId, Sidebar, navItems } from './components/Sidebar';
+import { Sidebar } from './components/Sidebar';
+import { navItems, type ModuleId } from './components/navItems';
 import { TerminalChart } from './components/TerminalChart';
 import { TerminalHeader } from './components/TerminalHeader';
 import { useMarketStream } from './hooks/useMarketStream';
