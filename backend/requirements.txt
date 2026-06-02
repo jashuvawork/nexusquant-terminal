@@ -4,6 +4,7 @@ pydantic-settings
 redis
 asyncpg
 prometheus-client
+httpx
 xgboost
 numpy
 pandas

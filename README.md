@@ -54,6 +54,107 @@ Services:
 - Redis: `localhost:6379`
 - Prometheus: `http://localhost:9090`
 
+
+## Simple deployment steps
+
+### 1. Deploy the backend on Render
+
+1. Push this repository to GitHub.
+2. Open Render and choose **New +** -> **Blueprint**.
+3. Select this repository. Render will read `render.yaml`.
+4. Create the services:
+   - `nexusquant-api` web service
+   - `nexusquant-postgres` database
+   - `nexusquant-redis` Redis service
+5. Open the `nexusquant-api` service -> **Environment** and add:
+
+```text
+CORS_ORIGINS=https://your-vercel-domain.vercel.app,http://localhost:5173
+UPSTOX_API_KEY=your_upstox_api_key
+UPSTOX_API_SECRET=your_upstox_api_secret
+UPSTOX_REDIRECT_URI=https://your-render-api.onrender.com/api/upstox/callback
+AI_SCORE_THRESHOLD=76
+SAFE_MODE_THRESHOLD=86
+MAX_EXPOSURE_PCT=42
+DAILY_DRAWDOWN_PCT=3
+```
+
+6. Replace `https://your-render-api.onrender.com` with the real Render backend URL.
+7. In the Upstox developer console, set the same redirect URL:
+
+```text
+https://your-render-api.onrender.com/api/upstox/callback
+```
+
+8. Redeploy the Render backend.
+9. Confirm the backend is live:
+
+```text
+https://your-render-api.onrender.com/health
+```
+
+### 2. Get the Upstox access token
+
+Upstox requires a browser login and authorization-code exchange. The backend automates the exchange and stores the access token after you log in.
+
+1. Open this URL in your browser:
+
+```text
+https://your-render-api.onrender.com/api/upstox/login-url
+```
+
+2. Copy the `loginUrl` value from the response and open it.
+3. Log in to Upstox and approve access.
+4. Upstox redirects to:
+
+```text
+https://your-render-api.onrender.com/api/upstox/callback?code=...
+```
+
+5. If successful, the page shows `Upstox access token stored successfully`.
+6. Check token status:
+
+```text
+https://your-render-api.onrender.com/api/upstox/token/status
+```
+
+Expected response:
+
+```json
+{
+  "configured": true,
+  "hasToken": true,
+  "expiresAt": "...",
+  "tokenType": "Bearer"
+}
+```
+
+### 3. Deploy the frontend on Vercel
+
+1. Open Vercel and choose **Add New** -> **Project**.
+2. Import the same GitHub repository.
+3. Keep the root directory as the repository root. `vercel.json` already points to `frontend`.
+4. Add environment variables in Vercel:
+
+```text
+VITE_API_URL=https://your-render-api.onrender.com
+VITE_WS_URL=wss://your-render-api.onrender.com/ws/market
+```
+
+5. Deploy.
+6. After Vercel gives you a frontend URL, go back to Render and update `CORS_ORIGINS`:
+
+```text
+CORS_ORIGINS=https://your-vercel-domain.vercel.app,http://localhost:5173
+```
+
+7. Redeploy Render once more.
+8. Open the Vercel URL. The header should show **Backend stream live** when WebSocket is connected.
+
+### 4. Important security note
+
+Never commit broker secrets to GitHub. Add Upstox credentials only as Render environment variables. If credentials were shared in chat, rotate/regenerate them in the Upstox developer console before funding or live trading.
+
 ## Vercel
 
 Use the repository root. `vercel.json` builds `frontend` and serves `frontend/dist`.

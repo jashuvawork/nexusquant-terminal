@@ -2,26 +2,39 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.upstox_auth import UpstoxAuthService
+
 
 class UpstoxClient:
     """Thin adapter boundary for Upstox MarketDataStreamerV3 and REST APIs.
 
-    Production deployments should inject access tokens through the environment and
-    replace the mock methods with signed Upstox SDK/API calls for market data,
-    option chain, order placement, funds, positions, and order history.
+    Production deployments inject API credentials and obtain an OAuth access
+    token through UpstoxAuthService. Live API methods can then use the cached
+    bearer token for market data, option chain, order placement, funds,
+    positions, and order history.
     """
 
-    def __init__(self, api_key: str | None = None, api_secret: str | None = None) -> None:
+    def __init__(
+        self,
+        api_key: str | None = None,
+        api_secret: str | None = None,
+        auth_service: UpstoxAuthService | None = None,
+    ) -> None:
         self.api_key = api_key
         self.api_secret = api_secret
+        self.auth_service = auth_service
 
     async def health(self) -> dict[str, Any]:
         configured = bool(self.api_key and self.api_secret)
+        token_status = await self.auth_service.token_status() if self.auth_service else {"hasToken": False}
+        has_token = bool(token_status.get("hasToken"))
         return {
             "configured": configured,
+            "hasAccessToken": has_token,
+            "tokenExpiresAt": token_status.get("expiresAt"),
             "streamer": "MarketDataStreamerV3",
-            "brokerHealth": 98 if configured else 82,
-            "mode": "live-ready" if configured else "mock-sandbox",
+            "brokerHealth": 98 if configured and has_token else 82,
+            "mode": "live-ready" if configured and has_token else "auth-required",
         }
 
     async def option_chain(self, symbol: str) -> dict[str, Any]:
