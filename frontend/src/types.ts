@@ -97,6 +97,9 @@ export interface PortfolioState {
   payinAmount?: number;
   exposureMargin?: number;
   fundsSource?: string;
+  pledgeAvailable?: number;
+  unsettledProfit?: number;
+  fundsRawShape?: string;
   fundsBreakdown?: Record<string, number>;
   realizedPnl: number;
   unrealizedPnl: number;
@@ -120,6 +123,8 @@ export interface ExpiryState {
 export interface UpstoxConnectionState {
   connected: boolean;
   dataSource: string;
+  marketDataVerified?: boolean;
+  fundsVerified?: boolean;
   fundsAvailable: number;
   fundsUsed: number;
   positionsCount: number;

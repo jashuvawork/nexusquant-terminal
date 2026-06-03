@@ -36,7 +36,7 @@ export function useMarketStream() {
             const isVerifiedUpstoxSnapshot =
               payload.dataSource === 'UPSTOX_REALTIME_REST'
               && payload.upstoxConnection?.connected === true
-              && payload.portfolio?.fundsSource === 'upstox'
+              && payload.upstoxConnection?.marketDataVerified === true
               && payload.expiryState?.selectedExpiry;
 
             if (!isVerifiedUpstoxSnapshot) {
@@ -44,7 +44,7 @@ export function useMarketStream() {
               setStatus('status');
               setIssue({
                 status: 'NON_UPSTOX_SNAPSHOT_BLOCKED',
-                message: 'Backend returned a snapshot without verified Upstox funds/expiry metadata. Dummy or stale snapshots are blocked.',
+                message: 'Backend returned a snapshot without verified Upstox market-data/expiry metadata. Dummy or stale snapshots are blocked.',
               });
               return;
             }

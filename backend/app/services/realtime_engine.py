@@ -79,9 +79,9 @@ class RealTimeMarketEngine:
         option_chain_task = self.client.option_chain(instrument_key, expiry)
         candle_task = self.client.intraday_candles(instrument_key, "minutes", 1)
         quote_task = self.client.ltp([instrument_key])
-        funds_task = self.client.funds()
-        positions_task = self.client.positions()
-        orders_task = self.client.orders()
+        funds_task = self._optional(self.client.funds(), "funds", data_warnings)
+        positions_task = self._optional(self.client.positions(), "positions", data_warnings)
+        orders_task = self._optional(self.client.orders(), "orders", data_warnings)
 
         option_chain, candles, ltp_quote, funds, positions, orders = await asyncio.gather(
             option_chain_task, candle_task, quote_task, funds_task, positions_task, orders_task
@@ -182,6 +182,8 @@ class RealTimeMarketEngine:
             "upstoxConnection": {
                 "connected": True,
                 "dataSource": "Upstox REST APIs",
+                "marketDataVerified": True,
+                "fundsVerified": portfolio["fundsSource"].startswith("upstox"),
                 "fundsAvailable": portfolio["availableMargin"],
                 "fundsUsed": portfolio["usedMargin"],
                 "positionsCount": portfolio["positions"],
@@ -532,29 +534,55 @@ class RealTimeMarketEngine:
         used_margin = 0.0
         payin_amount = 0.0
         exposure_margin = 0.0
+        pledge_available = 0.0
+        unsettled_profit = 0.0
         funds_source = "unavailable"
         funds_breakdown: dict[str, Any] = {}
+        funds_raw_shape = "none"
+
         if funds:
             data = funds.get("data") or {}
-            equity = data.get("equity") or data.get("Equity") or data.get("available_margin") and data or {}
-            available_margin = as_float(equity.get("available_margin") or equity.get("cash_available") or equity.get("cash") or equity.get("net") or 0)
-            used_margin = as_float(equity.get("used_margin") or equity.get("utilised_margin") or equity.get("margin_used") or 0)
-            payin_amount = as_float(equity.get("payin_amount") or 0)
-            exposure_margin = as_float(equity.get("exposure_margin") or 0)
-            funds_source = "upstox"
+            source = str(funds.get("nexusquant_source") or "upstox")
+            if "available_to_trade" in data:
+                available = data.get("available_to_trade") or {}
+                cash_available = available.get("cash_available_to_trade") or {}
+                pledge = available.get("pledge_available_to_trade") or {}
+                unavailable = data.get("unavailable_to_trade") or {}
+                unsettled = unavailable.get("unsettled_profit") or {}
+                margin_used = cash_available.get("margin_used") or {}
+                available_margin = as_float(available.get("total"))
+                used_margin = as_float(margin_used.get("total"))
+                payin_amount = as_float(((cash_available.get("cash") or {}).get("added_today")))
+                exposure_margin = as_float(margin_used.get("span_exposure")) + as_float(margin_used.get("cash_margin_var_elm"))
+                pledge_available = as_float(pledge.get("total"))
+                unsettled_profit = as_float(unsettled.get("todays")) + as_float(unsettled.get("previous_days"))
+                funds_source = "upstox_v3"
+                funds_raw_shape = "v3_available_to_trade"
+            else:
+                equity = data.get("equity") or data.get("Equity") or (data if isinstance(data, dict) else {})
+                available_margin = as_float(equity.get("available_margin") or equity.get("cash_available") or equity.get("cash") or equity.get("net") or 0)
+                used_margin = as_float(equity.get("used_margin") or equity.get("utilised_margin") or equity.get("margin_used") or 0)
+                payin_amount = as_float(equity.get("payin_amount") or 0)
+                exposure_margin = as_float(equity.get("exposure_margin") or 0)
+                funds_source = "upstox_v2" if source == "upstox_v2" else "upstox"
+                funds_raw_shape = "v2_equity"
+
             funds_breakdown = {
                 "availableMargin": round(available_margin, 2),
                 "usedMargin": round(used_margin, 2),
                 "payinAmount": round(payin_amount, 2),
                 "exposureMargin": round(exposure_margin, 2),
+                "pledgeAvailable": round(pledge_available, 2),
+                "unsettledProfit": round(unsettled_profit, 2),
             }
+        else:
+            warnings.append("Funds endpoint unavailable; market analysis continues with real Upstox quote/option-chain data, but capital is not verified.")
+
         pos_rows = (positions or {}).get("data") or []
         unrealized = sum(as_float(row.get("pnl") or row.get("unrealised") or row.get("unrealized_pnl")) for row in pos_rows if isinstance(row, dict))
         realized = sum(as_float(row.get("realised") or row.get("realized_pnl")) for row in pos_rows if isinstance(row, dict))
         exposure = round(clamp((used_margin / available_margin) * 100)) if available_margin > 0 else 0
         order_rows = (orders or {}).get("data") or []
-        if not funds or funds_source != "upstox":
-            raise UpstoxDataError("Upstox funds endpoint did not return verified account funds; refusing to render portfolio data.")
         return {
             "capital": round(available_margin, 2),
             "margin": round(used_margin, 2),
@@ -562,7 +590,10 @@ class RealTimeMarketEngine:
             "usedMargin": round(used_margin, 2),
             "payinAmount": round(payin_amount, 2),
             "exposureMargin": round(exposure_margin, 2),
+            "pledgeAvailable": round(pledge_available, 2),
+            "unsettledProfit": round(unsettled_profit, 2),
             "fundsSource": funds_source,
+            "fundsRawShape": funds_raw_shape,
             "fundsBreakdown": funds_breakdown,
             "realizedPnl": round(realized, 2),
             "unrealizedPnl": round(unrealized, 2),

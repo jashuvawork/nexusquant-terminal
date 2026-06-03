@@ -24,18 +24,26 @@ export function StrategyRouter({ snapshot }: { snapshot: TerminalSnapshot }) {
 }
 
 export function PortfolioPanel({ snapshot }: { snapshot: TerminalSnapshot }) {
+  const fundsVerified = snapshot.portfolio.fundsSource?.startsWith('upstox') ?? false;
+  const fundsHelper = fundsVerified ? `Live ${snapshot.portfolio.fundsSource?.replaceAll('_', ' ').toUpperCase()} funds` : 'Funds unavailable - check account-summary endpoint';
+
   return (
     <Card title="Upstox Portfolio" eyebrow="Broker, funds, positions, orders">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricCard label="Available Funds" value={formatCurrency(snapshot.portfolio.availableMargin ?? 0)} helper="Verified live Upstox funds" tone="cyan" />
-        <MetricCard label="Margin Used" value={formatCurrency(snapshot.portfolio.usedMargin ?? 0)} helper={`Exposure ${snapshot.liveExposurePct}%`} tone="amber" />
+        <MetricCard label="Available Funds" value={fundsVerified ? formatCurrency(snapshot.portfolio.availableMargin ?? 0) : 'UNAVAILABLE'} helper={fundsHelper} tone={fundsVerified ? 'cyan' : 'rose'} />
+        <MetricCard label="Margin Used" value={fundsVerified ? formatCurrency(snapshot.portfolio.usedMargin ?? 0) : 'UNAVAILABLE'} helper={`Exposure ${snapshot.liveExposurePct}%`} tone="amber" />
         <MetricCard label="Realized PnL" value={formatCurrency(snapshot.portfolio.realizedPnl)} tone="emerald" />
         <MetricCard label="Unrealized PnL" value={formatCurrency(snapshot.portfolio.unrealizedPnl)} tone="violet" />
         <MetricCard label="Positions" value={snapshot.portfolio.positions} helper="Open index option legs" tone="cyan" />
         <MetricCard label="Orders" value={snapshot.portfolio.orders} helper="Session order count" tone="emerald" />
         <MetricCard label="Upstox Link" value={snapshot.upstoxConnection?.connected ? 'CONNECTED' : 'CHECK'} helper={snapshot.upstoxConnection?.dataSource ?? 'Waiting for broker data'} tone={snapshot.upstoxConnection?.connected ? 'emerald' : 'rose'} />
-        <MetricCard label="Payin / Exposure" value={formatCurrency(snapshot.portfolio.payinAmount ?? 0)} helper={`Exposure margin ${formatCurrency(snapshot.portfolio.exposureMargin ?? 0)}`} tone="violet" />
+        <MetricCard label="Payin / Exposure" value={fundsVerified ? formatCurrency(snapshot.portfolio.payinAmount ?? 0) : 'UNAVAILABLE'} helper={`Pledge ${formatCurrency(snapshot.portfolio.pledgeAvailable ?? 0)} | Unsettled ${formatCurrency(snapshot.portfolio.unsettledProfit ?? 0)}`} tone="violet" />
       </div>
+      {!fundsVerified && (
+        <div className="mt-4 rounded-2xl border border-rose-300/20 bg-rose-300/10 p-4 text-sm text-rose-100">
+          Funds API did not return verified capital. Market data, dynamic expiry, and tomorrow analysis are still using real Upstox data. Test backend: <span className="font-mono">/api/upstox/account-summary</span>
+        </div>
+      )}
       {snapshot.expiryState && (
         <div className="mt-4 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-4 text-sm text-slate-200">
           <p className="font-bold uppercase tracking-[0.18em] text-cyan-200">Dynamic expiry check</p>

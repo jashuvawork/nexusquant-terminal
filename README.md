@@ -357,3 +357,35 @@ POST /api/execution/resume
 ```
 
 The frontend header has **Stop Auto** and **Resume** buttons. Live order placement is blocked whenever `autoTradingStopped=true`, even if `ENABLE_LIVE_TRADING=true`.
+
+
+## Funds V3/V2 fallback and closed-market data
+
+NexusQuant now fetches funds with Upstox V3 first:
+
+```text
+GET /v3/user/get-funds-and-margin
+```
+
+If V3 fails, it falls back to V2:
+
+```text
+GET /v2/user/get-funds-and-margin
+```
+
+If both funds calls fail, the terminal does not invent capital. It shows funds as unavailable and continues market analysis only from real Upstox market data.
+
+Closed-market and pre-market analysis uses real Upstox data where available:
+
+- `/v3/market-quote/ltp` for last price, last quantity, volume, and previous close (`cp`)
+- `/v2/option/contract` for dynamic expiries
+- `/v2/option/chain` for option market data and Greeks
+- `/v3/historical-candle/intraday` for last intraday candles
+
+Use these checks after deployment:
+
+```text
+/api/upstox/account-summary
+/api/market/expiries/NIFTY
+/api/market/snapshot/NIFTY
+```

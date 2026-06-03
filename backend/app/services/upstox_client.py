@@ -50,6 +50,7 @@ class UpstoxClient:
         *,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         token = await self._access_token()
         headers = {
@@ -57,6 +58,8 @@ class UpstoxClient:
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
+        if extra_headers:
+            headers.update(extra_headers)
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.request(method, url, params=params, json=json, headers=headers)
         if response.status_code >= 400:
@@ -118,8 +121,29 @@ class UpstoxClient:
             f"{UPSTOX_API_BASE}/v3/historical-candle/intraday/{encoded}/{unit}/{interval}",
         )
 
-    async def funds(self) -> dict[str, Any]:
+    async def funds_v3(self) -> dict[str, Any]:
+        return await self._request(
+            "GET",
+            f"{UPSTOX_API_BASE}/v3/user/get-funds-and-margin",
+            extra_headers={"Api-Version": "3.0"},
+        )
+
+    async def funds_v2(self) -> dict[str, Any]:
         return await self._request("GET", f"{UPSTOX_API_BASE}/v2/user/get-funds-and-margin")
+
+    async def funds(self) -> dict[str, Any]:
+        try:
+            payload = await self.funds_v3()
+            payload["nexusquant_source"] = "upstox_v3"
+            return payload
+        except UpstoxDataError as first_error:
+            try:
+                payload = await self.funds_v2()
+                payload["nexusquant_source"] = "upstox_v2"
+                payload["nexusquant_v3_error"] = str(first_error)
+                return payload
+            except UpstoxDataError as second_error:
+                raise UpstoxDataError(f"Funds V3 failed: {first_error}; Funds V2 failed: {second_error}") from second_error
 
     async def positions(self) -> dict[str, Any]:
         return await self._request("GET", f"{UPSTOX_API_BASE}/v2/portfolio/short-term-positions")
