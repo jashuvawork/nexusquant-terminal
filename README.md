@@ -16,6 +16,10 @@ For the current Railway backend deployment with Vercel frontend, see [`docs/RAIL
 
 The terminal includes Execution HUD, Heatmap Terminal, Orderflow Analytics, AI Matrix, Greeks & IV, Strategy Router, Upstox Portfolio, Risk Engine, Infrastructure Telemetry, AI Analytics, Trade Journal, Session Intelligence, Backtesting, and Settings.
 
+## Vercel build error: frontend directory
+
+If Vercel fails with `cd: frontend: No such file or directory`, set Vercel Root Directory to `./` with output `frontend/dist`, or set Root Directory to `frontend` with build command `npm run build` and output `dist`.
+
 ## Local frontend
 
 ```bash

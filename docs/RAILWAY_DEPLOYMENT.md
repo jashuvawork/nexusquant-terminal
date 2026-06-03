@@ -248,13 +248,25 @@ These must be real Upstox-supported option expiry dates in `YYYY-MM-DD` format.
 1. Open Vercel.
 2. Click **Add New** -> **Project**.
 3. Import the same GitHub repository.
-4. Keep root directory as repo root:
+4. Use one of these two valid configurations:
+
+**Option A, recommended: repo root**
 
 ```text
-./
+Root Directory: ./
+Build Command: leave default or use npm --prefix frontend install && npm --prefix frontend run build
+Output Directory: frontend/dist
 ```
 
-`vercel.json` already builds `frontend`.
+**Option B: frontend folder**
+
+```text
+Root Directory: frontend
+Build Command: npm run build
+Output Directory: dist
+```
+
+Do not use `cd frontend && ...` when Root Directory is already `frontend`; that causes `cd: frontend: No such file or directory`.
 
 ### Step 2: Add Vercel environment variables
 
