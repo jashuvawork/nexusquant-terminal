@@ -210,6 +210,26 @@ async def resume_execution(request: TradingControlRequest | None = None, control
     return await control.resume(reason)
 
 
+@router.get("/execution/stop")
+async def stop_execution_get(control: TradingControl = Depends(get_trading_control)) -> dict:
+    return await control.stop("Manual emergency stop via GET")
+
+
+@router.get("/execution/stop-now")
+async def stop_execution_now(control: TradingControl = Depends(get_trading_control)) -> dict:
+    return await control.stop("Manual emergency stop via browser link")
+
+
+@router.get("/execution/resume")
+async def resume_execution_get(control: TradingControl = Depends(get_trading_control)) -> dict:
+    return await control.resume("Manual resume via GET")
+
+
+@router.get("/execution/resume-now")
+async def resume_execution_now(control: TradingControl = Depends(get_trading_control)) -> dict:
+    return await control.resume("Manual resume via browser link")
+
+
 @router.post("/execution/scalp-order")
 async def place_scalp_order(
     request: ScalpOrderRequest,
@@ -291,3 +311,13 @@ async def deployment_status_alias(
 @alias_router.get("/execution/status")
 async def execution_status_alias(control: TradingControl = Depends(get_trading_control), settings: Settings = Depends(get_settings)) -> dict:
     return await execution_status(control, settings)
+
+
+@alias_router.get("/execution/stop-now")
+async def execution_stop_now_alias(control: TradingControl = Depends(get_trading_control)) -> dict:
+    return await stop_execution_now(control)
+
+
+@alias_router.get("/execution/resume-now")
+async def execution_resume_now_alias(control: TradingControl = Depends(get_trading_control)) -> dict:
+    return await resume_execution_now(control)

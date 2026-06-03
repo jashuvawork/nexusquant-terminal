@@ -22,6 +22,7 @@ import { Sidebar } from './components/Sidebar';
 import { navItems, type ModuleId } from './components/navItems';
 import { TerminalChart } from './components/TerminalChart';
 import { TerminalHeader } from './components/TerminalHeader';
+import { TradingControlButtons } from './components/TradingControlButtons';
 import { useMarketStream } from './hooks/useMarketStream';
 
 function WaitingForRealData({ status, issue }: { status: string; issue: { status: string; message: string } | null }) {
@@ -46,6 +47,10 @@ function WaitingForRealData({ status, issue }: { status: string; issue: { status
               </p>
               <div className="mt-6 rounded-2xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm text-amber-100">
                 This build intentionally removed local simulated prices. Configure/redeploy Railway backend, Upstox token, and Vercel URLs to see live or closed-market analysis.
+              </div>
+              <div className="mt-4 rounded-2xl border border-slate-700 bg-slate-950/60 p-4">
+                <p className="mb-3 text-xs font-bold uppercase tracking-[0.24em] text-slate-400">Emergency trading control</p>
+                <TradingControlButtons compact />
               </div>
             </div>
             <div className="rounded-2xl border border-slate-700 bg-slate-950/70 p-4">

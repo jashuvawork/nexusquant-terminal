@@ -1,33 +1,17 @@
-import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { CircleStop, Cpu, Play, RadioTower, ShieldCheck } from 'lucide-react';
+import { Cpu, RadioTower, ShieldCheck } from 'lucide-react';
 import type { StreamStatus, TerminalSnapshot } from '../types';
 import { formatCurrency } from '../utils/format';
+import { TradingControlButtons } from './TradingControlButtons';
 
 interface TerminalHeaderProps {
   snapshot: TerminalSnapshot;
   status: StreamStatus;
 }
 
-const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
-
 export function TerminalHeader({ snapshot, status }: TerminalHeaderProps) {
   const statusTone = status === 'live' ? 'bg-emerald-400' : status === 'status' ? 'bg-amber-300' : status === 'error' ? 'bg-rose-400' : 'bg-cyan-300';
-  const [controlBusy, setControlBusy] = useState(false);
   const stopped = snapshot.autoTradingStopped || snapshot.tradingControl?.autoTradingStopped;
-
-  const sendControl = async (action: 'stop' | 'resume') => {
-    setControlBusy(true);
-    try {
-      await fetch(`${apiUrl}/api/execution/${action}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason: action === 'stop' ? 'Stopped from NexusQuant terminal UI' : 'Resumed from NexusQuant terminal UI' }),
-      });
-    } finally {
-      setControlBusy(false);
-    }
-  };
 
   return (
     <header className="glass-panel rounded-3xl p-5">
@@ -46,24 +30,7 @@ export function TerminalHeader({ snapshot, status }: TerminalHeaderProps) {
           {snapshot.tradingControl?.reason && <p className="mt-1 text-xs text-rose-200/80">Trading control: {snapshot.tradingControl.reason}</p>}
         </div>
         <div className="flex flex-col gap-3">
-          <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              disabled={controlBusy || stopped}
-              onClick={() => void sendControl('stop')}
-              className="inline-flex items-center justify-center gap-2 rounded-2xl border border-rose-300/30 bg-rose-500/15 px-4 py-2 text-xs font-black uppercase tracking-[0.2em] text-rose-100 transition hover:bg-rose-500/25 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <CircleStop className="h-4 w-4" /> Stop Auto
-            </button>
-            <button
-              type="button"
-              disabled={controlBusy || !stopped}
-              onClick={() => void sendControl('resume')}
-              className="inline-flex items-center justify-center gap-2 rounded-2xl border border-emerald-300/30 bg-emerald-500/15 px-4 py-2 text-xs font-black uppercase tracking-[0.2em] text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Play className="h-4 w-4" /> Resume
-            </button>
-          </div>
+          <TradingControlButtons stopped={Boolean(stopped)} />
           <div className="grid gap-3 sm:grid-cols-3">
           <motion.div layout className="rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-4">
             <div className="flex items-center gap-2 text-xs uppercase tracking-[0.24em] text-cyan-200"><Cpu className="h-4 w-4" /> TQS</div>
