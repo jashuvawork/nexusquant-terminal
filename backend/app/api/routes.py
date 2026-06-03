@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 
 from typing import Literal
@@ -111,6 +112,29 @@ async def deployment_status(
             "/api/market/snapshot/NIFTY",
         ],
     }
+
+
+@router.get("/market/snapshots")
+async def market_snapshots(engine: RealTimeMarketEngine = Depends(get_market_engine)) -> dict:
+    results = await asyncio.gather(
+        engine.snapshot("NIFTY"),
+        engine.snapshot("SENSEX"),
+        return_exceptions=True,
+    )
+    snapshots = {}
+    errors = {}
+    for symbol, result in zip(["NIFTY", "SENSEX"], results, strict=True):
+        if isinstance(result, Exception):
+            errors[symbol] = str(result)
+        else:
+            snapshots[symbol] = result
+    if not snapshots:
+        raise HTTPException(status_code=503, detail=errors)
+    candidates = []
+    for symbol, snapshot in snapshots.items():
+        for trade in snapshot.get("suggestedTrades") or []:
+            candidates.append({"symbol": symbol, **trade})
+    return {"type": "multi_snapshot", "snapshots": snapshots, "symbolErrors": errors, "executionCandidates": candidates}
 
 
 @router.get("/market/snapshot/{symbol}")

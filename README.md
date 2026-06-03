@@ -421,3 +421,30 @@ The same signal can become `AUTO_EXECUTION_READY` only if all gates pass:
 - manual STOP is not active
 
 The STOP button always overrides auto trading.
+
+
+## Dual-symbol background analysis
+
+The frontend has a NIFTY/SENSEX display selector. This selector only changes what you see on screen.
+
+The backend analyzes both symbols every WebSocket cycle:
+
+```text
+NIFTY
+SENSEX
+```
+
+Debug endpoint:
+
+```text
+/api/market/snapshots
+```
+
+The response includes:
+
+- `snapshots.NIFTY`
+- `snapshots.SENSEX`
+- `executionCandidates` from both symbols
+- per-symbol errors if one symbol temporarily fails
+
+Auto execution gates continue to apply per candidate: live market, risk, spread, TQS, capital, and STOP state.

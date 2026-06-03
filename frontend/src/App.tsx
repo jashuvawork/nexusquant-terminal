@@ -24,6 +24,7 @@ import { TerminalChart } from './components/TerminalChart';
 import { TerminalHeader } from './components/TerminalHeader';
 import { TradingControlButtons } from './components/TradingControlButtons';
 import { useMarketStream } from './hooks/useMarketStream';
+import type { MarketSymbol } from './types';
 
 function WaitingForRealData({ status, issue }: { status: string; issue: { status: string; message: string } | null }) {
   const apiUrl = import.meta.env.VITE_API_URL ?? 'https://your-render-api.onrender.com';
@@ -70,29 +71,31 @@ function WaitingForRealData({ status, issue }: { status: string; issue: { status
 }
 
 function App() {
-  const { snapshot, status, issue } = useMarketStream();
+  const { snapshot, snapshots, status, issue } = useMarketStream();
   const [activeModule, setActiveModule] = useState<ModuleId>('execution');
+  const [selectedSymbol, setSelectedSymbol] = useState<MarketSymbol>('NIFTY');
 
   const moduleTitle = useMemo(() => navItems.find((item) => item.id === activeModule)?.label ?? 'Execution HUD', [activeModule]);
+  const displaySnapshot = snapshots[selectedSymbol] ?? snapshot;
 
-  if (!snapshot) {
+  if (!displaySnapshot) {
     return <WaitingForRealData status={status} issue={issue} />;
   }
 
   const content = {
-    execution: <ExecutionHud snapshot={snapshot} />,
-    heatmap: <HeatmapTerminal snapshot={snapshot} />,
-    orderflow: <OrderflowAnalytics snapshot={snapshot} />,
-    ai: <AiMatrix snapshot={snapshot} />,
-    greeks: <GreeksIv snapshot={snapshot} />,
-    strategy: <StrategyRouter snapshot={snapshot} />,
-    portfolio: <PortfolioPanel snapshot={snapshot} />,
-    risk: <RiskEnginePanel snapshot={snapshot} />,
-    infra: <InfrastructureTelemetry snapshot={snapshot} />,
-    analytics: <AiAnalytics snapshot={snapshot} />,
-    journal: <TradeJournal snapshot={snapshot} />,
-    session: <SessionIntelligence snapshot={snapshot} />,
-    backtesting: <BacktestingPanel snapshot={snapshot} />,
+    execution: <ExecutionHud snapshot={displaySnapshot} />,
+    heatmap: <HeatmapTerminal snapshot={displaySnapshot} />,
+    orderflow: <OrderflowAnalytics snapshot={displaySnapshot} />,
+    ai: <AiMatrix snapshot={displaySnapshot} />,
+    greeks: <GreeksIv snapshot={displaySnapshot} />,
+    strategy: <StrategyRouter snapshot={displaySnapshot} />,
+    portfolio: <PortfolioPanel snapshot={displaySnapshot} />,
+    risk: <RiskEnginePanel snapshot={displaySnapshot} />,
+    infra: <InfrastructureTelemetry snapshot={displaySnapshot} />,
+    analytics: <AiAnalytics snapshot={displaySnapshot} />,
+    journal: <TradeJournal snapshot={displaySnapshot} />,
+    session: <SessionIntelligence snapshot={displaySnapshot} />,
+    backtesting: <BacktestingPanel snapshot={displaySnapshot} />,
     settings: <SettingsPanel />,
   } satisfies Record<ModuleId, ReactNode>;
 
@@ -101,12 +104,36 @@ function App() {
       <div className="mx-auto flex max-w-[1800px] gap-4">
         <Sidebar active={activeModule} onChange={setActiveModule} />
         <div className="min-w-0 flex-1 space-y-4">
-          <TerminalHeader snapshot={snapshot} status={status} />
-          {snapshot.dataWarnings && snapshot.dataWarnings.length > 0 && (
+          <TerminalHeader snapshot={displaySnapshot} status={status} />
+          <div className="glass-panel rounded-3xl p-4">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.34em] text-cyan-300/80">Display symbol</p>
+                <p className="mt-1 text-sm text-slate-400">Backend analyzes NIFTY and SENSEX simultaneously; this only changes the visible terminal.</p>
+              </div>
+              <div className="flex gap-2">
+                {(['NIFTY', 'SENSEX'] as MarketSymbol[]).map((symbol) => {
+                  const ready = Boolean(snapshots[symbol]);
+                  const active = selectedSymbol === symbol;
+                  return (
+                    <button
+                      key={symbol}
+                      type="button"
+                      onClick={() => setSelectedSymbol(symbol)}
+                      className={`rounded-2xl border px-4 py-2 text-xs font-black uppercase tracking-[0.22em] transition ${active ? 'border-cyan-300/50 bg-cyan-300/15 text-cyan-100' : 'border-slate-700 bg-slate-950/70 text-slate-300 hover:border-cyan-300/30'}`}
+                    >
+                      {symbol} <span className={ready ? 'text-emerald-300' : 'text-rose-300'}>{ready ? 'LIVE' : 'WAIT'}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+          {displaySnapshot.dataWarnings && displaySnapshot.dataWarnings.length > 0 && (
             <div className="rounded-3xl border border-amber-300/25 bg-amber-300/10 p-4 text-sm text-amber-100">
               <p className="font-bold uppercase tracking-[0.18em]">Upstox data warnings</p>
               <ul className="mt-2 list-disc space-y-1 pl-5">
-                {snapshot.dataWarnings.map((warning) => <li key={warning}>{warning}</li>)}
+                {displaySnapshot.dataWarnings.map((warning) => <li key={warning}>{warning}</li>)}
               </ul>
             </div>
           )}
@@ -133,14 +160,14 @@ function App() {
                   <h2 className="mt-1 text-2xl font-black uppercase tracking-[0.14em] text-white">{moduleTitle}</h2>
                 </div>
                 <span className="hidden rounded-full border border-slate-700 bg-slate-950/70 px-4 py-2 text-xs uppercase tracking-[0.22em] text-slate-400 sm:block">
-                  {(snapshot.marketPhase ?? snapshot.volatilityRegime).replaceAll('_', ' ')}
+                  {(displaySnapshot.marketPhase ?? displaySnapshot.volatilityRegime).replaceAll('_', ' ')}
                 </span>
               </div>
               {content[activeModule]}
             </motion.section>
             <aside className="space-y-4">
-              <TerminalChart snapshot={snapshot} />
-              <AiMatrix snapshot={snapshot} />
+              <TerminalChart snapshot={displaySnapshot} />
+              <AiMatrix snapshot={displaySnapshot} />
             </aside>
           </div>
         </div>

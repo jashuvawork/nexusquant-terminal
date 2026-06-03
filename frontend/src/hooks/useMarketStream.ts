@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { StreamStatus, TerminalSnapshot } from '../types';
+import type { MarketSymbol, StreamStatus, TerminalSnapshot } from '../types';
 
 const defaultWsUrl = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8000/ws/market';
 
@@ -10,6 +10,7 @@ interface StreamIssue {
 
 export function useMarketStream() {
   const [snapshot, setSnapshot] = useState<TerminalSnapshot | null>(null);
+  const [snapshots, setSnapshots] = useState<Partial<Record<MarketSymbol, TerminalSnapshot>>>({});
   const [status, setStatus] = useState<StreamStatus>('connecting');
   const [issue, setIssue] = useState<StreamIssue | null>(null);
 
@@ -32,6 +33,34 @@ export function useMarketStream() {
             setIssue({ status: payload.status ?? 'STATUS', message: payload.message ?? 'Waiting for real Upstox data.' });
             return;
           }
+          if (payload.type === 'multi_snapshot') {
+            const incoming = (payload.snapshots ?? {}) as Partial<Record<MarketSymbol, TerminalSnapshot>>;
+            const verifiedEntries = Object.entries(incoming).filter(([, item]) =>
+              item?.dataSource === 'UPSTOX_REALTIME_REST'
+              && item?.upstoxConnection?.connected === true
+              && item?.upstoxConnection?.marketDataVerified === true
+              && item?.expiryState?.selectedExpiry,
+            ) as Array<[MarketSymbol, TerminalSnapshot]>;
+
+            if (verifiedEntries.length === 0) {
+              setSnapshot(null);
+              setSnapshots({});
+              setStatus('status');
+              setIssue({
+                status: 'NON_UPSTOX_SNAPSHOT_BLOCKED',
+                message: 'Backend returned no verified NIFTY/SENSEX Upstox market-data snapshots. Dummy or stale snapshots are blocked.',
+              });
+              return;
+            }
+
+            const nextSnapshots = Object.fromEntries(verifiedEntries) as Partial<Record<MarketSymbol, TerminalSnapshot>>;
+            setSnapshots(nextSnapshots);
+            setSnapshot((payload.displaySymbol && nextSnapshots[payload.displaySymbol as MarketSymbol]) || nextSnapshots.NIFTY || nextSnapshots.SENSEX || verifiedEntries[0][1]);
+            setStatus('live');
+            setIssue(null);
+            return;
+          }
+
           if (payload.type === 'snapshot' || payload.tradeQualityScore !== undefined) {
             const isVerifiedUpstoxSnapshot =
               payload.dataSource === 'UPSTOX_REALTIME_REST'
@@ -41,6 +70,7 @@ export function useMarketStream() {
 
             if (!isVerifiedUpstoxSnapshot) {
               setSnapshot(null);
+              setSnapshots({});
               setStatus('status');
               setIssue({
                 status: 'NON_UPSTOX_SNAPSHOT_BLOCKED',
@@ -49,7 +79,9 @@ export function useMarketStream() {
               return;
             }
 
-            setSnapshot(payload as TerminalSnapshot);
+            const item = payload as TerminalSnapshot;
+            setSnapshot(item);
+            setSnapshots({ [item.symbol]: item });
             setStatus('live');
             setIssue(null);
           }
@@ -82,5 +114,5 @@ export function useMarketStream() {
     };
   }, []);
 
-  return { snapshot, status, issue };
+  return { snapshot, snapshots, status, issue };
 }

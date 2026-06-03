@@ -81,6 +81,40 @@ async def stream_status(websocket: WebSocket, status: str, message: str) -> None
     await websocket.send_json({"type": "status", "status": status, "message": message})
 
 
+
+async def build_multi_symbol_snapshot() -> dict:
+    symbols = ["NIFTY", "SENSEX"]
+    results = await asyncio.gather(*(market_engine.snapshot(symbol) for symbol in symbols), return_exceptions=True)
+    snapshots: dict[str, dict] = {}
+    errors: dict[str, str] = {}
+    for symbol, result in zip(symbols, results, strict=True):
+        if isinstance(result, Exception):
+            errors[symbol] = str(result)
+        else:
+            snapshots[symbol] = result
+            await storage.persist_snapshot(result)
+
+    if not snapshots:
+        message = "; ".join(f"{symbol}: {error}" for symbol, error in errors.items()) or "No Upstox market snapshots available."
+        raise UpstoxDataError(message)
+
+    primary_symbol = settings.primary_symbol.upper()
+    primary = snapshots.get(primary_symbol) or snapshots.get("NIFTY") or next(iter(snapshots.values()))
+    execution_candidates = []
+    for symbol, snapshot in snapshots.items():
+        for trade in snapshot.get("suggestedTrades") or []:
+            execution_candidates.append({"symbol": symbol, **trade})
+
+    return {
+        **primary,
+        "type": "multi_snapshot",
+        "displaySymbol": primary.get("symbol"),
+        "backgroundSymbols": symbols,
+        "snapshots": snapshots,
+        "symbolErrors": errors,
+        "executionCandidates": execution_candidates,
+    }
+
 @app.websocket("/ws/market")
 async def market_stream(websocket: WebSocket) -> None:
     await websocket.accept()
@@ -88,10 +122,9 @@ async def market_stream(websocket: WebSocket) -> None:
     try:
         while True:
             try:
-                snapshot = await market_engine.snapshot()
+                snapshot = await build_multi_symbol_snapshot()
                 LATEST_TQS.set(snapshot["tradeQualityScore"])
-                SNAPSHOTS_STREAMED.inc()
-                await storage.persist_snapshot(snapshot)
+                SNAPSHOTS_STREAMED.inc(len(snapshot.get("snapshots", {})) or 1)
                 await websocket.send_json(snapshot)
             except UpstoxAuthRequired as exc:
                 await stream_status(websocket, "UPSTOX_AUTH_REQUIRED", str(exc))
