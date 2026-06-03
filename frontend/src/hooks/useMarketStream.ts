@@ -33,6 +33,22 @@ export function useMarketStream() {
             return;
           }
           if (payload.type === 'snapshot' || payload.tradeQualityScore !== undefined) {
+            const isVerifiedUpstoxSnapshot =
+              payload.dataSource === 'UPSTOX_REALTIME_REST'
+              && payload.upstoxConnection?.connected === true
+              && payload.portfolio?.fundsSource === 'upstox'
+              && payload.expiryState?.selectedExpiry;
+
+            if (!isVerifiedUpstoxSnapshot) {
+              setSnapshot(null);
+              setStatus('status');
+              setIssue({
+                status: 'NON_UPSTOX_SNAPSHOT_BLOCKED',
+                message: 'Backend returned a snapshot without verified Upstox funds/expiry metadata. Dummy or stale snapshots are blocked.',
+              });
+              return;
+            }
+
             setSnapshot(payload as TerminalSnapshot);
             setStatus('live');
             setIssue(null);

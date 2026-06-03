@@ -187,7 +187,7 @@ UPSTOX_API_SECRET=...
 
 ## Real Upstox data and trading setup
 
-This version does not generate dummy market prices, fake heatmaps, random PnL, or local fallback ticks. If the backend cannot authenticate with Upstox or cannot fetch the configured option chain, the frontend shows a setup/status panel instead of a simulated terminal.
+This version does not generate dummy market prices, fake heatmaps, random PnL, or local fallback ticks. The simulator module has been removed. If the backend cannot authenticate with Upstox, verify live funds, or fetch dynamic option expiry/chain data, the frontend blocks the snapshot and shows a setup/status panel instead of a simulated terminal.
 
 ### Required Render variables for real data
 
@@ -311,7 +311,7 @@ Keep `ENABLE_LIVE_TRADING=false` until you have tested with small quantity and c
 
 ## Production integration notes
 
-The Upstox adapter is intentionally isolated in `backend/app/services/upstox_client.py`. Replace the mock methods with MarketDataStreamerV3, option chain APIs, order APIs, funds APIs, and positions APIs once broker credentials and order permissions are available.
+The Upstox adapter is intentionally isolated in `backend/app/services/upstox_client.py`. It calls real Upstox endpoints for funds, positions, orders, option contracts, option chain, quotes, candles, and guarded order placement.
 
 The execution pipeline is represented as:
 

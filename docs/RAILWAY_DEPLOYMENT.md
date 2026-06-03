@@ -373,3 +373,16 @@ See:
 ```text
 docs/AWS_DEPLOYMENT.md
 ```
+
+## No dummy-data guard
+
+The frontend blocks any snapshot that does not include:
+
+```text
+dataSource=UPSTOX_REALTIME_REST
+upstoxConnection.connected=true
+portfolio.fundsSource=upstox
+expiryState.selectedExpiry
+```
+
+If you see `NON_UPSTOX_SNAPSHOT_BLOCKED`, Railway is probably running an old backend commit or a non-Upstox response. Redeploy Railway and Vercel using the latest commit.

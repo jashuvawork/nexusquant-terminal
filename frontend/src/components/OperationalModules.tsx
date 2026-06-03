@@ -27,8 +27,8 @@ export function PortfolioPanel({ snapshot }: { snapshot: TerminalSnapshot }) {
   return (
     <Card title="Upstox Portfolio" eyebrow="Broker, funds, positions, orders">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricCard label="Available Funds" value={formatCurrency(snapshot.portfolio.availableMargin ?? snapshot.portfolio.capital)} helper={snapshot.portfolio.fundsSource === 'upstox' ? 'Live Upstox funds' : 'Funds not verified'} tone="cyan" />
-        <MetricCard label="Margin Used" value={formatCurrency(snapshot.portfolio.usedMargin ?? snapshot.portfolio.margin)} helper={`Exposure ${snapshot.liveExposurePct}%`} tone="amber" />
+        <MetricCard label="Available Funds" value={formatCurrency(snapshot.portfolio.availableMargin ?? 0)} helper="Verified live Upstox funds" tone="cyan" />
+        <MetricCard label="Margin Used" value={formatCurrency(snapshot.portfolio.usedMargin ?? 0)} helper={`Exposure ${snapshot.liveExposurePct}%`} tone="amber" />
         <MetricCard label="Realized PnL" value={formatCurrency(snapshot.portfolio.realizedPnl)} tone="emerald" />
         <MetricCard label="Unrealized PnL" value={formatCurrency(snapshot.portfolio.unrealizedPnl)} tone="violet" />
         <MetricCard label="Positions" value={snapshot.portfolio.positions} helper="Open index option legs" tone="cyan" />

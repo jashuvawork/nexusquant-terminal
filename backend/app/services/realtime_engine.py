@@ -77,9 +77,9 @@ class RealTimeMarketEngine:
         option_chain_task = self.client.option_chain(instrument_key, expiry)
         candle_task = self.client.intraday_candles(instrument_key, "minutes", 1)
         quote_task = self.client.ltp([instrument_key])
-        funds_task = self._optional(self.client.funds(), "funds", data_warnings)
-        positions_task = self._optional(self.client.positions(), "positions", data_warnings)
-        orders_task = self._optional(self.client.orders(), "orders", data_warnings)
+        funds_task = self.client.funds()
+        positions_task = self.client.positions()
+        orders_task = self.client.orders()
 
         option_chain, candles, ltp_quote, funds, positions, orders = await asyncio.gather(
             option_chain_task, candle_task, quote_task, funds_task, positions_task, orders_task
@@ -546,8 +546,8 @@ class RealTimeMarketEngine:
         realized = sum(as_float(row.get("realised") or row.get("realized_pnl")) for row in pos_rows if isinstance(row, dict))
         exposure = round(clamp((used_margin / available_margin) * 100)) if available_margin > 0 else 0
         order_rows = (orders or {}).get("data") or []
-        if not funds:
-            warnings.append("Funds endpoint unavailable; live Upstox available margin could not be verified.")
+        if not funds or funds_source != "upstox":
+            raise UpstoxDataError("Upstox funds endpoint did not return verified account funds; refusing to render portfolio data.")
         return {
             "capital": round(available_margin, 2),
             "margin": round(used_margin, 2),
