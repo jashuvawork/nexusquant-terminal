@@ -176,6 +176,35 @@ class StrategyOptimizer:
                 break
         return trades
 
+    def validate_runtime(self) -> dict[str, Any]:
+        required = ["_recommended_profiles", "_retest_confirmed", "_failed_breakout", "_simulate_exit"]
+        missing = [name for name in required if not hasattr(self, name)]
+        return {"ok": not missing, "missingHelpers": missing}
+
+    def _retest_confirmed(self, candles: list[dict[str, Any]], index: int, side: str, high: float, low: float) -> bool:
+        lookahead = candles[index + 1:index + 4]
+        if len(lookahead) < 2:
+            return False
+        if side == "CALL":
+            touched = any(candle["low"] <= high for candle in lookahead)
+            held = lookahead[-1]["close"] > high
+            return touched and held
+        touched = any(candle["high"] >= low for candle in lookahead)
+        held = lookahead[-1]["close"] < low
+        return touched and held
+
+    def _failed_breakout(self, candles: list[dict[str, Any]], index: int, high: float, low: float) -> bool:
+        recent = candles[index:index + 3]
+        if not recent:
+            return False
+        broke_up = candles[index]["close"] > high
+        broke_down = candles[index]["close"] < low
+        if broke_up and any(candle["close"] < high for candle in recent[1:]):
+            return True
+        if broke_down and any(candle["close"] > low for candle in recent[1:]):
+            return True
+        return False
+
     def _simulate_exit(self, entry: float, side: str, future: list[dict[str, Any]], atr: float, params: StrategyParams) -> dict[str, Any]:
         target = max(params.target_points, atr * 0.8)
         stop = max(1.0, params.stop_points)
