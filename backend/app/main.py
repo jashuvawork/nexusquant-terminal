@@ -83,11 +83,12 @@ async def metrics() -> Response:
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-async def stream_status(websocket: WebSocket, status: str, message: str) -> bool:
+async def stream_status(websocket: WebSocket, status: str, message: str, *, record_error: bool = True) -> bool:
     if websocket.client_state != WebSocketState.CONNECTED or websocket.application_state != WebSocketState.CONNECTED:
         return False
-    STREAM_ERRORS.inc()
-    await event_journal.record("API_ERROR", f"{status}: {message}", severity="ERROR", payload={"status": status, "message": message}, event_key=f"API_ERROR:{status}:{message}")
+    if record_error:
+        STREAM_ERRORS.inc()
+        await event_journal.record("API_ERROR", f"{status}: {message}", severity="ERROR", payload={"status": status, "message": message}, event_key=f"API_ERROR:{status}:{message}")
     try:
         await websocket.send_json({"type": "status", "status": status, "message": message})
         return True
@@ -228,6 +229,8 @@ async def build_multi_symbol_snapshot() -> dict:
 async def market_stream(websocket: WebSocket) -> None:
     await websocket.accept()
     ACTIVE_WS.inc()
+    await stream_status(websocket, "CONNECTED", "WebSocket connected. Waiting for real Upstox snapshots.", record_error=False)
+    heartbeat_counter = 0
     try:
         while True:
             try:
@@ -250,6 +253,10 @@ async def market_stream(websocket: WebSocket) -> None:
                     break
             except Exception as exc:
                 if not await stream_status(websocket, "STREAM_ERROR", f"Unexpected stream error: {exc}"):
+                    break
+            heartbeat_counter += 1
+            if heartbeat_counter % 15 == 0:
+                if not await stream_status(websocket, "HEARTBEAT", "Connection alive. Real-data stream is active or waiting for Upstox token.", record_error=False):
                     break
             await asyncio.sleep(settings.market_poll_seconds)
     except WebSocketDisconnect:
