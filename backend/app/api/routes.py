@@ -99,7 +99,7 @@ async def deployment_status(
     token_status = await auth_service.token_status()
     return {
         "service": settings.app_name,
-        "apiVersion": "0.5.0-runtime-validated",
+        "apiVersion": "0.5.1-regime-order-fix",
         "runtimeValidation": engine.validate_runtime(),
         "environment": settings.environment,
         "railwayCommit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),

@@ -12,11 +12,10 @@ COPY app ./app
 
 RUN python - <<'PY'
 from app.main import market_engine
-required = ["_backtest_metrics", "_suggested_trades", "_premarket_analysis", "_tomorrow_trade_plan", "_chop_filter", "_upstox_latency_ms"]
-missing = [name for name in required if not hasattr(market_engine, name)]
-if missing:
-    raise SystemExit(f"Missing RealTimeMarketEngine helper methods: {missing}")
-print("NexusQuant runtime validation passed")
+validation = market_engine.validate_runtime()
+if not validation["ok"]:
+    raise SystemExit(f"NexusQuant runtime validation failed: {validation}")
+print(f"NexusQuant runtime validation passed: {validation}")
 PY
 
 EXPOSE 8000

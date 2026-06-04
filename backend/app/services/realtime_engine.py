@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 from time import perf_counter
 from statistics import mean
@@ -63,7 +64,11 @@ class RealTimeMarketEngine:
 
     def validate_runtime(self) -> dict[str, Any]:
         missing = [name for name in self.REQUIRED_HELPERS if not hasattr(self, name)]
-        return {"ok": not missing, "missingHelpers": missing}
+        source = Path(__file__).read_text()
+        regime_index = source.find('regime = self._regime')
+        chop_index = source.find('chop_filter = self._chop_filter')
+        order_ok = regime_index != -1 and chop_index != -1 and regime_index < chop_index
+        return {"ok": not missing and order_ok, "missingHelpers": missing, "regimeBeforeChopFilter": order_ok}
 
     def __init__(self, settings: Settings, client: UpstoxClient, scorer: TradeQualityScorer, risk_engine: RiskEngine, trading_control: TradingControl | None = None) -> None:
         self.settings = settings
@@ -128,9 +133,9 @@ class RealTimeMarketEngine:
         iv_score = round(clamp(greeks["ivExpansion"]))
         profile_score = self._profile_alignment_score(market_profile, spot)
         orderflow = self._orderflow(selected_symbol, spot, call_md, put_md, option_bias, volume_state)
+        regime = self._regime(session.phase, momentum, volume_score, spread_quality)
         chop_filter = self._chop_filter(momentum, orderflow, spread_quality, volume_score, regime)
         delta_score = round(clamp(50 + orderflow["deltaVelocity"] / 2 + abs(greeks["delta"]) * 30))
-        regime = self._regime(session.phase, momentum, volume_score, spread_quality)
         regime_score = 85 if regime == "TREND_EXPANSION" else 72 if regime == "RANGE_ABSORPTION" else 55
 
         features = {
