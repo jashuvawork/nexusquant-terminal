@@ -122,7 +122,7 @@ async def deployment_status(
     token_status = await auth_service.token_status()
     return {
         "service": settings.app_name,
-        "apiVersion": "0.6.0-precision-engines",
+        "apiVersion": "0.6.1-websocket-training-fix",
         "runtimeValidation": engine.validate_runtime(),
         "environment": settings.environment,
         "railwayCommit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
@@ -145,6 +145,7 @@ async def deployment_status(
             "/api/ai-learning/export",
             "/api/ai-learning/reset",
             "/api/ai-learning/train-historical",
+            "/api/ai-learning/train-now",
         ],
     }
 
@@ -357,6 +358,36 @@ async def place_scalp_order(
     except (UpstoxAuthRequired, UpstoxDataError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"submitted": True, "session": session.label, "order": order, "upstox": response}
+
+
+@router.post("/ai-learning/train-now")
+async def ai_learning_train_now(
+    target_trades: int | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    trainer: HistoricalTrainer = Depends(get_historical_trainer),
+) -> dict:
+    target = target_trades or 1000
+    results: dict[str, dict] = {}
+    errors: dict[str, str] = {}
+    for symbol in ["NIFTY", "SENSEX"]:
+        try:
+            results[symbol] = await trainer.train(symbol, target, from_date, to_date)
+        except (UpstoxAuthRequired, UpstoxDataError) as exc:
+            errors[symbol] = str(exc)
+    if not results:
+        raise HTTPException(status_code=503, detail=errors)
+    return {"targetTradesPerSymbol": target, "results": results, "errors": errors}
+
+
+@router.get("/ai-learning/train-now")
+async def ai_learning_train_now_get(
+    target_trades: int | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    trainer: HistoricalTrainer = Depends(get_historical_trainer),
+) -> dict:
+    return await ai_learning_train_now(target_trades, from_date, to_date, trainer)
 
 
 @router.post("/ai-learning/train-historical")

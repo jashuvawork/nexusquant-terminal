@@ -719,3 +719,14 @@ Full-capital live auto-trading is blocked unless these readiness checks pass:
 - drawdown < 5%
 
 If checks are weak, NexusQuant remains in paper/shadow or small-live recommendation mode. For INR 5L capital, use paper/shadow until readiness improves.
+
+
+## Immediate AI training trigger
+
+After Upstox token is active, trigger both-index training immediately:
+
+```text
+/api/ai-learning/train-now?target_trades=1000
+```
+
+This attempts NIFTY and SENSEX historical candle training. If token/history is unavailable, the response returns a clear per-symbol error.

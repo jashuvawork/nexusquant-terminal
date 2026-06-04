@@ -425,7 +425,7 @@ export function BacktestingPanel({ snapshot }: { snapshot: TerminalSnapshot }) {
             <p className="font-bold uppercase tracking-[0.2em]">Pretrained + continuous AI learning</p>
             <p className="mt-2">{auto.onlineLearning.note}</p>
             <p className="mt-2 text-xs text-amber-200/80">Pretrained: {auto.onlineLearning.pretrained ? 'YES' : 'NO'} | Prior {auto.onlineLearning.priorVersion ?? 'n/a'} | Paper samples {auto.onlineLearning.paperSamples ?? 0} | Live samples {auto.onlineLearning.liveSamples ?? 0} | PF {auto.onlineLearning.profitFactor ?? 0}</p>
-            <p className="mt-2 text-xs text-slate-300">Historical trainer endpoint: <span className="font-mono">/api/ai-learning/train-historical?symbol=NIFTY&amp;target_trades=1000</span></p>
+            <p className="mt-2 text-xs text-slate-300">Historical trainer endpoint: <span className="font-mono">/api/ai-learning/train-now?target_trades=1000</span></p>
           </div>
         </>
       )}

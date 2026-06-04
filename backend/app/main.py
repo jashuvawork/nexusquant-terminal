@@ -7,6 +7,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, generate_latest
 from starlette.responses import Response
+from starlette.websockets import WebSocketState
 
 from app.api.routes import alias_router, router
 from app.core.config import get_settings
@@ -78,9 +79,15 @@ async def metrics() -> Response:
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-async def stream_status(websocket: WebSocket, status: str, message: str) -> None:
+async def stream_status(websocket: WebSocket, status: str, message: str) -> bool:
+    if websocket.client_state != WebSocketState.CONNECTED or websocket.application_state != WebSocketState.CONNECTED:
+        return False
     STREAM_ERRORS.inc()
-    await websocket.send_json({"type": "status", "status": status, "message": message})
+    try:
+        await websocket.send_json({"type": "status", "status": status, "message": message})
+        return True
+    except (RuntimeError, WebSocketDisconnect):
+        return False
 
 
 
@@ -129,15 +136,23 @@ async def market_stream(websocket: WebSocket) -> None:
                 snapshot = await build_multi_symbol_snapshot()
                 LATEST_TQS.set(snapshot["tradeQualityScore"])
                 SNAPSHOTS_STREAMED.inc(len(snapshot.get("snapshots", {})) or 1)
+                if websocket.client_state != WebSocketState.CONNECTED or websocket.application_state != WebSocketState.CONNECTED:
+                    break
                 await websocket.send_json(snapshot)
+            except (WebSocketDisconnect, RuntimeError):
+                break
             except UpstoxAuthRequired as exc:
-                await stream_status(websocket, "UPSTOX_AUTH_REQUIRED", str(exc))
+                if not await stream_status(websocket, "UPSTOX_AUTH_REQUIRED", str(exc)):
+                    break
             except MarketConfigurationError as exc:
-                await stream_status(websocket, "CONFIGURATION_REQUIRED", str(exc))
+                if not await stream_status(websocket, "CONFIGURATION_REQUIRED", str(exc)):
+                    break
             except UpstoxDataError as exc:
-                await stream_status(websocket, "UPSTOX_DATA_ERROR", str(exc))
+                if not await stream_status(websocket, "UPSTOX_DATA_ERROR", str(exc)):
+                    break
             except Exception as exc:
-                await stream_status(websocket, "STREAM_ERROR", f"Unexpected stream error: {exc}")
+                if not await stream_status(websocket, "STREAM_ERROR", f"Unexpected stream error: {exc}"):
+                    break
             await asyncio.sleep(settings.market_poll_seconds)
     except WebSocketDisconnect:
         pass
