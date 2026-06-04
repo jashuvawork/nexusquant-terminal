@@ -705,3 +705,17 @@ Endpoint:
 ```text
 /api/auto-trader/profit-lock
 ```
+
+
+## Production readiness gates
+
+Full-capital live auto-trading is blocked unless these readiness checks pass:
+
+- sample size >= 500 candles/trades
+- profit factor >= 1.5
+- win rate >= 58%
+- TQS >= 68
+- real/effective volume > 0
+- drawdown < 5%
+
+If checks are weak, NexusQuant remains in paper/shadow or small-live recommendation mode. For INR 5L capital, use paper/shadow until readiness improves.

@@ -274,7 +274,18 @@ export interface AdaptiveExitState {
   stopPoints: number;
   trailPoints: number;
   partialExitAt: number;
+  atrPoints?: number;
   rules: Array<{ name: string; active: boolean; action: string }>;
+}
+
+export interface ProductionReadinessState {
+  readyForFullCapital: boolean;
+  readyForSmallLive: boolean;
+  passed: number;
+  total: number;
+  checks: Array<{ name: string; passed: boolean; value: unknown; required: unknown }>;
+  recommendation: string;
+  maxSuggestedLiveCapital?: number | null;
 }
 
 export interface NoTradeZoneState {
@@ -342,6 +353,7 @@ export interface TerminalSnapshot {
   adaptiveExit?: AdaptiveExitState;
   noTradeZones?: NoTradeZoneState;
   tqsBreakdown?: TqsBreakdownState;
+  productionReadiness?: ProductionReadinessState;
   dataSource?: string;
   dataWarnings?: string[];
   upstoxConnection?: UpstoxConnectionState;

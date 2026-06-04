@@ -61,7 +61,7 @@ class PreviousTick:
 class RealTimeMarketEngine:
     """Builds terminal snapshots only from real Upstox responses."""
 
-    REQUIRED_HELPERS = ("_backtest_metrics", "_suggested_trades", "_premarket_analysis", "_tomorrow_trade_plan", "_chop_filter", "_upstox_latency_ms", "_pressure_mode", "_precision_entry_checklist", "_adaptive_exit_engine", "_no_trade_zones", "_tqs_breakdown")
+    REQUIRED_HELPERS = ("_backtest_metrics", "_suggested_trades", "_premarket_analysis", "_tomorrow_trade_plan", "_chop_filter", "_upstox_latency_ms", "_pressure_mode", "_precision_entry_checklist", "_adaptive_exit_engine", "_no_trade_zones", "_tqs_breakdown", "_production_readiness", "_atr_points")
 
     def validate_runtime(self) -> dict[str, Any]:
         missing = [name for name in self.REQUIRED_HELPERS if not hasattr(self, name)]
@@ -194,7 +194,8 @@ class RealTimeMarketEngine:
         capital_status = await self.trading_control.capital_status()
         trading_capital = capital_status.get("tradingCapital") or self.settings.trading_capital_default
         auto_trading_stopped = bool(trading_control_status.get("autoTradingStopped"))
-        adaptive_exit = self._adaptive_exit_engine(selected_ltp, selected_side, orderflow, spread_quality, volume_state, greeks, pressure_mode, risk_decision.safe_mode)
+        atr_points = self._atr_points(candles_list)
+        adaptive_exit = self._adaptive_exit_engine(selected_ltp, selected_side, orderflow, spread_quality, volume_state, greeks, pressure_mode, risk_decision.safe_mode, atr_points)
         precision_checklist = self._precision_entry_checklist(
             tqs=tqs,
             threshold=adaptive_risk["minimumTqs"],
@@ -217,12 +218,14 @@ class RealTimeMarketEngine:
             and precision_checklist["passed"]
             and not no_trade_zones["blocked"]
             and pressure_mode["level"] != "CRITICAL"
+            and production_readiness["readyForFullCapital"]
             and not chop_filter["blocked"]
             and selected_instrument
             and selected_ltp > 0
         )
         trade_mode = "AUTO_EXECUTION_READY" if execution_allowed else "ANALYSIS_BACKTEST_ONLY"
-        backtest_metrics = self._backtest_metrics(candles_list, tqs, spread_quality)
+        backtest_metrics = self._backtest_metrics(candles_list, tqs, spread_quality, volume_state)
+        production_readiness = self._production_readiness(backtest_metrics, tqs, volume_state, self._drawdown_pct(portfolio))
         suggested_trades = self._suggested_trades(
             symbol=selected_symbol,
             expiry=expiry,
@@ -261,6 +264,7 @@ class RealTimeMarketEngine:
             "adaptiveExit": adaptive_exit,
             "noTradeZones": no_trade_zones,
             "tqsBreakdown": tqs_breakdown,
+            "productionReadiness": production_readiness,
             "dataSource": "UPSTOX_REALTIME_REST",
             "dataWarnings": data_warnings,
             "upstoxConnection": {
@@ -332,7 +336,7 @@ class RealTimeMarketEngine:
             "backtest": backtest_metrics,
             "executionDecision": {
                 "allowNewTrade": execution_allowed,
-                "reason": "NO_TRADE_ZONE" if no_trade_zones["blocked"] else "PRESSURE_MODE_CRITICAL" if pressure_mode["level"] == "CRITICAL" else "PRECISION_CHECKLIST_FAILED" if not precision_checklist["passed"] else "CHOP_FILTER_BLOCKED" if chop_filter["blocked"] else "AUTO_TRADING_STOPPED" if auto_trading_stopped else "LIVE_TRADING_DISABLED" if not self.settings.enable_live_trading else risk_decision.reason,
+                "reason": "NOT_PRODUCTION_READY" if not production_readiness["readyForFullCapital"] else "NO_TRADE_ZONE" if no_trade_zones["blocked"] else "PRESSURE_MODE_CRITICAL" if pressure_mode["level"] == "CRITICAL" else "PRECISION_CHECKLIST_FAILED" if not precision_checklist["passed"] else "CHOP_FILTER_BLOCKED" if chop_filter["blocked"] else "AUTO_TRADING_STOPPED" if auto_trading_stopped else "LIVE_TRADING_DISABLED" if not self.settings.enable_live_trading else risk_decision.reason,
                 "candidateInstrument": selected_instrument,
                 "candidateSide": selected_side,
                 "candidateLtp": selected_ltp,
@@ -761,16 +765,20 @@ class RealTimeMarketEngine:
         reasons: list[str] = []
         if regime == "REVERSAL_RISK":
             reasons.append("regime reversal risk")
-        if orderflow.get("breakoutVelocity", 0) < 12:
-            reasons.append("breakout velocity weak")
-        if abs(orderflow.get("deltaVelocity", 0)) < 18:
-            reasons.append("delta velocity weak")
+        if orderflow.get("breakoutVelocity", 0) < 65:
+            reasons.append("breakout velocity below 65")
+        if abs(orderflow.get("deltaVelocity", 0)) < 60:
+            reasons.append("delta velocity below 60")
         if orderflow.get("sweepDetection", 0) < 10:
             reasons.append("sweep absent")
-        if spread_quality < 65:
+        if orderflow.get("liquidityShift", 0) < 55:
+            reasons.append("liquidity confirmation below 55")
+        if orderflow.get("volumeAcceleration", 0) < 70:
+            reasons.append("volume acceleration below 70")
+        if spread_quality < 85:
             reasons.append("spread quality below institutional filter")
-        if volume_score < 25:
-            reasons.append("volume confirmation weak")
+        if volume_score < 70:
+            reasons.append("volume score below 70")
         blocked = len(reasons) >= 2 or spread_quality < 45
         return {"blocked": blocked, "reasons": reasons, "score": max(0, 100 - len(reasons) * 18)}
 
@@ -834,11 +842,13 @@ class RealTimeMarketEngine:
         pressure_mode: dict[str, Any],
     ) -> dict[str, Any]:
         checks = [
-            {"name": "TQS above threshold", "passed": tqs >= threshold, "value": tqs, "required": threshold, "critical": True},
-            {"name": "Spread quality", "passed": spread_quality >= 65, "value": spread_quality, "required": 65, "critical": True},
+            {"name": "TQS above institutional floor", "passed": tqs >= max(threshold, 68), "value": tqs, "required": max(threshold, 68), "critical": True},
+            {"name": "Spread quality", "passed": spread_quality >= 85, "value": spread_quality, "required": 85, "critical": True},
             {"name": "Volume available", "passed": bool(volume_state.get("volumeAvailable")), "value": volume_state.get("source"), "required": "real Upstox volume", "critical": True},
-            {"name": "Breakout velocity", "passed": orderflow.get("breakoutVelocity", 0) >= 12, "value": orderflow.get("breakoutVelocity", 0), "required": 12, "critical": False},
-            {"name": "Delta velocity", "passed": abs(orderflow.get("deltaVelocity", 0)) >= 18, "value": orderflow.get("deltaVelocity", 0), "required": "+/-18", "critical": False},
+            {"name": "Breakout velocity", "passed": orderflow.get("breakoutVelocity", 0) >= 65, "value": orderflow.get("breakoutVelocity", 0), "required": 65, "critical": True},
+            {"name": "Delta velocity", "passed": abs(orderflow.get("deltaVelocity", 0)) >= 60, "value": orderflow.get("deltaVelocity", 0), "required": "+/-60", "critical": True},
+            {"name": "Liquidity confirmation", "passed": orderflow.get("liquidityShift", 0) >= 55, "value": orderflow.get("liquidityShift", 0), "required": 55, "critical": True},
+            {"name": "Volume acceleration", "passed": orderflow.get("volumeAcceleration", 0) >= 70, "value": orderflow.get("volumeAcceleration", 0), "required": 70, "critical": True},
             {"name": "No chop block", "passed": not chop_filter.get("blocked"), "value": chop_filter.get("reasons", []), "required": "no block", "critical": True},
             {"name": "No no-trade zone", "passed": not no_trade_zones.get("blocked"), "value": no_trade_zones.get("activeZones", []), "required": "none", "critical": True},
             {"name": "Pressure not critical", "passed": pressure_mode.get("level") != "CRITICAL", "value": pressure_mode.get("level"), "required": "NORMAL/ELEVATED", "critical": True},
@@ -859,18 +869,20 @@ class RealTimeMarketEngine:
         greeks: dict[str, Any],
         pressure_mode: dict[str, Any],
         safe_mode: bool,
+        atr_points: float,
     ) -> dict[str, Any]:
-        target = max(self.settings.paper_target_points, premium * 0.04) if premium else self.settings.paper_target_points
-        stop = max(self.settings.paper_stop_points, premium * 0.025) if premium else self.settings.paper_stop_points
-        trail = max(1.0, target * 0.45)
+        target = max(self.settings.paper_target_points, premium * 0.04, atr_points * 0.8) if premium else max(self.settings.paper_target_points, atr_points * 0.8)
+        stop = max(self.settings.paper_stop_points, premium * 0.025, atr_points * 0.5) if premium else max(self.settings.paper_stop_points, atr_points * 0.5)
+        trail = max(1.0, target * 0.45, atr_points * 0.35)
         rules = [
             {"name": "Momentum decay exit", "active": orderflow.get("breakoutVelocity", 0) < 10, "action": "tighten trail or exit"},
             {"name": "Delta reversal exit", "active": (side == "CALL" and orderflow.get("deltaVelocity", 0) < -15) or (side == "PUT" and orderflow.get("deltaVelocity", 0) > 15), "action": "exit on reversal"},
             {"name": "Spread widening exit", "active": spread_quality < 55, "action": "exit/avoid new add"},
             {"name": "Liquidity rejection exit", "active": not volume_state.get("volumeAvailable"), "action": "do not hold runner"},
+            {"name": "Theta/IV caution", "active": abs(greeks.get("theta", 0)) > 5 or greeks.get("ivExpansion", 0) > 70, "action": "shorten hold time"},
             {"name": "Pressure emergency flatten", "active": pressure_mode.get("level") == "CRITICAL" or safe_mode, "action": "flatten or manage only"},
         ]
-        return {"targetPoints": round(target, 2), "stopPoints": round(stop, 2), "trailPoints": round(trail, 2), "partialExitAt": round(target * 0.6, 2), "rules": rules}
+        return {"targetPoints": round(target, 2), "stopPoints": round(stop, 2), "trailPoints": round(trail, 2), "partialExitAt": round(target * 0.6, 2), "atrPoints": round(atr_points, 2), "rules": rules}
 
     def _no_trade_zones(
         self,
@@ -906,6 +918,36 @@ class RealTimeMarketEngine:
         hard = [zone for zone in zones if zone["severity"] == "hard"]
         return {"blocked": bool(hard), "activeZones": zones, "hardBlocks": hard}
 
+    def _production_readiness(self, backtest_metrics: list[dict[str, Any]], tqs: int, volume_state: dict[str, Any], drawdown_pct: float) -> dict[str, Any]:
+        metric_map = {metric["name"]: metric["value"] for metric in backtest_metrics}
+        sample = float(metric_map.get("Candle Sample", 0))
+        win_rate = float(metric_map.get("Win Rate", 0))
+        profit_factor = float(metric_map.get("Profit Factor", 0))
+        avg_volume = float(metric_map.get("Avg Volume", 0))
+        checks = [
+            {"name": "500+ trade/candle sample", "passed": sample >= 500, "value": sample, "required": 500},
+            {"name": "Profit factor >= 1.5", "passed": profit_factor >= 1.5, "value": profit_factor, "required": 1.5},
+            {"name": "Win rate >= 58%", "passed": win_rate >= 58, "value": win_rate, "required": 58},
+            {"name": "TQS >= 68", "passed": tqs >= 68, "value": tqs, "required": 68},
+            {"name": "Average/effective volume non-zero", "passed": avg_volume > 0 or volume_state.get("effectiveVolume", 0) > 0, "value": avg_volume or volume_state.get("effectiveVolume", 0), "required": "> 0"},
+            {"name": "Drawdown < 5%", "passed": drawdown_pct < 5, "value": drawdown_pct, "required": "< 5"},
+        ]
+        passed = sum(1 for check in checks if check["passed"])
+        return {
+            "readyForFullCapital": passed == len(checks),
+            "readyForSmallLive": profit_factor >= 1.2 and tqs >= 64 and (avg_volume > 0 or volume_state.get("effectiveVolume", 0) > 0),
+            "passed": passed,
+            "total": len(checks),
+            "checks": checks,
+            "recommendation": "Paper/shadow only" if passed < 4 else "Small live only" if passed < len(checks) else "Eligible for full-capital evaluation",
+            "maxSuggestedLiveCapital": 25000 if passed < len(checks) else None,
+        }
+
+    def _atr_points(self, candles: list[dict[str, Any]], lookback: int = 14) -> float:
+        recent = candles[-lookback:] if candles else []
+        ranges = [abs(as_float(candle.get("high")) - as_float(candle.get("low"))) for candle in recent]
+        return round(mean(ranges), 2) if ranges else 0.0
+
     def _tqs_breakdown(self, ai_matrix: list[dict[str, Any]]) -> dict[str, Any]:
         weighted = []
         for item in ai_matrix:
@@ -916,7 +958,7 @@ class RealTimeMarketEngine:
         total = round(sum(item["contribution"] for item in weighted), 2)
         return {"total": total, "components": weighted, "topContributors": top, "weakComponents": weak, "explanation": "TQS is weighted from real-data-derived engine scores; weak components should explain skipped trades."}
 
-    def _backtest_metrics(self, candles: list[dict[str, Any]], tqs: int, spread_quality: int) -> list[dict[str, Any]]:
+    def _backtest_metrics(self, candles: list[dict[str, Any]], tqs: int, spread_quality: int, volume_state: dict[str, Any]) -> list[dict[str, Any]]:
         if len(candles) < 3:
             return [
                 {"name": "Backtest Data", "value": len(candles), "unit": " candles"},
@@ -924,7 +966,10 @@ class RealTimeMarketEngine:
                 {"name": "Spread Quality", "value": spread_quality, "unit": "%"},
             ]
         closes = [as_float(candle.get("close")) for candle in candles if as_float(candle.get("close")) > 0]
+        fallback_volume = as_int(volume_state.get("effectiveVolume"))
         volumes = [as_int(candle.get("volume")) for candle in candles]
+        if sum(volumes) == 0 and fallback_volume > 0:
+            volumes = [fallback_volume for _ in candles]
         if len(closes) < 2:
             return [{"name": "Backtest Data", "value": len(candles), "unit": " candles"}]
         returns = [((closes[index] - closes[index - 1]) / closes[index - 1]) * 100 for index in range(1, len(closes)) if closes[index - 1] > 0]

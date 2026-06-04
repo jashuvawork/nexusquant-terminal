@@ -198,10 +198,24 @@ export function RiskEnginePanel({ snapshot }: { snapshot: TerminalSnapshot }) {
             <span>Stop <b>{snapshot.adaptiveExit.stopPoints}</b></span>
             <span>Trail <b>{snapshot.adaptiveExit.trailPoints}</b></span>
             <span>Partial <b>{snapshot.adaptiveExit.partialExitAt}</b></span>
+            <span>ATR <b>{snapshot.adaptiveExit.atrPoints ?? 0}</b></span>
           </div>
           <ul className="mt-3 list-disc space-y-1 pl-5 text-xs">
             {snapshot.adaptiveExit.rules.filter((rule) => rule.active).map((rule) => <li key={rule.name}>{rule.name}: {rule.action}</li>)}
           </ul>
+        </div>
+      )}
+      {snapshot.productionReadiness && (
+        <div className={`mt-4 rounded-2xl border p-4 text-sm ${snapshot.productionReadiness.readyForFullCapital ? 'border-emerald-300/20 bg-emerald-300/10 text-emerald-100' : snapshot.productionReadiness.readyForSmallLive ? 'border-amber-300/20 bg-amber-300/10 text-amber-100' : 'border-rose-300/20 bg-rose-300/10 text-rose-100'}`}>
+          <p className="font-bold uppercase tracking-[0.2em]">Production Readiness: {snapshot.productionReadiness.recommendation}</p>
+          <p className="mt-2">{snapshot.productionReadiness.passed}/{snapshot.productionReadiness.total} readiness checks passed.</p>
+          <div className="mt-3 grid gap-2 md:grid-cols-2">
+            {snapshot.productionReadiness.checks.map((check) => (
+              <div key={check.name} className="flex justify-between rounded-xl bg-slate-950/40 px-3 py-2 text-xs">
+                <span>{check.name}</span><span className={check.passed ? 'text-emerald-300' : 'text-rose-300'}>{check.passed ? 'OK' : 'FAIL'}</span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
       {adaptive?.benchmarks && (
