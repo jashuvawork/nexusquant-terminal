@@ -26,6 +26,22 @@ export function OrderflowAnalytics({ snapshot }: OrderflowAnalyticsProps) {
         <div className="grid gap-4 md:grid-cols-2">
           {metrics.map(([label, value]) => <ScoreBar key={label} label={label} value={Number(value)} />)}
         </div>
+        {snapshot.qualityFilters?.volumeState && (
+          <div className="mt-4 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-4 text-sm text-cyan-100">
+            <p className="font-bold uppercase tracking-[0.18em]">Volume source: {snapshot.qualityFilters.volumeState.source.replaceAll('_', ' ')}</p>
+            <p className="mt-2 text-xs text-slate-300">
+              Candle {snapshot.qualityFilters.volumeState.candleVolume} | Option chain {snapshot.qualityFilters.volumeState.optionChainVolume} | LTP {snapshot.qualityFilters.volumeState.ltpVolume} | Effective {snapshot.qualityFilters.volumeState.effectiveVolume}
+            </p>
+          </div>
+        )}
+        {snapshot.qualityFilters?.chopFilter?.blocked && (
+          <div className="mt-4 rounded-2xl border border-rose-300/20 bg-rose-300/10 p-4 text-sm text-rose-100">
+            <p className="font-bold uppercase tracking-[0.18em]">Chop filter blocked trade</p>
+            <ul className="mt-2 list-disc pl-5 text-xs">
+              {snapshot.qualityFilters.chopFilter.reasons.map((reason) => <li key={reason}>{reason}</li>)}
+            </ul>
+          </div>
+        )}
       </Card>
       <Card title="Volume Acceleration" eyebrow="One-second telemetry">
         <div className="h-72">

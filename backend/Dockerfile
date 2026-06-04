@@ -12,7 +12,7 @@ COPY app ./app
 
 RUN python - <<'PY'
 from app.main import market_engine
-required = ["_backtest_metrics", "_suggested_trades", "_premarket_analysis", "_tomorrow_trade_plan"]
+required = ["_backtest_metrics", "_suggested_trades", "_premarket_analysis", "_tomorrow_trade_plan", "_chop_filter", "_upstox_latency_ms"]
 missing = [name for name in required if not hasattr(market_engine, name)]
 if missing:
     raise SystemExit(f"Missing RealTimeMarketEngine helper methods: {missing}")

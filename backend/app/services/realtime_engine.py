@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from time import perf_counter
 from statistics import mean
 from typing import Any
 
@@ -58,7 +59,7 @@ class PreviousTick:
 class RealTimeMarketEngine:
     """Builds terminal snapshots only from real Upstox responses."""
 
-    REQUIRED_HELPERS = ("_backtest_metrics", "_suggested_trades", "_premarket_analysis", "_tomorrow_trade_plan")
+    REQUIRED_HELPERS = ("_backtest_metrics", "_suggested_trades", "_premarket_analysis", "_tomorrow_trade_plan", "_chop_filter", "_upstox_latency_ms")
 
     def validate_runtime(self) -> dict[str, Any]:
         missing = [name for name in self.REQUIRED_HELPERS if not hasattr(self, name)]
@@ -73,6 +74,7 @@ class RealTimeMarketEngine:
         self.previous: dict[str, PreviousTick] = {}
 
     async def snapshot(self, symbol: str | None = None) -> dict[str, Any]:
+        processing_started = perf_counter()
         selected_symbol = (symbol or self.settings.primary_symbol).upper()
         if selected_symbol not in {"NIFTY", "SENSEX"}:
             raise MarketConfigurationError("PRIMARY_SYMBOL must be NIFTY or SENSEX.")
@@ -112,10 +114,11 @@ class RealTimeMarketEngine:
         put_greeks = put.get("option_greeks") or {}
 
         candles_list = self._candles(candles)
-        market_profile = self._market_profile(candles_list, atm_strike)
-        telemetry = self._telemetry(candles_list)
+        volume_state = self._volume_state(candles_list, chain_rows, ltp_quote, call_md, put_md)
+        market_profile = self._market_profile(candles_list, atm_strike, volume_state)
+        telemetry = self._telemetry(candles_list, volume_state)
         momentum = self._momentum_score(candles_list, spot)
-        volume_score = self._volume_score(chain_rows, call_md, put_md)
+        volume_score = volume_state["score"]
         spread_quality = self._spread_quality(call_md, put_md)
         heatmap = self._heatmap(selected_symbol, chain_rows, spot)
         heatmap_score = round(mean([cell["liquidity"] for cell in heatmap])) if heatmap else 0
@@ -124,7 +127,8 @@ class RealTimeMarketEngine:
         gamma_score = round(clamp((abs(greeks["gamma"]) * 2500) + option_bias["gammaWallScore"] * 0.4))
         iv_score = round(clamp(greeks["ivExpansion"]))
         profile_score = self._profile_alignment_score(market_profile, spot)
-        orderflow = self._orderflow(selected_symbol, spot, call_md, put_md, option_bias)
+        orderflow = self._orderflow(selected_symbol, spot, call_md, put_md, option_bias, volume_state)
+        chop_filter = self._chop_filter(momentum, orderflow, spread_quality, volume_score, regime)
         delta_score = round(clamp(50 + orderflow["deltaVelocity"] / 2 + abs(greeks["delta"]) * 30))
         regime = self._regime(session.phase, momentum, volume_score, spread_quality)
         regime_score = 85 if regime == "TREND_EXPANSION" else 72 if regime == "RANGE_ABSORPTION" else 55
@@ -177,6 +181,7 @@ class RealTimeMarketEngine:
             and not auto_trading_stopped
             and session.execution_allowed
             and risk_decision.allow_new_trade
+            and not chop_filter["blocked"]
             and selected_instrument
             and selected_ltp > 0
         )
@@ -197,6 +202,8 @@ class RealTimeMarketEngine:
             trade_mode=trade_mode,
             safe_mode=risk_decision.safe_mode,
             trading_capital=float(trading_capital or 0),
+            chop_filter=chop_filter,
+            volume_state=volume_state,
         )
 
         return {
@@ -212,6 +219,7 @@ class RealTimeMarketEngine:
             "tradingControl": trading_control_status,
             "tradingCapital": {**capital_status, "tradingCapital": float(trading_capital or 0)},
             "tradeMode": trade_mode,
+            "qualityFilters": {"chopFilter": chop_filter, "volumeState": volume_state},
             "dataSource": "UPSTOX_REALTIME_REST",
             "dataWarnings": data_warnings,
             "upstoxConnection": {
@@ -256,15 +264,16 @@ class RealTimeMarketEngine:
                 "slippageBps": self._spread_bps(call_md, put_md),
                 "staleDataMs": self._stale_data_ms(ltp_quote),
                 "apiDisconnects": 0,
-                "latencyMs": 0,
+                "latencyMs": round((perf_counter() - processing_started) * 1000, 2),
                 "spreadWideningPct": max(0, 100 - spread_quality),
                 "maxExposurePct": risk_decision.max_exposure_pct,
                 "cooldownSeconds": 0 if execution_allowed else adaptive_risk["cooldownSeconds"],
             },
             "infra": {
                 "brokerHealth": 100,
-                "websocketLatencyMs": 0,
+                "websocketLatencyMs": round((perf_counter() - processing_started) * 1000, 2),
                 "orderRouterLatencyMs": 0,
+                "upstoxLatencyMs": self._upstox_latency_ms(option_chain, candles, ltp_quote, funds, positions, orders),
                 "redisHealth": 100,
                 "postgresHealth": 100,
                 "prometheusHealth": 100,
@@ -282,7 +291,7 @@ class RealTimeMarketEngine:
             "backtest": backtest_metrics,
             "executionDecision": {
                 "allowNewTrade": execution_allowed,
-                "reason": "AUTO_TRADING_STOPPED" if auto_trading_stopped else "LIVE_TRADING_DISABLED" if not self.settings.enable_live_trading else risk_decision.reason,
+                "reason": "CHOP_FILTER_BLOCKED" if chop_filter["blocked"] else "AUTO_TRADING_STOPPED" if auto_trading_stopped else "LIVE_TRADING_DISABLED" if not self.settings.enable_live_trading else risk_decision.reason,
                 "candidateInstrument": selected_instrument,
                 "candidateSide": selected_side,
                 "candidateLtp": selected_ltp,
@@ -370,22 +379,25 @@ class RealTimeMarketEngine:
             )
         return list(reversed(parsed))
 
-    def _telemetry(self, candles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _telemetry(self, candles: list[dict[str, Any]], volume_state: dict[str, Any]) -> list[dict[str, Any]]:
+        if not candles:
+            return []
+        fallback_volume = volume_state.get("effectiveVolume", 0)
         return [
             {
                 "time": candle["time"][11:16] if len(candle["time"]) >= 16 else candle["time"],
                 "pnl": 0,
                 "tqs": 0,
                 "latency": 0,
-                "volume": candle["volume"],
+                "volume": candle["volume"] if candle["volume"] > 0 else fallback_volume,
                 "price": candle["close"],
             }
             for candle in candles[-60:]
         ]
 
-    def _market_profile(self, candles: list[dict[str, Any]], fallback: int) -> dict[str, Any]:
+    def _market_profile(self, candles: list[dict[str, Any]], fallback: int, volume_state: dict[str, Any] | None = None) -> dict[str, Any]:
         if not candles:
-            return {"poc": fallback, "vah": fallback, "val": fallback, "acceptanceZone": "No candle profile returned by Upstox yet", "volumeProfile": []}
+            return {"poc": fallback, "vah": fallback, "val": fallback, "acceptanceZone": "No candle profile returned by Upstox yet", "volumeProfile": [], "hvn": fallback, "lvn": fallback, "openingRangeHigh": fallback, "openingRangeLow": fallback}
         max_volume_candle = max(candles, key=lambda item: item["volume"])
         prices = [candle["close"] for candle in candles if candle["close"] > 0]
         volumes = [candle["volume"] for candle in candles]
@@ -395,8 +407,23 @@ class RealTimeMarketEngine:
         profile = [{"level": round(candle["close"], 2), "volume": candle["volume"]} for candle in candles[-24:]]
         acceptance = "Above value area" if prices and prices[-1] > vah else "Below value area" if prices and prices[-1] < val else "Inside value area"
         if sum(volumes) == 0:
-            acceptance = "Price profile available; volume is zero in Upstox candle response"
-        return {"poc": poc, "vah": vah, "val": val, "acceptanceZone": acceptance, "volumeProfile": profile}
+            source = (volume_state or {}).get("source", "none")
+            acceptance = f"Price profile available; candle volume is zero, using {source} volume fallback"
+        hvn_candle = max(candles, key=lambda candle: candle["volume"] or (volume_state or {}).get("effectiveVolume", 0))
+        nonzero = [candle for candle in candles if candle["volume"] > 0]
+        lvn_candle = min(nonzero, key=lambda candle: candle["volume"]) if nonzero else min(candles, key=lambda candle: candle["close"])
+        opening = candles[:15]
+        return {
+            "poc": poc,
+            "vah": vah,
+            "val": val,
+            "acceptanceZone": acceptance,
+            "volumeProfile": profile,
+            "hvn": round(hvn_candle["close"], 2),
+            "lvn": round(lvn_candle["close"], 2),
+            "openingRangeHigh": round(max(candle["high"] for candle in opening), 2) if opening else fallback,
+            "openingRangeLow": round(min(candle["low"] for candle in opening), 2) if opening else fallback,
+        }
 
     def _momentum_score(self, candles: list[dict[str, Any]], spot: float) -> int:
         if len(candles) < 2:
@@ -408,14 +435,32 @@ class RealTimeMarketEngine:
         avg_range_pct = (mean(ranges) / last) * 100 if ranges and last else 0
         return round(clamp(35 + move_pct * 35 + avg_range_pct * 55))
 
-    def _volume_score(self, rows: list[dict[str, Any]], call_md: dict[str, Any], put_md: dict[str, Any]) -> int:
-        current = as_int(call_md.get("volume")) + as_int(put_md.get("volume"))
-        max_volume = 0
+    def _volume_state(self, candles: list[dict[str, Any]], rows: list[dict[str, Any]], ltp_quote: dict[str, Any], call_md: dict[str, Any], put_md: dict[str, Any]) -> dict[str, Any]:
+        candle_volume = sum(as_int(candle.get("volume")) for candle in candles[-10:])
+        option_volume = as_int(call_md.get("volume")) + as_int(put_md.get("volume"))
+        ltp_volume = 0
+        for item in (ltp_quote.get("data") or {}).values():
+            ltp_volume += as_int(item.get("volume"))
+        max_chain_volume = 0
         for row in rows:
             ce = ((row.get("call_options") or {}).get("market_data") or {})
             pe = ((row.get("put_options") or {}).get("market_data") or {})
-            max_volume = max(max_volume, as_int(ce.get("volume")) + as_int(pe.get("volume")))
-        return score_ratio(current, max_volume)
+            max_chain_volume = max(max_chain_volume, as_int(ce.get("volume")) + as_int(pe.get("volume")))
+        effective = candle_volume or option_volume or ltp_volume
+        source = "candles" if candle_volume else "option_chain" if option_volume else "ltp_quote" if ltp_volume else "unavailable"
+        score = score_ratio(option_volume or effective, max_chain_volume or effective or 1)
+        return {
+            "source": source,
+            "candleVolume": candle_volume,
+            "optionChainVolume": option_volume,
+            "ltpVolume": ltp_volume,
+            "effectiveVolume": effective,
+            "score": score,
+            "volumeAvailable": effective > 0,
+        }
+
+    def _volume_score(self, rows: list[dict[str, Any]], call_md: dict[str, Any], put_md: dict[str, Any]) -> int:
+        return self._volume_state([], rows, {}, call_md, put_md)["score"]
 
     def _spread_quality(self, call_md: dict[str, Any], put_md: dict[str, Any]) -> int:
         scores = []
@@ -523,7 +568,7 @@ class RealTimeMarketEngine:
             return 65
         return 82
 
-    def _orderflow(self, symbol: str, spot: float, call_md: dict[str, Any], put_md: dict[str, Any], bias: dict[str, Any]) -> dict[str, Any]:
+    def _orderflow(self, symbol: str, spot: float, call_md: dict[str, Any], put_md: dict[str, Any], bias: dict[str, Any], volume_state: dict[str, Any]) -> dict[str, Any]:
         previous = self.previous.get(symbol)
         selected_md = call_md if bias["direction"] == "BULLISH" else put_md
         selected_ltp = as_float(selected_md.get("ltp"))
@@ -536,6 +581,7 @@ class RealTimeMarketEngine:
             price_velocity = 0
             premium_velocity = 0
             volume_delta = 0
+        volume_delta = max(volume_delta, as_int(volume_state.get("effectiveVolume")))
         call_bid = as_int(call_md.get("bid_qty"))
         call_ask = as_int(call_md.get("ask_qty"))
         put_bid = as_int(put_md.get("bid_qty"))
@@ -669,6 +715,27 @@ class RealTimeMarketEngine:
                 }
             )
         return trades
+
+    def _chop_filter(self, momentum: int, orderflow: dict[str, Any], spread_quality: int, volume_score: int, regime: str) -> dict[str, Any]:
+        reasons: list[str] = []
+        if regime == "REVERSAL_RISK":
+            reasons.append("regime reversal risk")
+        if orderflow.get("breakoutVelocity", 0) < 12:
+            reasons.append("breakout velocity weak")
+        if abs(orderflow.get("deltaVelocity", 0)) < 18:
+            reasons.append("delta velocity weak")
+        if orderflow.get("sweepDetection", 0) < 10:
+            reasons.append("sweep absent")
+        if spread_quality < 65:
+            reasons.append("spread quality below institutional filter")
+        if volume_score < 25:
+            reasons.append("volume confirmation weak")
+        blocked = len(reasons) >= 2 or spread_quality < 45
+        return {"blocked": blocked, "reasons": reasons, "score": max(0, 100 - len(reasons) * 18)}
+
+    def _upstox_latency_ms(self, *payloads: dict[str, Any] | None) -> float:
+        latencies = [as_float(payload.get("nexusquant_latency_ms")) for payload in payloads if isinstance(payload, dict) and payload.get("nexusquant_latency_ms") is not None]
+        return round(mean(latencies), 2) if latencies else 0.0
 
     def _backtest_metrics(self, candles: list[dict[str, Any]], tqs: int, spread_quality: int) -> list[dict[str, Any]]:
         if len(candles) < 3:

@@ -58,6 +58,10 @@ export interface MarketProfileState {
   val: number;
   acceptanceZone: string;
   volumeProfile: Array<{ level: number; volume: number }>;
+  hvn?: number;
+  lvn?: number;
+  openingRangeHigh?: number;
+  openingRangeLow?: number;
 }
 
 export interface EngineScore {
@@ -108,9 +112,23 @@ export interface InfraState {
   brokerHealth: number;
   websocketLatencyMs: number;
   orderRouterLatencyMs: number;
+  upstoxLatencyMs?: number;
   redisHealth: number;
   postgresHealth: number;
   prometheusHealth: number;
+}
+
+export interface QualityFilters {
+  chopFilter?: { blocked: boolean; reasons: string[]; score: number };
+  volumeState?: {
+    source: string;
+    candleVolume: number;
+    optionChainVolume: number;
+    ltpVolume: number;
+    effectiveVolume: number;
+    score: number;
+    volumeAvailable: boolean;
+  };
 }
 
 export interface PortfolioState {
@@ -245,6 +263,7 @@ export interface TerminalSnapshot {
   tradingControl?: { autoTradingStopped: boolean; reason?: string; updatedAt?: string };
   tradingCapital?: { tradingCapital: number; reason?: string; updatedAt?: string };
   tradeMode?: 'ANALYSIS_BACKTEST_ONLY' | 'AUTO_EXECUTION_READY' | string;
+  qualityFilters?: QualityFilters;
   dataSource?: string;
   dataWarnings?: string[];
   upstoxConnection?: UpstoxConnectionState;

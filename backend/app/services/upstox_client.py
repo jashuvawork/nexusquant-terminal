@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from time import perf_counter
 from typing import Any
 from urllib.parse import quote
 
@@ -60,11 +61,16 @@ class UpstoxClient:
         }
         if extra_headers:
             headers.update(extra_headers)
+        started = perf_counter()
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.request(method, url, params=params, json=json, headers=headers)
+        elapsed_ms = round((perf_counter() - started) * 1000, 2)
         if response.status_code >= 400:
             raise UpstoxDataError(f"Upstox API error {response.status_code}: {response.text}")
         payload = response.json()
+        if isinstance(payload, dict):
+            payload["nexusquant_latency_ms"] = elapsed_ms
+            payload["nexusquant_endpoint"] = url
         if payload.get("status") and payload.get("status") != "success":
             raise UpstoxDataError(f"Upstox API returned non-success status: {payload}")
         return payload

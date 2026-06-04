@@ -542,3 +542,31 @@ Backtest targets used in the terminal:
 - target win rate 58-68%
 - target profit factor 1.8-2.5
 - max drawdown goal under 8%
+
+
+## Microstructure hardening
+
+The terminal now handles zero-volume Upstox candle responses with a real-data fallback chain:
+
+1. Upstox intraday candle volume
+2. Upstox option-chain CE/PE volume
+3. Upstox LTP quote volume
+
+The snapshot exposes:
+
+```text
+qualityFilters.volumeState
+qualityFilters.chopFilter
+infra.upstoxLatencyMs
+```
+
+Chop filter blocks execution candidates when multiple weak conditions appear:
+
+- breakout velocity weak
+- delta velocity weak
+- sweep absent
+- spread quality weak
+- volume confirmation weak
+- reversal/chop regime
+
+This keeps auto-trading off during weak market structure while still allowing backtesting and suggestions.

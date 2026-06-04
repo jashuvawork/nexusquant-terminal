@@ -205,8 +205,8 @@ export function InfrastructureTelemetry({ snapshot }: { snapshot: TerminalSnapsh
     <Card title="Infrastructure Telemetry" eyebrow="Cloud-native execution observability">
       <div className="grid gap-4 xl:grid-cols-2">
         <div className="grid gap-3 sm:grid-cols-2">
-          <MetricCard label="WS Latency" value={`${snapshot.infra.websocketLatencyMs} ms`} tone="cyan" />
-          <MetricCard label="Router Latency" value={`${snapshot.infra.orderRouterLatencyMs} ms`} tone="violet" />
+          <MetricCard label="Backend Latency" value={`${snapshot.infra.websocketLatencyMs} ms`} tone="cyan" />
+          <MetricCard label="Upstox Latency" value={`${snapshot.infra.upstoxLatencyMs ?? 0} ms`} tone="violet" />
           <MetricCard label="Stale Data" value={`${snapshot.risk.staleDataMs} ms`} tone="amber" />
           <MetricCard label="Disconnects" value={snapshot.risk.apiDisconnects} tone={snapshot.risk.apiDisconnects ? 'rose' : 'emerald'} />
         </div>
@@ -285,6 +285,10 @@ export function SessionIntelligence({ snapshot }: { snapshot: TerminalSnapshot }
           <MetricCard label="POC" value={snapshot.marketProfile.poc} helper="Point of control" tone="emerald" />
           <MetricCard label="VAH" value={snapshot.marketProfile.vah} helper="Value area high" tone="violet" />
           <MetricCard label="VAL" value={snapshot.marketProfile.val} helper="Value area low" tone="amber" />
+          <MetricCard label="Opening High" value={snapshot.marketProfile.openingRangeHigh ?? snapshot.marketProfile.vah} helper="Opening range" tone="cyan" />
+          <MetricCard label="Opening Low" value={snapshot.marketProfile.openingRangeLow ?? snapshot.marketProfile.val} helper="Opening range" tone="amber" />
+          <MetricCard label="HVN" value={snapshot.marketProfile.hvn ?? snapshot.marketProfile.poc} helper="High volume node" tone="emerald" />
+          <MetricCard label="LVN" value={snapshot.marketProfile.lvn ?? snapshot.marketProfile.poc} helper="Low volume node" tone="violet" />
         </div>
         <div className="h-72">
           <ResponsiveContainer width="100%" height="100%">
