@@ -35,6 +35,7 @@ class StrategyOptimizer:
         to_date: str | None = None,
         interval: int = 1,
         max_param_sets: int = 96,
+        objective: str = "balanced",
     ) -> dict[str, Any]:
         instrument_key = self.settings.instrument_key_for(symbol)
         today = date.today()
@@ -57,9 +58,9 @@ class StrategyOptimizer:
         evaluations = []
         for params in param_grid:
             trades = self._simulate(candles, params, target_samples)
-            evaluations.append(self._metrics(params, trades))
+            evaluations.append(self._metrics(params, trades, objective))
         viable = [item for item in evaluations if item["trades"] >= max(50, target_samples * 0.1)]
-        ranked = sorted(viable or evaluations, key=lambda item: item["balancedScore"], reverse=True)
+        ranked = sorted(viable or evaluations, key=lambda item: item["objectiveScore"], reverse=True)
         return {
             "symbol": symbol,
             "instrumentKey": instrument_key,
@@ -70,6 +71,8 @@ class StrategyOptimizer:
             "chunkErrors": errors[-10:],
             "parameterSetsTested": len(evaluations),
             "targetSamples": target_samples,
+            "objective": objective,
+            "recommendedProfiles": self._recommended_profiles(symbol, evaluations),
             "bestBalanced": ranked[0] if ranked else None,
             "bestByProfitFactor": max(viable or evaluations, key=lambda item: item["profitFactor"], default=None),
             "bestByWinRate": max(viable or evaluations, key=lambda item: item["winRate"], default=None),
@@ -175,7 +178,7 @@ class StrategyOptimizer:
         cost = 0.35
         return {"entry": round(entry, 2), "exit": round(exit_price, 2), "pnl": round(raw - cost, 2), "exitReason": exit_reason, "mfe": round(mfe, 2), "mae": round(mae, 2)}
 
-    def _metrics(self, params: StrategyParams, trades: list[dict[str, Any]]) -> dict[str, Any]:
+    def _metrics(self, params: StrategyParams, trades: list[dict[str, Any]], objective: str = "balanced") -> dict[str, Any]:
         wins = [trade for trade in trades if trade["pnl"] > 0]
         losses = [trade for trade in trades if trade["pnl"] < 0]
         gross_profit = sum(trade["pnl"] for trade in wins)
@@ -186,7 +189,42 @@ class StrategyOptimizer:
         avg_winner = round(gross_profit / len(wins), 2) if wins else 0
         avg_loser = round(gross_loss / len(losses), 2) if losses else 0
         balanced = round((min(pf, 5) * 25) + (win_rate * 0.35) - (max_dd * 0.05) + min(len(trades), 1000) * 0.01, 3)
-        return {"params": asdict(params), "trades": len(trades), "wins": len(wins), "losses": len(losses), "winRate": win_rate, "profitFactor": pf, "grossProfit": round(gross_profit, 2), "grossLoss": round(gross_loss, 2), "maxDrawdown": round(max_dd, 2), "avgWinner": avg_winner, "avgLoser": avg_loser, "balancedScore": balanced}
+        high_win = round((win_rate * 1.2) + (min(pf, 3) * 20) - (max_dd * 0.08) + min(len(trades), 1000) * 0.005 - (25 if pf < 1.5 else 0), 3)
+        low_dd = round((min(pf, 4) * 20) + (win_rate * 0.25) - (max_dd * 0.2), 3)
+        pf_score = round((min(pf, 5) * 30) + (win_rate * 0.2) - (max_dd * 0.05), 3)
+        objective_scores = {
+            "balanced": balanced,
+            "profit_factor": pf_score,
+            "win_rate": round(win_rate + min(pf, 2) * 10 - max_dd * 0.05, 3),
+            "low_drawdown": low_dd,
+            "high_win_scalp": high_win,
+        }
+        objective_score = objective_scores.get(objective, balanced)
+        return {
+            "params": asdict(params),
+            "trades": len(trades),
+            "wins": len(wins),
+            "losses": len(losses),
+            "winRate": win_rate,
+            "profitFactor": pf,
+            "grossProfit": round(gross_profit, 2),
+            "grossLoss": round(gross_loss, 2),
+            "maxDrawdown": round(max_dd, 2),
+            "avgWinner": avg_winner,
+            "avgLoser": avg_loser,
+            "balancedScore": balanced,
+            "highWinScalpScore": high_win,
+            "lowDrawdownScore": low_dd,
+            "profitFactorScore": pf_score,
+            "objectiveScore": objective_score,
+            "objective": objective,
+            "qualityFlags": {
+                "tradableProfitFactor": pf >= 1.5,
+                "highWinRate": win_rate >= 45,
+                "sufficientTrades": len(trades) >= 300,
+                "drawdownControlled": max_dd <= 150,
+            },
+        }
 
     def _max_drawdown(self, pnls: list[float]) -> float:
         equity = 0.0

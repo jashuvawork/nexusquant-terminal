@@ -836,3 +836,24 @@ It returns:
 - top 10 parameter sets
 
 Use optimizer output to set different NIFTY/SENSEX rules instead of relying on one profile for both indexes.
+
+
+## Optimizer objective modes
+
+Use objective modes to search different strategy styles:
+
+```text
+/api/strategy-optimizer/run-both?target_samples=1000&objective=balanced
+/api/strategy-optimizer/run-both?target_samples=1000&objective=profit_factor
+/api/strategy-optimizer/run-both?target_samples=1000&objective=win_rate
+/api/strategy-optimizer/run-both?target_samples=1000&objective=low_drawdown
+/api/strategy-optimizer/run-both?target_samples=1000&objective=high_win_scalp
+```
+
+`high_win_scalp` prioritizes win rate but penalizes profit factor below 1.5, too few trades, and high drawdown.
+
+The optimizer now returns:
+
+- `recommendedProfiles.runnerProfile`
+- `recommendedProfiles.highWinScalpProfile`
+- `recommendedProfiles.lowDrawdownProfile`

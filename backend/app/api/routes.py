@@ -141,7 +141,7 @@ async def deployment_status(
     token_status = await auth_service.token_status()
     return {
         "service": settings.app_name,
-        "apiVersion": "0.7.3-token-route-fix",
+        "apiVersion": "0.8.0-optimizer-objectives",
         "runtimeValidation": engine.validate_runtime(),
         "environment": settings.environment,
         "railwayCommit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
@@ -420,10 +420,11 @@ async def strategy_optimizer_run(
     from_date: str | None = None,
     to_date: str | None = None,
     max_param_sets: int = 96,
+    objective: str = "balanced",
     optimizer: StrategyOptimizer = Depends(get_strategy_optimizer),
 ) -> dict:
     try:
-        return await optimizer.optimize(symbol, target_samples, from_date, to_date, 1, max_param_sets)
+        return await optimizer.optimize(symbol, target_samples, from_date, to_date, 1, max_param_sets, objective)
     except (UpstoxAuthRequired, UpstoxDataError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -434,13 +435,14 @@ async def strategy_optimizer_run_both(
     from_date: str | None = None,
     to_date: str | None = None,
     max_param_sets: int = 96,
+    objective: str = "balanced",
     optimizer: StrategyOptimizer = Depends(get_strategy_optimizer),
 ) -> dict:
     results = {}
     errors = {}
     for symbol in ["NIFTY", "SENSEX"]:
         try:
-            results[symbol] = await optimizer.optimize(symbol, target_samples, from_date, to_date, 1, max_param_sets)
+            results[symbol] = await optimizer.optimize(symbol, target_samples, from_date, to_date, 1, max_param_sets, objective)
         except (UpstoxAuthRequired, UpstoxDataError) as exc:
             errors[symbol] = str(exc)
     if not results:
