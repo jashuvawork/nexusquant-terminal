@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
+from inspect import signature
 from datetime import date, datetime, timedelta, timezone
 from time import perf_counter
 from statistics import mean
@@ -68,7 +69,15 @@ class RealTimeMarketEngine:
         regime_index = source.find('regime = self._regime')
         chop_index = source.find('chop_filter = self._chop_filter')
         order_ok = regime_index != -1 and chop_index != -1 and regime_index < chop_index
-        return {"ok": not missing and order_ok, "missingHelpers": missing, "regimeBeforeChopFilter": order_ok}
+        suggested_params = set(signature(self._suggested_trades).parameters)
+        required_params = {"chop_filter", "volume_state", "trading_capital"}
+        signature_ok = required_params.issubset(suggested_params)
+        return {
+            "ok": not missing and order_ok and signature_ok,
+            "missingHelpers": missing,
+            "regimeBeforeChopFilter": order_ok,
+            "suggestedTradesSignatureOk": signature_ok,
+        }
 
     def __init__(self, settings: Settings, client: UpstoxClient, scorer: TradeQualityScorer, risk_engine: RiskEngine, trading_control: TradingControl | None = None) -> None:
         self.settings = settings
@@ -786,6 +795,8 @@ class RealTimeMarketEngine:
         trade_mode: str,
         safe_mode: bool,
         trading_capital: float,
+        chop_filter: dict[str, Any],
+        volume_state: dict[str, Any],
     ) -> list[dict[str, Any]]:
         action = "EXECUTION_READY" if execution_allowed else "SUGGEST_ONLY"
         confidence = "HIGH" if tqs >= 82 and spread_quality >= 75 else "MEDIUM" if tqs >= 70 else "LOW"
@@ -805,6 +816,10 @@ class RealTimeMarketEngine:
                 "tradingCapital": trading_capital,
                 "quantityEstimate": quantity_estimate,
                 "allocationPct": allocation_pct,
+                "chopBlocked": chop_filter.get("blocked", False),
+                "chopReasons": chop_filter.get("reasons", []),
+                "volumeSource": volume_state.get("source"),
+                "effectiveVolume": volume_state.get("effectiveVolume", 0),
                 "tqs": tqs,
                 "confidence": confidence,
                 "bias": option_bias.get("direction"),

@@ -240,6 +240,10 @@ export interface SuggestedTrade {
   tradingCapital?: number;
   quantityEstimate?: number;
   allocationPct?: number;
+  chopBlocked?: boolean;
+  chopReasons?: string[];
+  volumeSource?: string;
+  effectiveVolume?: number;
   tqs: number;
   confidence: 'LOW' | 'MEDIUM' | 'HIGH' | string;
   bias: string;
