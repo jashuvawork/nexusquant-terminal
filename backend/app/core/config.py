@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     sensex_expiry_date: str | None = None
     enable_live_trading: bool = False
     aggressive_mode: bool = False
+    aggression_profile: str = "realistic_aggressive"
     ai_score_threshold: int = 76
     safe_mode_threshold: int = 86
     max_exposure_pct: int = 42

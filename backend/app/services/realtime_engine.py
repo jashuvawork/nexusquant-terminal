@@ -9,6 +9,7 @@ from typing import Any
 from app.core.config import Settings
 from app.services.ai_engine import TradeQualityScorer
 from app.services.risk_engine import RiskEngine
+from app.services.risk_profiles import adaptive_settings
 from app.services.session import IST, MarketPhase, current_session_state
 from app.services.trading_control import TradingControl
 from app.services.upstox_client import UpstoxClient, UpstoxDataError
@@ -143,7 +144,13 @@ class RealTimeMarketEngine:
         tqs, ai_matrix = self.scorer.score(features)
 
         portfolio = self._portfolio(funds, positions, orders, data_warnings)
-        risk_decision = self.risk_engine.evaluate(
+        adaptive_risk = adaptive_settings(self.settings.aggression_profile, session.phase, regime, tqs)
+        adaptive_engine = RiskEngine(
+            adaptive_risk["minimumTqs"],
+            adaptive_risk["safeModeTqs"],
+            adaptive_risk["maxExposurePct"],
+        )
+        risk_decision = adaptive_engine.evaluate(
             tqs=tqs,
             latency_ms=0,
             spread_quality=spread_quality,
@@ -241,6 +248,7 @@ class RealTimeMarketEngine:
             "greeks": greeks,
             "marketProfile": market_profile,
             "aiMatrix": ai_matrix,
+            "adaptiveRisk": adaptive_risk,
             "risk": {
                 "safeMode": risk_decision.safe_mode,
                 "dailyDrawdownPct": self._drawdown_pct(portfolio),
@@ -251,7 +259,7 @@ class RealTimeMarketEngine:
                 "latencyMs": 0,
                 "spreadWideningPct": max(0, 100 - spread_quality),
                 "maxExposurePct": risk_decision.max_exposure_pct,
-                "cooldownSeconds": 0 if execution_allowed else 60,
+                "cooldownSeconds": 0 if execution_allowed else adaptive_risk["cooldownSeconds"],
             },
             "infra": {
                 "brokerHealth": 100,
@@ -264,9 +272,9 @@ class RealTimeMarketEngine:
             "portfolio": portfolio,
             "strategy": {
                 "selected": "Aggressive momentum scalp" if self.settings.aggressive_mode else "Controlled scalp",
-                "aggression": 90 if self.settings.aggressive_mode and execution_allowed else 55 if execution_allowed else 0,
-                "sizeMultiplier": 1.25 if self.settings.aggressive_mode and execution_allowed else 1.0 if execution_allowed else 0,
-                "threshold": risk_decision.ai_threshold,
+                "aggression": 90 if self.settings.aggressive_mode and execution_allowed else min(100, adaptive_risk["dynamicExposurePct"] * 2),
+                "sizeMultiplier": 1.25 if self.settings.aggressive_mode and execution_allowed else round(max(0.1, adaptive_risk["dynamicExposurePct"] / 40), 2),
+                "threshold": adaptive_risk["minimumTqs"],
                 "router": "AGGRESSIVE_SWEEP" if self.settings.aggressive_mode and execution_allowed else "SMART_LIMIT" if execution_allowed else "SAFE_MODE",
             },
             "telemetry": telemetry,

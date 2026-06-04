@@ -12,6 +12,7 @@ from app.core.config import Settings, get_settings
 from app.services.ai_engine import TradeQualityScorer
 from app.services.realtime_engine import MarketConfigurationError, RealTimeMarketEngine
 from app.services.risk_engine import RiskEngine
+from app.services.risk_profiles import profile_list
 from app.services.session import current_session_state
 from app.services.trading_control import TradingControl
 from app.services.upstox_auth import UpstoxAuthError, UpstoxAuthService
@@ -38,6 +39,10 @@ class TradingControlRequest(BaseModel):
 class TradingCapitalRequest(BaseModel):
     amount: float = Field(..., ge=0)
     reason: str = "Capital updated from NexusQuant terminal"
+
+
+class RiskProfileRequest(BaseModel):
+    profile: str = Field(..., description="safe_beginner, balanced_pro, aggressive_scalping, extreme_prop, realistic_aggressive")
 
 
 def get_upstox_auth(settings: Settings = Depends(get_settings)) -> UpstoxAuthService:
@@ -318,6 +323,21 @@ async def place_scalp_order(
     return {"submitted": True, "session": session.label, "order": order, "upstox": response}
 
 
+@router.get("/risk/profiles")
+async def risk_profiles(settings: Settings = Depends(get_settings)) -> dict:
+    return {"activeProfile": settings.aggression_profile, "profiles": profile_list()}
+
+
+@router.post("/risk/profile")
+async def set_risk_profile(request: RiskProfileRequest) -> dict:
+    # Runtime profile persistence should be handled by Railway env vars for production stability.
+    return {
+        "accepted": True,
+        "profile": request.profile,
+        "message": "Set AGGRESSION_PROFILE in Railway variables to persist this profile across deploys.",
+    }
+
+
 @router.get("/risk/config")
 async def risk_config(settings: Settings = Depends(get_settings)) -> dict:
     return {
@@ -325,6 +345,7 @@ async def risk_config(settings: Settings = Depends(get_settings)) -> dict:
         "safeModeThreshold": settings.safe_mode_threshold,
         "maxExposurePct": settings.max_exposure_pct,
         "dailyDrawdownPct": settings.daily_drawdown_pct,
+        "aggressionProfile": settings.aggression_profile,
         "enableLiveTrading": settings.enable_live_trading,
         "aggressiveMode": settings.aggressive_mode,
     }

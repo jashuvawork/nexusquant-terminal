@@ -146,15 +146,15 @@ export function PortfolioPanel({ snapshot }: { snapshot: TerminalSnapshot }) {
 }
 
 export function RiskEnginePanel({ snapshot }: { snapshot: TerminalSnapshot }) {
+  const adaptive = snapshot.adaptiveRisk;
   return (
-    <Card title="Professional Risk Engine" eyebrow="Drawdown, stale-data, latency and spread protection">
+    <Card title="Professional Risk Engine" eyebrow="Adaptive TQS, exposure, drawdown and cooldown">
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="rounded-3xl border border-slate-700/70 bg-slate-950/50 p-5">
           <p className="text-xs uppercase tracking-[0.28em] text-slate-400">Risk State</p>
           <h3 className={`mt-3 text-4xl font-black ${snapshot.risk.safeMode ? 'text-rose-300' : 'text-emerald-300'}`}>{snapshot.risk.safeMode ? 'SAFE MODE' : 'NORMAL MODE'}</h3>
           <p className="mt-3 text-sm leading-6 text-slate-300">
-            Safe Mode reduces size, raises AI thresholds, lowers aggression, applies cooldown timers,
-            and blocks new trades during broker, latency, stale-data, or slippage anomalies.
+            {adaptive ? `${adaptive.profile.label} | ${adaptive.sessionBucket.replaceAll('_', ' ')} | ${adaptive.sessionNote}` : 'Adaptive profile unavailable.'}
           </p>
         </div>
         <div className="grid gap-3">
@@ -165,6 +165,31 @@ export function RiskEnginePanel({ snapshot }: { snapshot: TerminalSnapshot }) {
           <ScoreBar label="Exposure Headroom" value={Math.max(0, 100 - snapshot.liveExposurePct)} />
         </div>
       </div>
+      {adaptive && (
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <MetricCard label="Minimum TQS" value={adaptive.minimumTqs} helper="Current trade threshold" tone="cyan" />
+          <MetricCard label="Safe Mode TQS" value={adaptive.safeModeTqs} helper="Raised threshold in risk" tone="amber" />
+          <MetricCard label="Max Exposure" value={`${adaptive.maxExposurePct}%`} helper={`Dynamic ${adaptive.dynamicExposurePct}%`} tone="violet" />
+          <MetricCard label="Daily DD" value={`${adaptive.dailyDrawdownPct}%`} helper="Hard stop target" tone="rose" />
+          <MetricCard label="Cooldown" value={`${adaptive.cooldownSeconds}s`} helper="Post-trade delay" tone="emerald" />
+        </div>
+      )}
+      {adaptive?.adjustments && adaptive.adjustments.length > 0 && (
+        <div className="mt-4 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-4 text-sm text-cyan-100">
+          <p className="font-bold uppercase tracking-[0.2em]">Auto-switch adjustments</p>
+          <ul className="mt-2 list-disc space-y-1 pl-5">
+            {adaptive.adjustments.map((item) => <li key={item}>{item}</li>)}
+          </ul>
+        </div>
+      )}
+      {adaptive?.benchmarks && (
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <MetricCard label="Backtest Target" value={`${adaptive.benchmarks.minimumTrades}+`} helper="Minimum meaningful trades" tone="cyan" />
+          <MetricCard label="Profit Factor" value={adaptive.benchmarks.targetProfitFactor} helper="Professional target" tone="emerald" />
+          <MetricCard label="Max DD Goal" value={`<${adaptive.benchmarks.maxDrawdownGoalPct}%`} helper="Survival first" tone="amber" />
+          <MetricCard label="Trades / Day" value={adaptive.benchmarks.targetTradesPerDay} helper="Aggressive scalp range" tone="violet" />
+        </div>
+      )}
     </Card>
   );
 }
@@ -329,25 +354,40 @@ export function BacktestingPanel({ snapshot }: { snapshot: TerminalSnapshot }) {
   );
 }
 
+const riskProfiles = [
+  { mode: 'safe_beginner', label: 'Safe Beginner', min: '82-88', safe: '92', exposure: '15-20%', dd: '1.5-2%', cooldown: '45-60s', note: 'First live weeks, INR 5k-25k accounts' },
+  { mode: 'balanced_pro', label: 'Balanced Pro', min: '72-78', safe: '86', exposure: '25-35%', dd: '3%', cooldown: '20-30s', note: 'Best overall default' },
+  { mode: 'aggressive_scalping', label: 'Aggressive Scalping', min: '64-70', safe: '82', exposure: '40-50%', dd: '4-5%', cooldown: '5-15s', note: 'Open-drive momentum only' },
+  { mode: 'extreme_prop', label: 'Extreme Prop-Desk', min: '58-64', safe: '78', exposure: '60-70%', dd: '6-8%', cooldown: '1-5s', note: 'Not recommended initially' },
+  { mode: 'realistic_aggressive', label: 'Realistic Aggressive', min: '68-72', safe: '84', exposure: '35-40%', dd: '3%', cooldown: '10-15s', note: 'Recommended for your style' },
+];
+
 export function SettingsPanel() {
   return (
-    <Card title="Settings" eyebrow="Execution thresholds and broker credentials">
-      <div className="grid gap-4 md:grid-cols-2">
-        {[
-          ['Minimum TQS', '76'],
-          ['Safe Mode TQS', '86'],
-          ['Max Exposure', '42%'],
-          ['Daily Drawdown', '3%'],
-          ['Cooldown', '25 sec'],
-          ['Broker Adapter', 'Upstox V3'],
-        ].map(([label, value]) => (
-          <label key={label} className="rounded-2xl border border-slate-700/70 bg-slate-950/50 p-4">
-            <span className="text-xs uppercase tracking-[0.22em] text-slate-500">{label}</span>
-            <input className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-cyan-300" defaultValue={value} />
-          </label>
+    <Card title="Settings" eyebrow="Institutional aggression profiles">
+      <div className="grid gap-4">
+        {riskProfiles.map((profile) => (
+          <div key={profile.mode} className="rounded-2xl border border-slate-700/70 bg-slate-950/50 p-4">
+            <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+              <div>
+                <p className="text-sm font-bold text-white">{profile.label}</p>
+                <p className="mt-1 text-xs text-slate-400">{profile.note}</p>
+                <p className="mt-1 text-[10px] uppercase tracking-[0.24em] text-cyan-300">AGGRESSION_PROFILE={profile.mode}</p>
+              </div>
+              <div className="grid gap-2 text-xs text-slate-300 sm:grid-cols-5">
+                <span>Min TQS <b className="text-white">{profile.min}</b></span>
+                <span>Safe TQS <b className="text-white">{profile.safe}</b></span>
+                <span>Exposure <b className="text-white">{profile.exposure}</b></span>
+                <span>DD <b className="text-white">{profile.dd}</b></span>
+                <span>Cooldown <b className="text-white">{profile.cooldown}</b></span>
+              </div>
+            </div>
+          </div>
         ))}
       </div>
-      <p className="mt-4 text-sm text-slate-400">Production broker credentials should be injected as environment variables on Render or AWS and never committed.</p>
+      <div className="mt-4 rounded-2xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm text-amber-100">
+        Set <span className="font-mono">AGGRESSION_PROFILE</span> in Railway variables to persist the active profile. Session intelligence automatically adjusts TQS, exposure and cooldown for open drive, midday chop and closing momentum.
+      </div>
     </Card>
   );
 }

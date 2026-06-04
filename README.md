@@ -448,3 +448,35 @@ The response includes:
 - per-symbol errors if one symbol temporarily fails
 
 Auto execution gates continue to apply per candidate: live market, risk, spread, TQS, capital, and STOP state.
+
+
+## Adaptive aggression profiles
+
+Set the active profile in Railway:
+
+```text
+AGGRESSION_PROFILE=realistic_aggressive
+```
+
+Supported values:
+
+- `safe_beginner`
+- `balanced_pro`
+- `aggressive_scalping`
+- `extreme_prop`
+- `realistic_aggressive`
+
+The profile engine automatically adjusts minimum TQS, safe-mode TQS, max exposure and cooldown by market session:
+
+- Open drive 09:15-10:30 IST: lower TQS and shorter cooldown for valid momentum
+- Midday chop 11:30-13:30 IST: higher TQS, longer cooldown and lower exposure
+- Closing momentum 14:30-15:15 IST: moderate TQS/cooldown for continuation
+- Closed/pre-market: analysis/backtest only
+
+Backtest targets used in the terminal:
+
+- 300+ trades minimum meaningful test
+- 500-1000 trades professional sample
+- target win rate 58-68%
+- target profit factor 1.8-2.5
+- max drawdown goal under 8%

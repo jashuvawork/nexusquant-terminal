@@ -67,6 +67,30 @@ export interface EngineScore {
   status: 'pass' | 'watch' | 'fail';
 }
 
+export interface AdaptiveRiskState {
+  profile: {
+    key: string;
+    label: string;
+    minimum_tqs: number;
+    safe_mode_tqs: number;
+    max_exposure_pct: number;
+    daily_drawdown_pct: number;
+    cooldown_seconds: number;
+    behavior: string;
+    account_size: string;
+  };
+  sessionBucket: string;
+  sessionNote: string;
+  minimumTqs: number;
+  safeModeTqs: number;
+  maxExposurePct: number;
+  dailyDrawdownPct: number;
+  cooldownSeconds: number;
+  dynamicExposurePct: number;
+  adjustments: string[];
+  benchmarks: Record<string, string | number>;
+}
+
 export interface RiskState {
   safeMode: boolean;
   dailyDrawdownPct: number;
@@ -248,6 +272,7 @@ export interface TerminalSnapshot {
   greeks: GreeksState;
   marketProfile: MarketProfileState;
   aiMatrix: EngineScore[];
+  adaptiveRisk?: AdaptiveRiskState;
   risk: RiskState;
   infra: InfraState;
   portfolio: PortfolioState;
