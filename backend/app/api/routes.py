@@ -14,6 +14,7 @@ from app.services.auto_trader import AutoTraderEngine
 from app.services.ai_learning import ContinuousAILearner
 from app.services.event_journal import EventJournal
 from app.services.historical_trainer import HistoricalTrainer
+from app.services.institutional_readiness import InstitutionalReadinessEngine
 from app.services.realtime_engine import MarketConfigurationError, RealTimeMarketEngine
 from app.services.risk_engine import RiskEngine
 from app.services.risk_profiles import profile_list
@@ -160,6 +161,7 @@ async def deployment_status(
             "/api/market/expiries/NIFTY",
             "/api/market/snapshot/NIFTY",
             "/api/market/snapshots",
+            "/api/institutional/readiness/NIFTY",
             "/api/market/news/NIFTY",
             "/api/auto-trader/status",
             "/api/auto-trader/reset",
@@ -212,6 +214,16 @@ async def market_news(symbol: Literal["NIFTY", "SENSEX"], settings: Settings = D
     except (UpstoxAuthRequired, UpstoxDataError) as exc:
         from app.services.news_engine import NewsEngine
         return NewsEngine().analyze(None, str(exc))
+
+
+@router.get("/institutional/readiness/{symbol}")
+async def institutional_readiness(symbol: Literal["NIFTY", "SENSEX"], engine: RealTimeMarketEngine = Depends(get_market_engine), auto_engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
+    try:
+        snapshot = await engine.snapshot(symbol)
+        snapshot["autoTrader"] = auto_engine.status()
+        return InstitutionalReadinessEngine().score_snapshot(snapshot)
+    except (UpstoxAuthRequired, UpstoxDataError, MarketConfigurationError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("/market/snapshot/{symbol}")

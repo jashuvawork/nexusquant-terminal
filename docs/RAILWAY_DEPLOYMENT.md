@@ -1069,3 +1069,28 @@ The news layer can:
 - support runner bias during positive non-critical news
 
 If Upstox news entitlement or endpoint is unavailable, snapshots continue and show `news unavailable` without breaking market data.
+
+
+## Institutional readiness scorecard
+
+The platform computes evidence-based subsystem scores toward a 9.5/10 institutional target:
+
+- UI/UX
+- architecture
+- realtime telemetry
+- backtest engine
+- scalping logic
+- AI scoring
+- risk framework
+- execution readiness
+- event journal
+- optimizer
+
+Endpoint:
+
+```text
+/api/institutional/readiness/NIFTY
+/api/institutional/readiness/SENSEX
+```
+
+The scorecard intentionally does not fake 9.5. It lists gaps such as missing forward paper trades, low paper PF, insufficient live samples, or failed production readiness.

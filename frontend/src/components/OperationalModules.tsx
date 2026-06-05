@@ -223,6 +223,22 @@ export function RiskEnginePanel({ snapshot }: { snapshot: TerminalSnapshot }) {
           </ul>
         </div>
       )}
+      {snapshot.institutionalReadiness && (
+        <div className={`mt-4 rounded-2xl border p-4 text-sm ${snapshot.institutionalReadiness.overall >= 9.5 ? 'border-emerald-300/20 bg-emerald-300/10 text-emerald-100' : 'border-amber-300/20 bg-amber-300/10 text-amber-100'}`}>
+          <p className="font-bold uppercase tracking-[0.2em]">Institutional Readiness Score: {snapshot.institutionalReadiness.overall}/10</p>
+          <p className="mt-2">Target: {snapshot.institutionalReadiness.target}/10 | Full capital allowed: {snapshot.institutionalReadiness.liveFullCapitalAllowed ? 'YES' : 'NO'}</p>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+            {Object.entries(snapshot.institutionalReadiness.scores).map(([area, score]) => (
+              <div key={area} className="flex justify-between rounded-xl bg-slate-950/40 px-3 py-2 text-xs"><span>{area}</span><span>{score}</span></div>
+            ))}
+          </div>
+          {snapshot.institutionalReadiness.nextActions.length > 0 && (
+            <ul className="mt-3 list-disc pl-5 text-xs">
+              {snapshot.institutionalReadiness.nextActions.map((action) => <li key={action}>{action}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
       {snapshot.productionReadiness && (
         <div className={`mt-4 rounded-2xl border p-4 text-sm ${snapshot.productionReadiness.readyForFullCapital ? 'border-emerald-300/20 bg-emerald-300/10 text-emerald-100' : snapshot.productionReadiness.readyForSmallLive ? 'border-amber-300/20 bg-amber-300/10 text-amber-100' : 'border-rose-300/20 bg-rose-300/10 text-rose-100'}`}>
           <p className="font-bold uppercase tracking-[0.2em]">Production Readiness: {snapshot.productionReadiness.recommendation}</p>

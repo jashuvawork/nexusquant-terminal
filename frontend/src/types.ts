@@ -266,6 +266,8 @@ export interface SuggestedTrade {
   levels: { poc: number; vah: number; val: number };
 }
 
+export interface InstitutionalReadinessState { target: number; overall: number; scores: Record<string, number>; passedTarget: boolean; liveFullCapitalAllowed: boolean; gaps: Array<{ area: string; score: number; target: number }>; nextActions: string[] }
+
 export interface NewsState { available: boolean; unavailableReason?: string | null; sentiment: string; score: number; eventRisk: string; articles: Array<{ title: string; sentiment: string; eventRisk: boolean; source?: unknown; publishedAt?: unknown }>; impact: { raiseTqs: boolean; allowRunnerBias: boolean; avoidFreshTrades: boolean } }
 
 export interface ExplosiveRunnerState { strategyType: string; candidate: boolean; confidence: string; score: number; targetPremiumPct: number; hardStopPct: number; trailPct: number; partialExitPct: number; runnerPct: number; reasons: string[]; dataStatus: Record<string, unknown>; metrics: Record<string, number>; }
@@ -409,6 +411,7 @@ export interface TerminalSnapshot {
   noTradeZones?: NoTradeZoneState;
   tqsBreakdown?: TqsBreakdownState;
   productionReadiness?: ProductionReadinessState;
+  institutionalReadiness?: InstitutionalReadinessState;
   dataSource?: string;
   dataWarnings?: string[];
   upstoxConnection?: UpstoxConnectionState;

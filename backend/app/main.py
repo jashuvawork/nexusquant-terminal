@@ -14,6 +14,7 @@ from app.core.config import get_settings
 from app.services.ai_engine import TradeQualityScorer
 from app.services.auto_trader import AutoTraderEngine
 from app.services.event_journal import EventJournal
+from app.services.institutional_readiness import InstitutionalReadinessEngine
 from app.services.realtime_engine import MarketConfigurationError, RealTimeMarketEngine
 from app.services.risk_engine import RiskEngine
 from app.services.storage import AnalyticsStorage
@@ -221,6 +222,7 @@ async def build_multi_symbol_snapshot() -> dict:
         "executionCandidates": execution_candidates,
     }
     payload["autoTrader"] = await auto_trader.process(payload)
+    payload["institutionalReadiness"] = InstitutionalReadinessEngine().score_snapshot(payload)
     await emit_journal_events(payload)
     payload["eventJournal"] = await event_journal.recent(50)
     return payload
