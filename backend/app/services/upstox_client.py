@@ -92,8 +92,8 @@ class UpstoxClient:
     async def news_headlines(self, instrument_key: str, page: int = 1, page_size: int = 10) -> dict[str, Any]:
         return await self._request(
             "GET",
-            f"{UPSTOX_API_BASE}/v2/news/headlines",
-            params={"instrument_key": instrument_key, "page": page, "page_size": page_size},
+            f"{UPSTOX_API_BASE}/v2/news/market-news",
+            params={"instrument_keys": instrument_key, "page": page, "page_size": page_size},
         )
 
     async def ltp(self, instrument_keys: list[str]) -> dict[str, Any]:

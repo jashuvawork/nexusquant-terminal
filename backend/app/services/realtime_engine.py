@@ -128,18 +128,18 @@ class RealTimeMarketEngine:
         funds_task = self._optional(self.client.funds(), "funds", data_warnings)
         positions_task = self._optional(self.client.positions(), "positions", data_warnings)
         orders_task = self._optional(self.client.orders(), "orders", data_warnings)
-        external_news_task = self._optional(NewsProvider(self.settings).fetch(selected_symbol), "external_news", data_warnings)
         upstox_news_task = self._optional(self.client.news_headlines(instrument_key), "upstox_news", data_warnings)
+        external_news_task = self._optional(NewsProvider(self.settings).fetch(selected_symbol), "external_news", data_warnings)
 
-        option_chain, candles, ltp_quote, funds, positions, orders, external_news, upstox_news = await asyncio.gather(
-            option_chain_task, candle_task, quote_task, funds_task, positions_task, orders_task, external_news_task, upstox_news_task
+        option_chain, candles, ltp_quote, funds, positions, orders, upstox_news, external_news = await asyncio.gather(
+            option_chain_task, candle_task, quote_task, funds_task, positions_task, orders_task, upstox_news_task, external_news_task
         )
-        news_payload = external_news if (external_news or {}).get("data") else upstox_news
+        news_payload = upstox_news if upstox_news else external_news
         news_reason = None
-        if not (external_news or {}).get("data"):
-            news_reason = (external_news or {}).get("reason") or next((warning for warning in data_warnings if "news" in warning.lower()), None)
+        if not upstox_news and not (external_news or {}).get("data"):
+            news_reason = next((warning for warning in data_warnings if "upstox_news" in warning.lower()), None) or (external_news or {}).get("reason")
         news_state = NewsEngine().analyze(news_payload, news_reason)
-        news_state["providerStatus"] = {"external": external_news, "upstox": {"available": bool(upstox_news), "error": next((warning for warning in data_warnings if "upstox_news" in warning.lower()), None)}}
+        news_state["providerStatus"] = {"primary": "upstox", "upstox": {"available": bool(upstox_news), "error": next((warning for warning in data_warnings if "upstox_news" in warning.lower()), None)}, "external": external_news}
 
         chain_rows = option_chain.get("data") or []
         if not chain_rows:

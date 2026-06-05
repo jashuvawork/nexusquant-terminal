@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     option_premium_history_available: bool = True
     news_lookback_items: int = 20
     finnhub_api_key: str | None = None
-    news_provider: str = "finnhub"
+    news_provider: str = "upstox"
     # Optimized profiles from high-win optimizer run.
     nifty_opt_min_tqs: int = 72
     nifty_opt_breakout_atr: float = 0.35
