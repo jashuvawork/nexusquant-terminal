@@ -877,3 +877,32 @@ orb_retest
 ```
 
 Use retest/ORB profiles to reduce fake breakouts and improve win rate.
+
+
+## Stored optimized profiles
+
+Current stored optimizer profiles:
+
+```text
+NIFTY_OPT_MIN_TQS=72
+NIFTY_OPT_BREAKOUT_ATR=0.35
+NIFTY_OPT_VOLUME_MULTIPLIER=2.0
+NIFTY_OPT_TARGET_POINTS=4
+NIFTY_OPT_STOP_POINTS=2.5
+NIFTY_OPT_TRAIL_ATR=0.75
+NIFTY_OPT_ENTRY_MODEL=breakout
+
+SENSEX_OPT_MIN_TQS=68
+SENSEX_OPT_BREAKOUT_ATR=0.35
+SENSEX_OPT_VOLUME_MULTIPLIER=1.3
+SENSEX_OPT_TARGET_POINTS=6
+SENSEX_OPT_STOP_POINTS=2.5
+SENSEX_OPT_TRAIL_ATR=0.75
+SENSEX_OPT_ENTRY_MODEL=breakout
+```
+
+Endpoint:
+
+```text
+/api/risk/optimized-profiles
+```

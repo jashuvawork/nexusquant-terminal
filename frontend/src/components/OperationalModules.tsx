@@ -172,6 +172,7 @@ export function RiskEnginePanel({ snapshot }: { snapshot: TerminalSnapshot }) {
           <MetricCard label="Max Exposure" value={`${adaptive.maxExposurePct}%`} helper={`Dynamic ${adaptive.dynamicExposurePct}%`} tone="violet" />
           <MetricCard label="Daily DD" value={`${adaptive.dailyDrawdownPct}%`} helper="Hard stop target" tone="rose" />
           <MetricCard label="Cooldown" value={`${adaptive.cooldownSeconds}s`} helper="Post-trade delay" tone="emerald" />
+          {snapshot.optimizedProfile && <MetricCard label="Stored Profile" value={String(snapshot.optimizedProfile.mode ?? 'optimized')} helper={`Target ${snapshot.optimizedProfile.targetPoints} | Stop ${snapshot.optimizedProfile.stopPoints}`} tone="cyan" />}
         </div>
       )}
       {adaptive?.adjustments && adaptive.adjustments.length > 0 && (

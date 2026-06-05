@@ -568,6 +568,15 @@ async def risk_profiles(settings: Settings = Depends(get_settings)) -> dict:
     return {"activeProfile": settings.aggression_profile, "profiles": profile_list()}
 
 
+@router.get("/risk/optimized-profiles")
+async def optimized_profiles(settings: Settings = Depends(get_settings)) -> dict:
+    return {
+        "NIFTY": settings.optimized_profile_for("NIFTY"),
+        "SENSEX": settings.optimized_profile_for("SENSEX"),
+        "source": "stored_backend_defaults_or_railway_env",
+    }
+
+
 @router.post("/risk/profile")
 async def set_risk_profile(request: RiskProfileRequest) -> dict:
     # Runtime profile persistence should be handled by Railway env vars for production stability.

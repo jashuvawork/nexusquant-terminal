@@ -395,6 +395,7 @@ export interface TerminalSnapshot {
   greeks: GreeksState;
   marketProfile: MarketProfileState;
   aiMatrix: EngineScore[];
+  optimizedProfile?: Record<string, string | number>;
   adaptiveRisk?: AdaptiveRiskState;
   risk: RiskState;
   infra: InfraState;

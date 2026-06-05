@@ -27,6 +27,21 @@ class Settings(BaseSettings):
     trading_capital_default: float = 0.0
     min_required_move_points: float = 5.0
     historical_training_target_trades: int = 1000
+    # Optimized profiles from high-win optimizer run.
+    nifty_opt_min_tqs: int = 72
+    nifty_opt_breakout_atr: float = 0.35
+    nifty_opt_volume_multiplier: float = 2.0
+    nifty_opt_target_points: float = 4.0
+    nifty_opt_stop_points: float = 2.5
+    nifty_opt_trail_atr: float = 0.75
+    nifty_opt_entry_model: str = "breakout"
+    sensex_opt_min_tqs: int = 68
+    sensex_opt_breakout_atr: float = 0.35
+    sensex_opt_volume_multiplier: float = 1.3
+    sensex_opt_target_points: float = 6.0
+    sensex_opt_stop_points: float = 2.5
+    sensex_opt_trail_atr: float = 0.75
+    sensex_opt_entry_model: str = "breakout"
     profit_lock_retain_pct: float = 100.0
     profit_target_fallback_pct: float = 11.0
     profit_target_secondary_pct: float = 22.0
@@ -51,6 +66,31 @@ class Settings(BaseSettings):
 
     def expiry_for(self, symbol: str) -> str | None:
         return self.sensex_expiry_date if symbol.upper() == "SENSEX" else self.nifty_expiry_date
+
+    def optimized_profile_for(self, symbol: str) -> dict[str, float | int | str]:
+        if symbol.upper() == "SENSEX":
+            return {
+                "symbol": "SENSEX",
+                "mode": "runner_profile",
+                "minTqs": self.sensex_opt_min_tqs,
+                "breakoutAtr": self.sensex_opt_breakout_atr,
+                "volumeMultiplier": self.sensex_opt_volume_multiplier,
+                "targetPoints": self.sensex_opt_target_points,
+                "stopPoints": self.sensex_opt_stop_points,
+                "trailAtr": self.sensex_opt_trail_atr,
+                "entryModel": self.sensex_opt_entry_model,
+            }
+        return {
+            "symbol": "NIFTY",
+            "mode": "high_win_scalp_profile",
+            "minTqs": self.nifty_opt_min_tqs,
+            "breakoutAtr": self.nifty_opt_breakout_atr,
+            "volumeMultiplier": self.nifty_opt_volume_multiplier,
+            "targetPoints": self.nifty_opt_target_points,
+            "stopPoints": self.nifty_opt_stop_points,
+            "trailAtr": self.nifty_opt_trail_atr,
+            "entryModel": self.nifty_opt_entry_model,
+        }
 
 
 @lru_cache

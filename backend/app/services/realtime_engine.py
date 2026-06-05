@@ -94,6 +94,7 @@ class RealTimeMarketEngine:
             raise MarketConfigurationError("PRIMARY_SYMBOL must be NIFTY or SENSEX.")
 
         instrument_key = self.settings.instrument_key_for(selected_symbol)
+        optimized_profile = self.settings.optimized_profile_for(selected_symbol)
         session = current_session_state()
         data_warnings: list[str] = []
         expiry_state = await self.resolve_expiry(selected_symbol, instrument_key, data_warnings)
@@ -164,6 +165,8 @@ class RealTimeMarketEngine:
 
         portfolio = self._portfolio(funds, positions, orders, data_warnings)
         adaptive_risk = adaptive_settings(self.settings.aggression_profile, session.phase, regime, tqs)
+        adaptive_risk["optimizedProfile"] = optimized_profile
+        adaptive_risk["minimumTqs"] = max(int(adaptive_risk["minimumTqs"]), int(optimized_profile["minTqs"]))
         adaptive_engine = RiskEngine(
             adaptive_risk["minimumTqs"],
             adaptive_risk["safeModeTqs"],
@@ -196,7 +199,7 @@ class RealTimeMarketEngine:
         trading_capital = capital_status.get("tradingCapital") or self.settings.trading_capital_default
         auto_trading_stopped = bool(trading_control_status.get("autoTradingStopped"))
         atr_points = self._atr_points(candles_list)
-        adaptive_exit = self._adaptive_exit_engine(selected_ltp, selected_side, orderflow, spread_quality, volume_state, greeks, pressure_mode, risk_decision.safe_mode, atr_points)
+        adaptive_exit = self._adaptive_exit_engine(selected_ltp, selected_side, orderflow, spread_quality, volume_state, greeks, pressure_mode, risk_decision.safe_mode, atr_points, optimized_profile)
         precision_checklist = self._precision_entry_checklist(
             tqs=tqs,
             threshold=adaptive_risk["minimumTqs"],
@@ -211,6 +214,7 @@ class RealTimeMarketEngine:
             no_trade_zones=no_trade_zones,
             pressure_mode=pressure_mode,
             entry_model=entry_model,
+            optimized_profile=optimized_profile,
         )
         execution_allowed = bool(
             self.settings.enable_live_trading
@@ -305,6 +309,7 @@ class RealTimeMarketEngine:
             "greeks": greeks,
             "marketProfile": market_profile,
             "aiMatrix": ai_matrix,
+            "optimizedProfile": optimized_profile,
             "adaptiveRisk": adaptive_risk,
             "risk": {
                 "safeMode": risk_decision.safe_mode,
@@ -920,10 +925,15 @@ class RealTimeMarketEngine:
         pressure_mode: dict[str, Any],
         safe_mode: bool,
         atr_points: float,
+        optimized_profile: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        target = max(self.settings.paper_target_points, premium * 0.04, atr_points * 0.8) if premium else max(self.settings.paper_target_points, atr_points * 0.8)
-        stop = max(self.settings.paper_stop_points, premium * 0.025, atr_points * 0.5) if premium else max(self.settings.paper_stop_points, atr_points * 0.5)
-        trail = max(1.0, target * 0.45, atr_points * 0.35)
+        optimized_profile = optimized_profile or {}
+        target_base = float(optimized_profile.get("targetPoints") or self.settings.paper_target_points)
+        stop_base = float(optimized_profile.get("stopPoints") or self.settings.paper_stop_points)
+        trail_atr = float(optimized_profile.get("trailAtr") or 0.35)
+        target = max(target_base, premium * 0.04, atr_points * 0.8) if premium else max(target_base, atr_points * 0.8)
+        stop = max(stop_base, premium * 0.025, atr_points * 0.5) if premium else max(stop_base, atr_points * 0.5)
+        trail = max(1.0, target * 0.45, atr_points * trail_atr)
         rules = [
             {"name": "Momentum decay exit", "active": orderflow.get("breakoutVelocity", 0) < 10, "action": "tighten trail or exit"},
             {"name": "Delta reversal exit", "active": (side == "CALL" and orderflow.get("deltaVelocity", 0) < -15) or (side == "PUT" and orderflow.get("deltaVelocity", 0) > 15), "action": "exit on reversal"},
@@ -1061,6 +1071,7 @@ class RealTimeMarketEngine:
         chop_filter: dict[str, Any],
         volume_state: dict[str, Any],
         entry_model: dict[str, Any],
+        optimized_profile: dict[str, Any],
     ) -> list[dict[str, Any]]:
         action = "EXECUTION_READY" if execution_allowed else "SUGGEST_ONLY"
         confidence = "HIGH" if tqs >= 82 and spread_quality >= 75 else "MEDIUM" if tqs >= 70 else "LOW"
@@ -1085,6 +1096,7 @@ class RealTimeMarketEngine:
                 "volumeSource": volume_state.get("source"),
                 "effectiveVolume": volume_state.get("effectiveVolume", 0),
                 "entryModel": entry_model,
+                "optimizedProfile": optimized_profile,
                 "tqs": tqs,
                 "confidence": confidence,
                 "bias": option_bias.get("direction"),
