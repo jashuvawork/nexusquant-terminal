@@ -141,7 +141,7 @@ async def deployment_status(
     token_status = await auth_service.token_status()
     return {
         "service": settings.app_name,
-        "apiVersion": "0.8.5-suggested-profile-call-fix",
+        "apiVersion": "0.9.0-news-engine",
         "runtimeValidation": engine.validate_runtime(),
         "optimizerValidation": get_strategy_optimizer(settings, get_upstox(settings, auth_service)).validate_runtime(),
         "environment": settings.environment,
@@ -160,6 +160,7 @@ async def deployment_status(
             "/api/market/expiries/NIFTY",
             "/api/market/snapshot/NIFTY",
             "/api/market/snapshots",
+            "/api/market/news/NIFTY",
             "/api/auto-trader/status",
             "/api/auto-trader/reset",
             "/api/ai-learning/status",
@@ -200,6 +201,17 @@ async def market_snapshots(engine: RealTimeMarketEngine = Depends(get_market_eng
     payload = {"type": "multi_snapshot", "snapshots": snapshots, "symbolErrors": errors, "executionCandidates": candidates}
     payload["autoTrader"] = await auto_engine.process(payload)
     return payload
+
+
+@router.get("/market/news/{symbol}")
+async def market_news(symbol: Literal["NIFTY", "SENSEX"], settings: Settings = Depends(get_settings), client: UpstoxClient = Depends(get_upstox)) -> dict:
+    try:
+        payload = await client.news_headlines(settings.instrument_key_for(symbol))
+        from app.services.news_engine import NewsEngine
+        return NewsEngine().analyze(payload)
+    except (UpstoxAuthRequired, UpstoxDataError) as exc:
+        from app.services.news_engine import NewsEngine
+        return NewsEngine().analyze(None, str(exc))
 
 
 @router.get("/market/snapshot/{symbol}")

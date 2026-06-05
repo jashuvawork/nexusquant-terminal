@@ -989,3 +989,21 @@ Runner training endpoints:
 ```
 
 Until historical option premium candles are available, runner training is marked as proxy-based from real Upstox index candles.
+
+
+## News/event intelligence
+
+NexusQuant uses Upstox News API when available:
+
+```text
+/api/market/news/NIFTY
+/api/market/news/SENSEX
+```
+
+The news layer can:
+
+- raise TQS requirements during negative/high-risk events
+- block fresh trades during high-risk negative news
+- support runner bias during positive non-critical news
+
+If Upstox news entitlement or endpoint is unavailable, snapshots continue and show `news unavailable` without breaking market data.

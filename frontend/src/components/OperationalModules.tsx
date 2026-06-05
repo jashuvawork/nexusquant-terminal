@@ -364,6 +364,18 @@ export function SessionIntelligence({ snapshot }: { snapshot: TerminalSnapshot }
         </div>
       </div>
       <p className="mt-4 rounded-2xl bg-slate-950/60 p-4 text-sm text-slate-300">{snapshot.marketProfile.acceptanceZone}</p>
+      {snapshot.newsState && (
+        <div className={`mt-4 rounded-2xl border p-4 text-sm ${snapshot.newsState.eventRisk === 'HIGH' ? 'border-rose-300/20 bg-rose-300/10 text-rose-100' : snapshot.newsState.eventRisk === 'MEDIUM' ? 'border-amber-300/20 bg-amber-300/10 text-amber-100' : 'border-cyan-300/20 bg-cyan-300/10 text-cyan-100'}`}>
+          <p className="font-bold uppercase tracking-[0.2em]">News / Event Intelligence | {snapshot.newsState.eventRisk}</p>
+          <p className="mt-2">Sentiment: <b>{snapshot.newsState.sentiment}</b> | Score {snapshot.newsState.score}</p>
+          {snapshot.newsState.unavailableReason && <p className="mt-2 text-xs text-slate-300">News unavailable: {snapshot.newsState.unavailableReason}</p>}
+          <div className="mt-3 space-y-2">
+            {snapshot.newsState.articles.slice(0, 3).map((article) => (
+              <div key={article.title} className="rounded-xl bg-slate-950/50 p-3 text-xs text-slate-200">{article.title || 'Untitled news'}</div>
+            ))}
+          </div>
+        </div>
+      )}
       {snapshot.premarketAnalysis && (
         <div className="mt-4 grid gap-4 xl:grid-cols-2">
           <div className="rounded-2xl border border-slate-700/70 bg-slate-950/50 p-4">

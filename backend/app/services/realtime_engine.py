@@ -13,6 +13,7 @@ from typing import Any
 from app.core.config import Settings
 from app.services.ai_engine import TradeQualityScorer
 from app.services.explosive_runner import ExplosiveRunnerEngine
+from app.services.news_engine import NewsEngine
 from app.services.risk_engine import RiskEngine
 from app.services.risk_profiles import adaptive_settings
 from app.services.session import IST, MarketPhase, current_session_state
@@ -126,10 +127,12 @@ class RealTimeMarketEngine:
         funds_task = self._optional(self.client.funds(), "funds", data_warnings)
         positions_task = self._optional(self.client.positions(), "positions", data_warnings)
         orders_task = self._optional(self.client.orders(), "orders", data_warnings)
+        news_task = self._optional(self.client.news_headlines(instrument_key), "news", data_warnings)
 
-        option_chain, candles, ltp_quote, funds, positions, orders = await asyncio.gather(
-            option_chain_task, candle_task, quote_task, funds_task, positions_task, orders_task
+        option_chain, candles, ltp_quote, funds, positions, orders, news_payload = await asyncio.gather(
+            option_chain_task, candle_task, quote_task, funds_task, positions_task, orders_task, news_task
         )
+        news_state = NewsEngine().analyze(news_payload, next((warning for warning in data_warnings if "news" in warning.lower()), None))
 
         chain_rows = option_chain.get("data") or []
         if not chain_rows:
@@ -186,7 +189,11 @@ class RealTimeMarketEngine:
         portfolio = self._portfolio(funds, positions, orders, data_warnings)
         adaptive_risk = adaptive_settings(self.settings.aggression_profile, session.phase, regime, tqs)
         adaptive_risk["optimizedProfile"] = optimized_profile
+        adaptive_risk["newsState"] = news_state
         adaptive_risk["minimumTqs"] = max(int(adaptive_risk["minimumTqs"]), int(optimized_profile["minTqs"]))
+        if news_state.get("impact", {}).get("raiseTqs"):
+            adaptive_risk["minimumTqs"] = max(int(adaptive_risk["minimumTqs"]), int(optimized_profile["minTqs"]) + 4)
+            adaptive_risk.setdefault("adjustments", []).append("News/event risk: raised TQS threshold.")
         adaptive_engine = RiskEngine(
             adaptive_risk["minimumTqs"],
             adaptive_risk["safeModeTqs"],
@@ -201,9 +208,9 @@ class RealTimeMarketEngine:
             exposure_pct=portfolio["exposurePct"],
             disconnects=0,
         )
-        upstox_latency = self._upstox_latency_ms(option_chain, candles, ltp_quote, funds, positions, orders)
+        upstox_latency = self._upstox_latency_ms(option_chain, candles, ltp_quote, funds, positions, orders, news_payload)
         tqs_breakdown = self._tqs_breakdown(ai_matrix)
-        no_trade_zones = self._no_trade_zones(session.phase, adaptive_risk, regime, chop_filter, spread_quality, volume_state, orderflow, upstox_latency, self._drawdown_pct(portfolio), entry_model)
+        no_trade_zones = self._no_trade_zones(session.phase, adaptive_risk, regime, chop_filter, spread_quality, volume_state, orderflow, upstox_latency, self._drawdown_pct(portfolio), entry_model, news_state)
         pressure_mode = self._pressure_mode(session.phase, orderflow, spread_quality, volume_state, upstox_latency, risk_decision.safe_mode, no_trade_zones)
 
         selected_side = "CALL" if option_bias["direction"] == "BULLISH" else "PUT"
@@ -311,6 +318,7 @@ class RealTimeMarketEngine:
             "noTradeZones": no_trade_zones,
             "tqsBreakdown": tqs_breakdown,
             "entryModel": entry_model,
+            "newsState": news_state,
             "explosiveRunner": runner_signal,
             "productionReadiness": production_readiness,
             "dataSource": "UPSTOX_REALTIME_REST",
@@ -1020,6 +1028,7 @@ class RealTimeMarketEngine:
         upstox_latency: float,
         drawdown_pct: float,
         entry_model: dict[str, Any] | None = None,
+        news_state: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         zones: list[dict[str, Any]] = []
         if phase != MarketPhase.LIVE_MARKET:
@@ -1040,6 +1049,8 @@ class RealTimeMarketEngine:
             zones.append({"name": "Daily drawdown", "severity": "hard", "reason": f"{drawdown_pct}%"})
         if orderflow.get("sweepDetection", 0) < 5 and orderflow.get("breakoutVelocity", 0) < 10:
             zones.append({"name": "No sweep / weak breakout", "severity": "soft", "reason": "momentum quality weak"})
+        if news_state and news_state.get("impact", {}).get("avoidFreshTrades"):
+            zones.append({"name": "News event risk", "severity": "hard", "reason": f"{news_state.get('eventRisk')} / {news_state.get('sentiment')}"})
         if entry_model and entry_model.get("failedBreakout"):
             zones.append({"name": "Failed breakout", "severity": "hard", "reason": "breakout returned inside opening/value range"})
         hard = [zone for zone in zones if zone["severity"] == "hard"]
