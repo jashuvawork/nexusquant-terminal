@@ -996,3 +996,25 @@ This means:
 - paper trades open for learning/visibility even when live execution is off or blocked
 - rejected signals are still recorded as shadow paper candidates when enabled
 - STOP can optionally pause paper trades if `PAPER_TRADING_RESPECTS_STOP=true`
+
+
+## Paper Trading interface
+
+The frontend includes a dedicated Paper Trading module showing:
+
+- paper mode status
+- shadow-all-signals mode
+- open paper trades
+- closed paper trades
+- paper PnL
+- lifecycle events
+- replay buffer count
+- AI learning samples
+- profit lock state
+
+Useful endpoints:
+
+```text
+/api/auto-trader/status
+/api/auto-trader/reset
+```

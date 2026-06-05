@@ -317,15 +317,46 @@ export interface TqsBreakdownState {
   explanation: string;
 }
 
+export interface PaperLifecycleEvent {
+  state: string;
+  timestamp: string;
+  reason: string;
+  payload?: Record<string, unknown>;
+}
+
+export interface PaperTrade {
+  id: string;
+  symbol: MarketSymbol | string;
+  side: 'CALL' | 'PUT' | string;
+  strike: number;
+  expiry: string;
+  instrumentKey?: string | null;
+  entryPrice: number;
+  quantity: number;
+  entryTqs: number;
+  spreadCost: number;
+  slippageEstimate: number;
+  openedAt: string;
+  mode: string;
+  status: string;
+  exitPrice?: number | null;
+  exitReason?: string | null;
+  exitedAt?: string | null;
+  pnl: number;
+  lifecycle: PaperLifecycleEvent[];
+}
+
 export interface AutoTraderState {
   paperTrading: boolean;
+  shadowTradeAllSignals?: boolean;
+  paperTradingRespectsStop?: boolean;
   liveTradingEnabled: boolean;
   autoTradingStopped: boolean;
   signalsThisTick: number;
   skippedSignals: Array<{ candidate?: string; reason: string; quality?: Record<string, unknown> }>;
-  openPaperTrades: Array<Record<string, unknown>>;
-  closedPaperTrades: Array<Record<string, unknown>>;
-  orderLifecycle: Array<{ state: string; timestamp: string; reason: string; payload?: Record<string, unknown> }>;
+  openPaperTrades: PaperTrade[];
+  closedPaperTrades: PaperTrade[];
+  orderLifecycle: PaperLifecycleEvent[];
   replay: { storedSnapshots: number; latestTimestamp?: string };
   exitEngine: { rules: string[]; exitsThisTick: Array<Record<string, unknown>> };
   slippageModel: { averageExpectedSlippage: number; minimumRequiredMovePoints: number; model: string };

@@ -460,6 +460,82 @@ const riskProfiles = [
   { mode: 'realistic_aggressive', label: 'Realistic Aggressive', min: '68-72', safe: '84', exposure: '35-40%', dd: '3%', cooldown: '10-15s', note: 'Recommended for your style' },
 ];
 
+
+export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) {
+  const auto = snapshot.autoTrader;
+  if (!auto) {
+    return (
+      <Card title="Paper Trading" eyebrow="Shadow execution status">
+        <p className="text-sm text-slate-300">No paper trading state available yet. Wait for the next real Upstox snapshot.</p>
+      </Card>
+    );
+  }
+
+  const openPnl = auto.openPaperTrades.reduce((sum, trade) => sum + (trade.pnl ?? 0), 0);
+  const closedPnl = auto.closedPaperTrades.reduce((sum, trade) => sum + (trade.pnl ?? 0), 0);
+
+  return (
+    <div className="space-y-4">
+      <Card title="Paper Trading Control" eyebrow="Shadow execution without broker orders">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <MetricCard label="Paper Mode" value={auto.paperTrading ? 'ON' : 'OFF'} helper={auto.shadowTradeAllSignals ? 'Shadow all signals' : 'Quality-gated'} tone={auto.paperTrading ? 'emerald' : 'amber'} />
+          <MetricCard label="Open Paper Trades" value={auto.openPaperTrades.length} helper={`Open PnL ${formatCurrency(openPnl)}`} tone="cyan" />
+          <MetricCard label="Closed Paper Trades" value={auto.closedPaperTrades.length} helper={`Closed PnL ${formatCurrency(closedPnl)}`} tone="violet" />
+          <MetricCard label="Profit Factor" value={auto.dailyReport.profitFactor} helper={`${auto.dailyReport.winRate}% win rate`} tone="emerald" />
+          <MetricCard label="Signals / Tick" value={auto.signalsThisTick} helper={`${auto.skippedSignals.length} skipped shown`} tone="cyan" />
+          <MetricCard label="Replay Buffer" value={auto.replay.storedSnapshots} helper="Stored snapshots" tone="violet" />
+          <MetricCard label="Learning Samples" value={auto.onlineLearning.samples} helper={`Score ${auto.onlineLearning.learningScore ?? auto.onlineLearning.score ?? 0}`} tone="emerald" />
+          <MetricCard label="Profit Lock" value={auto.profitLock?.activeTier ? `${auto.profitLock.activeTier.pct}%` : 'WAIT'} helper={auto.profitLock?.message ?? 'No locked tier'} tone={auto.profitLock?.blockNewTrades ? 'rose' : 'amber'} />
+        </div>
+        <div className="mt-4 rounded-2xl border border-slate-700 bg-slate-950/60 p-4 text-sm text-slate-300">
+          Reset endpoint: <span className="font-mono text-cyan-200">/api/auto-trader/reset</span> | Status endpoint: <span className="font-mono text-cyan-200">/api/auto-trader/status</span>
+        </div>
+      </Card>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card title="Open Paper Trades" eyebrow="Currently shadow-open">
+          <div className="space-y-3">
+            {auto.openPaperTrades.length === 0 && <p className="text-sm text-slate-400">No open paper trades.</p>}
+            {auto.openPaperTrades.map((trade) => (
+              <div key={trade.id} className="rounded-2xl border border-slate-700/70 bg-slate-950/50 p-4">
+                <div className="flex justify-between gap-3"><span className="font-bold text-white">{trade.symbol} {trade.strike} {trade.side}</span><span className="text-cyan-200">{trade.status}</span></div>
+                <div className="mt-2 grid gap-2 text-xs text-slate-300 sm:grid-cols-3">
+                  <span>Entry {trade.entryPrice}</span><span>Qty {trade.quantity}</span><span>TQS {trade.entryTqs}</span>
+                  <span>Spread {trade.spreadCost}</span><span>Slip {trade.slippageEstimate}</span><span>PnL {formatCurrency(trade.pnl)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        <Card title="Closed Paper Trades" eyebrow="Recent paper exits">
+          <div className="space-y-3">
+            {auto.closedPaperTrades.length === 0 && <p className="text-sm text-slate-400">No closed paper trades yet.</p>}
+            {auto.closedPaperTrades.slice(-10).reverse().map((trade) => (
+              <div key={trade.id} className="rounded-2xl border border-slate-700/70 bg-slate-950/50 p-4">
+                <div className="flex justify-between gap-3"><span className="font-bold text-white">{trade.symbol} {trade.strike} {trade.side}</span><span className={trade.pnl >= 0 ? 'text-emerald-300' : 'text-rose-300'}>{formatCurrency(trade.pnl)}</span></div>
+                <p className="mt-1 text-xs text-slate-400">Exit: {trade.exitReason ?? 'n/a'} | Entry {trade.entryPrice} → Exit {trade.exitPrice ?? '-'}</p>
+              </div>
+            ))}
+          </div>
+        </Card>
+      </div>
+
+      <Card title="Paper Lifecycle Log" eyebrow="Signal, risk, paper-open, exit events">
+        <div className="max-h-96 space-y-2 overflow-y-auto pr-1">
+          {auto.orderLifecycle.slice(-40).reverse().map((event, index) => (
+            <div key={`${event.timestamp}-${index}`} className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-xs text-slate-300">
+              <div className="flex justify-between gap-3"><span className="font-bold text-cyan-200">{event.state}</span><span className="font-mono text-slate-500">{new Date(event.timestamp).toLocaleTimeString()}</span></div>
+              <p className="mt-1">{event.reason}</p>
+            </div>
+          ))}
+          {auto.orderLifecycle.length === 0 && <p className="text-sm text-slate-400">No lifecycle events yet.</p>}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 export function SettingsPanel() {
   return (
     <Card title="Settings" eyebrow="Institutional aggression profiles">

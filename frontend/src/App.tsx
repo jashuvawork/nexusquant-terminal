@@ -11,6 +11,7 @@ import {
   AiAnalytics,
   BacktestingPanel,
   InfrastructureTelemetry,
+  PaperTradingPanel,
   PortfolioPanel,
   RiskEnginePanel,
   SessionIntelligence,
@@ -96,6 +97,7 @@ function App() {
     journal: <TradeJournal snapshot={displaySnapshot} />,
     session: <SessionIntelligence snapshot={displaySnapshot} />,
     backtesting: <BacktestingPanel snapshot={displaySnapshot} />,
+    paperTrading: <PaperTradingPanel snapshot={displaySnapshot} />,
     settings: <SettingsPanel />,
   } satisfies Record<ModuleId, ReactNode>;
 
