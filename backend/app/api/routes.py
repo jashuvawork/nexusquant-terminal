@@ -15,6 +15,7 @@ from app.services.ai_learning import ContinuousAILearner
 from app.services.event_journal import EventJournal
 from app.services.historical_trainer import HistoricalTrainer
 from app.services.institutional_readiness import InstitutionalReadinessEngine
+from app.services.ltp_range_analyzer import LtpRangeAnalyzer
 from app.services.realtime_engine import MarketConfigurationError, RealTimeMarketEngine
 from app.services.risk_engine import RiskEngine
 from app.services.risk_profiles import profile_list
@@ -142,7 +143,7 @@ async def deployment_status(
     token_status = await auth_service.token_status()
     return {
         "service": settings.app_name,
-        "apiVersion": "0.9.1-runner-checklist-signature-fix",
+        "apiVersion": "0.9.2-ltp-range-analyzer",
         "runtimeValidation": engine.validate_runtime(),
         "optimizerValidation": get_strategy_optimizer(settings, get_upstox(settings, auth_service)).validate_runtime(),
         "environment": settings.environment,
@@ -175,6 +176,7 @@ async def deployment_status(
             "/api/strategy-optimizer/run",
             "/api/strategy-optimizer/run-both",
             "/api/strategy-optimizer/latest",
+            "/api/analytics/ltp-ranges",
             "/api/event-journal/recent",
         ],
     }
@@ -444,6 +446,40 @@ async def event_journal_record(request: EventRecordRequest, journal: EventJourna
 @router.get("/strategy-optimizer/latest")
 async def strategy_optimizer_latest(optimizer: StrategyOptimizer = Depends(get_strategy_optimizer)) -> dict:
     return await optimizer.latest()
+
+
+@router.get("/analytics/ltp-ranges")
+async def analytics_ltp_ranges(
+    target_trades: int = 10000,
+    train: bool = False,
+    settings: Settings = Depends(get_settings),
+    client: UpstoxClient = Depends(get_upstox),
+    engine: RealTimeMarketEngine = Depends(get_market_engine),
+    trainer: HistoricalTrainer = Depends(get_historical_trainer),
+) -> dict:
+    analyzer = LtpRangeAnalyzer()
+    results = {}
+    errors = {}
+    for symbol in ["NIFTY", "SENSEX"]:
+        try:
+            expiry_state = await engine.resolve_expiry(symbol, settings.instrument_key_for(symbol), [])
+            chain = await client.option_chain(settings.instrument_key_for(symbol), expiry_state["selectedExpiry"])
+            current_ranges = analyzer.analyze_option_chain(chain)
+            training = None
+            if train:
+                training = await trainer.train(symbol, target_trades)
+            results[symbol] = {"expiryState": expiry_state, "currentPremiumRanges": current_ranges, "historicalTraining": training}
+        except Exception as exc:
+            errors[symbol] = str(exc)
+    if not results:
+        raise HTTPException(status_code=503, detail=errors)
+    return {
+        "targetTrades": target_trades,
+        "trained": train,
+        "results": results,
+        "errors": errors,
+        "note": "Best premium LTP range uses current option-chain LTP. Historical training uses real Upstox index candles unless exact option premium history is available.",
+    }
 
 
 @router.get("/strategy-optimizer/run")

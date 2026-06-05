@@ -1094,3 +1094,17 @@ Endpoint:
 ```
 
 The scorecard intentionally does not fake 9.5. It lists gaps such as missing forward paper trades, low paper PF, insufficient live samples, or failed production readiness.
+
+
+## LTP range analyzer
+
+Find the best current option premium LTP range and optionally trigger historical training:
+
+```text
+/api/analytics/ltp-ranges
+/api/analytics/ltp-ranges?train=true&target_trades=10000
+```
+
+The current premium range analysis uses real Upstox option-chain LTP, volume, OI, spread and Greeks.
+
+Historical training still uses real Upstox index candles unless exact historical option premium candles are available.
