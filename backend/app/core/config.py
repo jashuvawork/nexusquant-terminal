@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     min_required_move_points: float = 5.0
     historical_training_target_trades: int = 1000
     option_premium_history_available: bool = True
+    explosive_runner_enabled: bool = True
+    explosive_runner_scan_strikes: int = 8
+    explosive_runner_min_score: float = 55.0
+    background_market_monitor_enabled: bool = True
     news_lookback_items: int = 20
     finnhub_api_key: str | None = None
     news_provider: str = "finnhub"

@@ -49,7 +49,12 @@ LATEST_TQS = Gauge("nexusquant_latest_trade_quality_score", "Latest Trade Qualit
 async def lifespan(app: FastAPI):
     await storage.connect()
     await event_journal.connect()
+    monitor_task = asyncio.create_task(background_market_monitor()) if settings.background_market_monitor_enabled else None
     yield
+    if monitor_task:
+        monitor_task.cancel()
+        with suppress(BaseException):
+            await monitor_task
     await event_journal.close()
     await storage.close()
 
@@ -226,6 +231,22 @@ async def build_multi_symbol_snapshot() -> dict:
     await emit_journal_events(payload)
     payload["eventJournal"] = await event_journal.recent(50)
     return payload
+
+
+async def background_market_monitor() -> None:
+    """Continuously evaluates runner/paper candidates even when no UI is open."""
+    while True:
+        try:
+            payload = await build_multi_symbol_snapshot()
+            LATEST_TQS.set(payload["tradeQualityScore"])
+            SNAPSHOTS_STREAMED.inc(len(payload.get("snapshots", {})) or 1)
+        except (UpstoxAuthRequired, MarketConfigurationError, UpstoxDataError):
+            pass
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+        await asyncio.sleep(max(1.0, float(settings.market_poll_seconds or 1)))
 
 async def receive_client_heartbeats(websocket: WebSocket) -> None:
     while True:

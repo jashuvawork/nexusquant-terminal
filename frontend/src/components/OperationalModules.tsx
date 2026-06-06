@@ -77,6 +77,10 @@ export function StrategyRouter({ snapshot }: { snapshot: TerminalSnapshot }) {
       {snapshot.explosiveRunner && (
         <div className={`mt-5 rounded-2xl border p-4 text-sm ${snapshot.explosiveRunner.candidate ? 'border-emerald-300/20 bg-emerald-300/10 text-emerald-100' : 'border-slate-700 bg-slate-950/60 text-slate-300'}`}>
           <p className="font-bold uppercase tracking-[0.2em]">Explosive Runner Engine | {snapshot.explosiveRunner.confidence}</p>
+          <p className="mt-1 text-xs text-slate-300">
+            Always-on scan: {snapshot.explosiveRunner.watchMode ?? 'OPEN_EXPLOSIVE_SCAN'} every {snapshot.explosiveRunner.monitoringCadenceSeconds ?? 1}s
+            {snapshot.explosiveRunner.strike ? ` | Best: ${snapshot.explosiveRunner.symbol ?? snapshot.symbol} ${snapshot.explosiveRunner.strike} ${snapshot.explosiveRunner.side}` : ''}
+          </p>
           <div className="mt-3 grid gap-2 sm:grid-cols-4">
             <span>Score <b>{snapshot.explosiveRunner.score}</b></span>
             <span>Target <b>{snapshot.explosiveRunner.targetPremiumPct}%</b></span>
@@ -88,6 +92,27 @@ export function StrategyRouter({ snapshot }: { snapshot: TerminalSnapshot }) {
           </ul>
           <p className="mt-3 text-xs text-emerald-200/80">Ideal available data: {Array.isArray(snapshot.explosiveRunner.dataStatus.idealAvailable) ? snapshot.explosiveRunner.dataStatus.idealAvailable.join(', ') || 'n/a' : 'n/a'}</p>
           <p className="mt-1 text-xs text-amber-200/80">Still missing: {Array.isArray(snapshot.explosiveRunner.dataStatus.idealMissing) ? snapshot.explosiveRunner.dataStatus.idealMissing.join(', ') || 'none' : 'n/a'}</p>
+        </div>
+      )}
+      {snapshot.explosiveRunnerWatchlist && snapshot.explosiveRunnerWatchlist.length > 0 && (
+        <div className="mt-5 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-4">
+          <p className="text-sm font-bold uppercase tracking-[0.2em] text-cyan-100">Second-by-second explosive watchlist</p>
+          <div className="mt-3 grid gap-2 lg:grid-cols-2">
+            {snapshot.explosiveRunnerWatchlist.slice(0, 6).map((runner) => (
+              <div key={`${runner.symbol}-${runner.expiry}-${runner.strike}-${runner.side}`} className={`rounded-xl border p-3 text-xs ${runner.candidate ? 'border-emerald-300/30 bg-emerald-300/10 text-emerald-100' : 'border-slate-700 bg-slate-950/60 text-slate-300'}`}>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-bold text-white">{runner.symbol} {runner.strike} {runner.side}</span>
+                  <span>{runner.confidence} / {runner.score}</span>
+                </div>
+                <div className="mt-2 grid grid-cols-3 gap-2">
+                  <span>LTP {runner.premium ?? runner.lastPremium ?? 0}</span>
+                  <span>Target {runner.targetPremiumPct}%</span>
+                  <span>Trail {runner.trailPct}%</span>
+                </div>
+                {runner.reasons.length > 0 && <p className="mt-2 text-slate-400">{runner.reasons.slice(0, 2).join(' | ')}</p>}
+              </div>
+            ))}
+          </div>
         </div>
       )}
       <div className="mt-5 grid gap-4 md:grid-cols-2">

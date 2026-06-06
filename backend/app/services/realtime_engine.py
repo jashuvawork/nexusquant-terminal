@@ -108,6 +108,7 @@ class RealTimeMarketEngine:
         self.risk_engine = risk_engine
         self.trading_control = trading_control or TradingControl(settings.redis_url)
         self.previous: dict[str, PreviousTick] = {}
+        self.previous_options: dict[str, PreviousTick] = {}
 
     async def snapshot(self, symbol: str | None = None) -> dict[str, Any]:
         processing_started = perf_counter()
@@ -225,23 +226,17 @@ class RealTimeMarketEngine:
         selected_md = selected_option.get("market_data") or {}
         selected_instrument = selected_option.get("instrument_key")
         selected_ltp = as_float(selected_md.get("ltp"))
-        runner_signal = ExplosiveRunnerEngine(option_premium_history_available=self.settings.option_premium_history_available).evaluate(
+        runner_watchlist = self._explosive_runner_watchlist(
             symbol=selected_symbol,
-            side=selected_side,
-            strike=atm_strike,
             expiry=expiry,
-            instrument_key=selected_instrument,
-            premium=selected_ltp,
-            selected_md=selected_md,
-            greeks=greeks,
-            orderflow=orderflow,
-            spread_quality=spread_quality,
-            volume_state=volume_state,
+            rows=chain_rows,
+            spot=spot,
             heatmap=heatmap,
             market_profile=market_profile,
             entry_model=entry_model,
             tqs=tqs,
         )
+        runner_signal = runner_watchlist[0] if runner_watchlist else self._explosive_runner_disabled(selected_symbol, expiry)
         current = PreviousTick(spot=spot, selected_ltp=selected_ltp, selected_volume=as_int(selected_md.get("volume")), timestamp=datetime.now(timezone.utc))
         self.previous[selected_symbol] = current
 
@@ -268,6 +263,8 @@ class RealTimeMarketEngine:
             optimized_profile=optimized_profile,
             runner_signal=runner_signal,
         )
+        backtest_metrics = self._backtest_metrics(candles_list, tqs, spread_quality, volume_state)
+        production_readiness = self._production_readiness(backtest_metrics, tqs, volume_state, self._drawdown_pct(portfolio))
         execution_allowed = bool(
             self.settings.enable_live_trading
             and not auto_trading_stopped
@@ -282,8 +279,6 @@ class RealTimeMarketEngine:
             and selected_ltp > 0
         )
         trade_mode = "AUTO_EXECUTION_READY" if execution_allowed else "PAPER_EXECUTION" if self.settings.paper_trading else "ANALYSIS_BACKTEST_ONLY"
-        backtest_metrics = self._backtest_metrics(candles_list, tqs, spread_quality, volume_state)
-        production_readiness = self._production_readiness(backtest_metrics, tqs, volume_state, self._drawdown_pct(portfolio))
         suggested_trades = self._suggested_trades(
             symbol=selected_symbol,
             expiry=expiry,
@@ -303,6 +298,19 @@ class RealTimeMarketEngine:
             volume_state=volume_state,
             entry_model=entry_model,
             optimized_profile=optimized_profile,
+            runner_signal=runner_signal,
+        )
+        suggested_trades.extend(
+            self._runner_suggested_trades(
+                runner_watchlist=runner_watchlist,
+                trade_mode=trade_mode,
+                execution_allowed=execution_allowed,
+                trading_capital=float(trading_capital or 0),
+                option_bias=option_bias,
+                safe_mode=risk_decision.safe_mode,
+                optimized_profile=optimized_profile,
+                limit=3,
+            )
         )
 
         return {
@@ -327,6 +335,7 @@ class RealTimeMarketEngine:
             "entryModel": entry_model,
             "newsState": news_state,
             "explosiveRunner": runner_signal,
+            "explosiveRunnerWatchlist": runner_watchlist[:10],
             "productionReadiness": production_readiness,
             "dataSource": "UPSTOX_REALTIME_REST",
             "dataWarnings": data_warnings,
@@ -711,6 +720,204 @@ class RealTimeMarketEngine:
             "volumeAcceleration": round(clamp(volume_delta / 1000)),
             "breakoutVelocity": round(clamp(abs(price_velocity) * 25 + abs(premium_velocity) * 20)),
         }
+
+    def _single_option_volume_state(self, md: dict[str, Any]) -> dict[str, Any]:
+        volume = as_int(md.get("volume"))
+        bid_qty = as_int(md.get("bid_qty"))
+        ask_qty = as_int(md.get("ask_qty"))
+        effective = volume or bid_qty + ask_qty
+        return {
+            "source": "option_chain" if effective else "unavailable",
+            "candleVolume": 0,
+            "optionChainVolume": volume,
+            "ltpVolume": 0,
+            "effectiveVolume": effective,
+            "score": round(clamp(effective / 1000)),
+            "volumeAvailable": effective > 0,
+        }
+
+    def _single_option_orderflow(self, symbol: str, spot: float, side: str, instrument_key: str | None, md: dict[str, Any], volume_state: dict[str, Any]) -> dict[str, Any]:
+        option_key = instrument_key or f"{symbol}:{side}:{md.get('ltp')}:{md.get('volume')}"
+        previous = self.previous_options.get(option_key)
+        selected_ltp = as_float(md.get("ltp"))
+        selected_volume = as_int(md.get("volume"))
+        if previous:
+            price_velocity = ((spot - previous.spot) / previous.spot) * 100 if previous.spot else 0
+            premium_velocity = ((selected_ltp - previous.selected_ltp) / previous.selected_ltp) * 100 if previous.selected_ltp else 0
+            volume_delta = max(0, selected_volume - previous.selected_volume)
+        else:
+            price_velocity = 0
+            premium_velocity = 0
+            volume_delta = 0
+        volume_delta = max(volume_delta, as_int(volume_state.get("effectiveVolume")))
+        bid_qty = as_int(md.get("bid_qty"))
+        ask_qty = as_int(md.get("ask_qty"))
+        depth_total = bid_qty + ask_qty
+        dom = ((bid_qty - ask_qty) / depth_total * 100) if depth_total else 0
+        side_direction = 1 if side == "CALL" else -1
+        directional_velocity = (price_velocity * side_direction) + premium_velocity
+        delta_velocity = round(clamp(directional_velocity * 18 + dom / 2, -100, 100))
+        self.previous_options[option_key] = PreviousTick(spot=spot, selected_ltp=selected_ltp, selected_volume=selected_volume, timestamp=datetime.now(timezone.utc))
+        return {
+            "cumulativeDelta": round(volume_delta if delta_velocity >= 0 else -volume_delta),
+            "deltaVelocity": delta_velocity,
+            "aggressiveBuyers": round(clamp(50 + max(delta_velocity, 0))),
+            "aggressiveSellers": round(clamp(50 + max(-delta_velocity, 0))),
+            "domImbalance": round(clamp(dom, -100, 100)),
+            "liquidityShift": round(clamp(abs(dom))),
+            "sweepDetection": round(clamp(100 - self._single_spread_quality(md))),
+            "volumeAcceleration": round(clamp(volume_delta / 1000)),
+            "breakoutVelocity": round(clamp(abs(directional_velocity) * 25 + abs(premium_velocity) * 20)),
+        }
+
+    def _single_option_greeks(self, greeks: dict[str, Any]) -> dict[str, Any]:
+        iv = as_float(greeks.get("iv"))
+        return {
+            "delta": round(as_float(greeks.get("delta")), 4),
+            "gamma": round(as_float(greeks.get("gamma")), 6),
+            "theta": round(as_float(greeks.get("theta")), 4),
+            "vega": round(as_float(greeks.get("vega")), 4),
+            "ivRank": round(clamp(iv)),
+            "ivPercentile": round(clamp(iv)),
+            "ivExpansion": round(clamp(iv)),
+        }
+
+    def _explosive_runner_watchlist(
+        self,
+        *,
+        symbol: str,
+        expiry: str,
+        rows: list[dict[str, Any]],
+        spot: float,
+        heatmap: list[dict[str, Any]],
+        market_profile: dict[str, Any],
+        entry_model: dict[str, Any],
+        tqs: int,
+    ) -> list[dict[str, Any]]:
+        if not self.settings.explosive_runner_enabled:
+            return []
+        engine = ExplosiveRunnerEngine(option_premium_history_available=self.settings.option_premium_history_available)
+        nearest = sorted(rows, key=lambda row: abs(as_float(row.get("strike_price")) - spot))[: max(1, self.settings.explosive_runner_scan_strikes)]
+        watchlist: list[dict[str, Any]] = []
+        for row in nearest:
+            strike = as_int(row.get("strike_price"))
+            for option_key, side in [("call_options", "CALL"), ("put_options", "PUT")]:
+                option = row.get(option_key) or {}
+                md = option.get("market_data") or {}
+                premium = as_float(md.get("ltp"))
+                if premium <= 0:
+                    continue
+                instrument_key = option.get("instrument_key")
+                volume_state = self._single_option_volume_state(md)
+                orderflow = self._single_option_orderflow(symbol, spot, side, instrument_key, md, volume_state)
+                greeks = self._single_option_greeks(option.get("option_greeks") or {})
+                signal = engine.evaluate(
+                    symbol=symbol,
+                    side=side,
+                    strike=strike,
+                    expiry=expiry,
+                    instrument_key=instrument_key,
+                    premium=premium,
+                    selected_md=md,
+                    greeks=greeks,
+                    orderflow=orderflow,
+                    spread_quality=self._single_spread_quality(md),
+                    volume_state=volume_state,
+                    heatmap=heatmap,
+                    market_profile=market_profile,
+                    entry_model=entry_model,
+                    tqs=tqs,
+                )
+                signal["id"] = f"{symbol}-{expiry}-{strike}-{side}-RUNNER"
+                signal["lastPremium"] = premium
+                signal["orderflow"] = orderflow
+                signal["volumeState"] = volume_state
+                signal["monitoringCadenceSeconds"] = self.settings.market_poll_seconds
+                signal["watchMode"] = "ALWAYS_ON_OPEN_EXPLOSIVE_SCAN"
+                watchlist.append(signal)
+        return sorted(watchlist, key=lambda item: (bool(item.get("candidate")), as_float(item.get("score"))), reverse=True)
+
+    def _explosive_runner_disabled(self, symbol: str, expiry: str) -> dict[str, Any]:
+        return {
+            "strategyType": "EXPLOSIVE_RUNNER",
+            "candidate": False,
+            "confidence": "DISABLED",
+            "score": 0,
+            "symbol": symbol,
+            "expiry": expiry,
+            "targetPremiumPct": 0,
+            "hardStopPct": 0,
+            "trailPct": 0,
+            "partialExitPct": 0,
+            "runnerPct": 0,
+            "reasons": ["explosive runner monitoring disabled"],
+            "dataStatus": {},
+            "metrics": {},
+        }
+
+    def _runner_suggested_trades(
+        self,
+        *,
+        runner_watchlist: list[dict[str, Any]],
+        trade_mode: str,
+        execution_allowed: bool,
+        trading_capital: float,
+        option_bias: dict[str, Any],
+        safe_mode: bool,
+        optimized_profile: dict[str, Any],
+        limit: int = 3,
+    ) -> list[dict[str, Any]]:
+        trades: list[dict[str, Any]] = []
+        for signal in runner_watchlist:
+            if len(trades) >= limit:
+                break
+            if not signal.get("candidate") or as_float(signal.get("score")) < self.settings.explosive_runner_min_score:
+                continue
+            premium = as_float(signal.get("premium") or signal.get("lastPremium"))
+            quantity_estimate = int(trading_capital // premium) if premium > 0 and trading_capital > 0 else 0
+            allocation_pct = round(((quantity_estimate * premium) / trading_capital) * 100, 2) if trading_capital > 0 and premium > 0 else 0
+            volume_state = signal.get("volumeState") or {}
+            trades.append(
+                {
+                    "id": signal.get("id"),
+                    "mode": trade_mode,
+                    "action": "EXECUTION_READY" if execution_allowed else "RUNNER_PAPER_WATCH",
+                    "symbol": signal.get("symbol"),
+                    "side": signal.get("side"),
+                    "strike": signal.get("strike"),
+                    "expiry": signal.get("expiry"),
+                    "instrumentKey": signal.get("instrumentKey"),
+                    "lastPremium": premium,
+                    "tradingCapital": trading_capital,
+                    "quantityEstimate": quantity_estimate,
+                    "allocationPct": allocation_pct,
+                    "chopBlocked": False,
+                    "chopReasons": [],
+                    "volumeSource": volume_state.get("source"),
+                    "effectiveVolume": volume_state.get("effectiveVolume", 0),
+                    "entryModel": {"model": "explosive_runner_scan", "state": signal.get("watchMode"), "retestConfirmed": False, "failedBreakout": False},
+                    "optimizedProfile": {**optimized_profile, "executionStyle": "RUNNER_BREAKOUT", "runnerPct": signal.get("runnerPct", optimized_profile.get("runnerPct", 0.65))},
+                    "strategyType": "EXPLOSIVE_RUNNER",
+                    "runnerSignal": signal,
+                    "tqs": max(68, round(as_float(signal.get("score")))),
+                    "confidence": signal.get("confidence"),
+                    "bias": option_bias.get("direction"),
+                    "pcr": option_bias.get("pcr"),
+                    "safeMode": safe_mode,
+                    "entryRules": [
+                        "Paper-only explosive runner candidate while ENABLE_LIVE_TRADING=false",
+                        "Monitor every configured second from backend background loop and UI polling",
+                        "Require premium expansion, spread quality, volume/OI and delta velocity to remain supportive",
+                    ],
+                    "levels": {},
+                    "invalidations": [
+                        "Runner score falls below threshold",
+                        "Premium momentum stalls or reverses",
+                        "Spread widens or liquidity disappears",
+                    ],
+                }
+            )
+        return trades
 
     def _regime(self, phase: MarketPhase, momentum: int, volume: int, spread: int) -> str:
         if phase != MarketPhase.LIVE_MARKET:

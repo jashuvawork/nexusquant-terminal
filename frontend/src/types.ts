@@ -270,7 +270,7 @@ export interface InstitutionalReadinessState { target: number; overall: number; 
 
 export interface NewsState { available: boolean; unavailableReason?: string | null; sentiment: string; score: number; eventRisk: string; articles: Array<{ title: string; sentiment: string; eventRisk: boolean; source?: unknown; publishedAt?: unknown }>; impact: { raiseTqs: boolean; allowRunnerBias: boolean; avoidFreshTrades: boolean } }
 
-export interface ExplosiveRunnerState { strategyType: string; candidate: boolean; confidence: string; score: number; targetPremiumPct: number; hardStopPct: number; trailPct: number; partialExitPct: number; runnerPct: number; reasons: string[]; dataStatus: Record<string, unknown>; metrics: Record<string, number>; }
+export interface ExplosiveRunnerState { strategyType: string; candidate: boolean; confidence: string; score: number; symbol?: MarketSymbol | string; side?: 'CALL' | 'PUT' | string; strike?: number; expiry?: string; instrumentKey?: string | null; premium?: number; lastPremium?: number; targetPremiumPct: number; hardStopPct: number; trailPct: number; partialExitPct: number; runnerPct: number; reasons: string[]; dataStatus: Record<string, unknown>; metrics: Record<string, number>; monitoringCadenceSeconds?: number; watchMode?: string; }
 
 export interface EntryModelState { model: string; state: string; openingRangeHigh?: number; openingRangeLow?: number; spot?: number; retestConfirmed: boolean; failedBreakout: boolean; direction?: string; }
 
@@ -405,6 +405,7 @@ export interface TerminalSnapshot {
   entryModel?: EntryModelState;
   newsState?: NewsState;
   explosiveRunner?: ExplosiveRunnerState;
+  explosiveRunnerWatchlist?: ExplosiveRunnerState[];
   pressureMode?: PressureModeState;
   precisionChecklist?: PrecisionChecklistState;
   adaptiveExit?: AdaptiveExitState;
