@@ -23,6 +23,24 @@ services:
         sync: false
       - key: UPSTOX_API_SECRET
         sync: false
+      - key: UPSTOX_REDIRECT_URI
+        sync: false
+      - key: PRIMARY_SYMBOL
+        value: NIFTY
+      - key: NIFTY_INSTRUMENT_KEY
+        value: NSE_INDEX|Nifty 50
+      - key: SENSEX_INSTRUMENT_KEY
+        value: BSE_INDEX|SENSEX
+      - key: NIFTY_EXPIRY_DATE
+        sync: false
+      - key: SENSEX_EXPIRY_DATE
+        sync: false
+      - key: ENABLE_LIVE_TRADING
+        value: false
+      - key: AGGRESSIVE_MODE
+        value: false
+      - key: MARKET_POLL_SECONDS
+        value: 1
 
   - type: redis
     name: nexusquant-redis
@@ -31,4 +49,4 @@ services:
 
 databases:
   - name: nexusquant-postgres
-    plan: starter
+    plan: basic-256mb

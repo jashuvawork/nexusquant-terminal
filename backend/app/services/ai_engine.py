@@ -3,34 +3,41 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-try:  # XGBoost is optional until a trained model artifact is mounted in production.
+try:  # XGBoost can be mounted later as a trained model artifact.
     import xgboost as xgb  # type: ignore
-except Exception:  # pragma: no cover - dependency may not be installed in local smoke tests.
+except Exception:  # pragma: no cover
     xgb = None
 
 
 @dataclass(frozen=True)
 class EngineWeight:
     name: str
+    key: str
     weight: float
 
 
 ENGINE_WEIGHTS = [
-    EngineWeight("Delta Engine", 0.16),
-    EngineWeight("Momentum Engine", 0.14),
-    EngineWeight("Heatmap Engine", 0.12),
-    EngineWeight("Volume Engine", 0.10),
-    EngineWeight("Regime Engine", 0.10),
-    EngineWeight("Spread Analysis", 0.09),
-    EngineWeight("Option Chain Bias", 0.10),
-    EngineWeight("Gamma Positioning", 0.10),
-    EngineWeight("IV Expansion", 0.05),
-    EngineWeight("Market Profile Alignment", 0.04),
+    EngineWeight("Delta Engine", "delta_engine", 0.16),
+    EngineWeight("Momentum Engine", "momentum_engine", 0.14),
+    EngineWeight("Heatmap Engine", "heatmap_engine", 0.12),
+    EngineWeight("Volume Engine", "volume_engine", 0.10),
+    EngineWeight("Regime Engine", "regime_engine", 0.10),
+    EngineWeight("Spread Analysis", "spread_analysis", 0.09),
+    EngineWeight("Option Chain Bias", "option_chain_bias", 0.10),
+    EngineWeight("Gamma Positioning", "gamma_positioning", 0.10),
+    EngineWeight("IV Expansion", "iv_expansion", 0.05),
+    EngineWeight("Market Profile Alignment", "market_profile_alignment", 0.04),
 ]
 
 
+def clamp_score(value: float | int | None) -> int:
+    if value is None:
+        return 0
+    return round(max(0, min(100, float(value))))
+
+
 class TradeQualityScorer:
-    """Deterministic scoring adapter with a slot for a trained XGBoost model."""
+    """Weighted real-data scorer with a slot for a trained XGBoost model."""
 
     def __init__(self) -> None:
         self.model: Any | None = None
@@ -39,16 +46,14 @@ class TradeQualityScorer:
 
     def score(self, features: dict[str, float]) -> tuple[int, list[dict[str, Any]]]:
         matrix: list[dict[str, Any]] = []
-        for index, engine in enumerate(ENGINE_WEIGHTS):
-            feature_key = engine.name.lower().replace(" ", "_")
-            raw_value = features.get(feature_key, features.get("baseline", 72.0))
-            adjusted = max(0, min(99, raw_value + (index % 3) * 2.5))
+        for engine in ENGINE_WEIGHTS:
+            score = clamp_score(features.get(engine.key))
             matrix.append(
                 {
                     "engine": engine.name,
-                    "score": round(adjusted),
+                    "score": score,
                     "weight": engine.weight,
-                    "status": "pass" if adjusted >= 78 else "watch" if adjusted >= 62 else "fail",
+                    "status": "pass" if score >= 78 else "watch" if score >= 62 else "fail",
                 }
             )
         tqs = round(sum(item["score"] * item["weight"] for item in matrix))

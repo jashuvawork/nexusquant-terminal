@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react';
-import { Activity, BarChart3, Bot, BrainCircuit, DatabaseZap, Gauge, History, LineChart, Network, Radar, Route, Settings, ShieldCheck, WalletCards } from 'lucide-react';
+import { Activity, BarChart3, Bot, BrainCircuit, DatabaseZap, Gauge, History, LineChart, Network, Radar, ReceiptText, Route, Settings, ShieldCheck, WalletCards } from 'lucide-react';
 
 export type ModuleId =
   | 'execution'
@@ -15,6 +15,7 @@ export type ModuleId =
   | 'journal'
   | 'session'
   | 'backtesting'
+  | 'paperTrading'
   | 'settings';
 
 interface NavItem {
@@ -37,5 +38,6 @@ export const navItems: NavItem[] = [
   { id: 'journal', label: 'Trade Journal', icon: DatabaseZap },
   { id: 'session', label: 'Session Intelligence', icon: BarChart3 },
   { id: 'backtesting', label: 'Backtesting', icon: History },
+  { id: 'paperTrading', label: 'Paper Trading', icon: ReceiptText },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];

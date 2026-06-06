@@ -1,0 +1,57 @@
+{
+  "family": "nexusquant-api",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/nexusquant-task-role",
+  "containerDefinitions": [
+    {
+      "name": "nexusquant-api",
+      "image": "<ACCOUNT_ID>.dkr.ecr.ap-south-1.amazonaws.com/nexusquant-api:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8000,
+          "hostPort": 8000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "ENVIRONMENT", "value": "production" },
+        { "name": "CORS_ORIGINS", "value": "https://your-vercel-domain.vercel.app,http://localhost:5173" },
+        { "name": "PRIMARY_SYMBOL", "value": "NIFTY" },
+        { "name": "NIFTY_INSTRUMENT_KEY", "value": "NSE_INDEX|Nifty 50" },
+        { "name": "SENSEX_INSTRUMENT_KEY", "value": "BSE_INDEX|SENSEX" },
+        { "name": "ENABLE_LIVE_TRADING", "value": "false" },
+        { "name": "PAPER_TRADING", "value": "true" },
+        { "name": "AGGRESSION_PROFILE", "value": "realistic_aggressive" },
+        { "name": "NEWS_PROVIDER", "value": "upstox" },
+        { "name": "OPTION_PREMIUM_HISTORY_AVAILABLE", "value": "true" }
+      ],
+      "secrets": [
+        { "name": "DATABASE_URL", "valueFrom": "arn:aws:secretsmanager:ap-south-1:<ACCOUNT_ID>:secret:nexusquant/DATABASE_URL" },
+        { "name": "REDIS_URL", "valueFrom": "arn:aws:secretsmanager:ap-south-1:<ACCOUNT_ID>:secret:nexusquant/REDIS_URL" },
+        { "name": "UPSTOX_API_KEY", "valueFrom": "arn:aws:secretsmanager:ap-south-1:<ACCOUNT_ID>:secret:nexusquant/UPSTOX_API_KEY" },
+        { "name": "UPSTOX_API_SECRET", "valueFrom": "arn:aws:secretsmanager:ap-south-1:<ACCOUNT_ID>:secret:nexusquant/UPSTOX_API_SECRET" },
+        { "name": "UPSTOX_ACCESS_TOKEN", "valueFrom": "arn:aws:secretsmanager:ap-south-1:<ACCOUNT_ID>:secret:nexusquant/UPSTOX_ACCESS_TOKEN" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/nexusquant-api",
+          "awslogs-region": "ap-south-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8000/health\")'"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      }
+    }
+  ]
+}

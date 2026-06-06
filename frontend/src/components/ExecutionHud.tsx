@@ -21,6 +21,42 @@ export function ExecutionHud({ snapshot }: ExecutionHudProps) {
         <MetricCard label="Vol Regime" value={snapshot.volatilityRegime.replaceAll('_', ' ')} helper="IV adaptive sizing" tone="violet" />
         <MetricCard label="Trail State" value={snapshot.trailingStopState} helper="ATR/orderflow managed" tone={snapshot.risk.safeMode ? 'rose' : 'cyan'} />
       </div>
+      <div className="xl:col-span-7 grid gap-4 lg:grid-cols-2">
+        {snapshot.entryModel && (
+          <Card title="Retest Entry Model" eyebrow="ORB / breakout retest confirmation">
+            <div className={`rounded-2xl border p-4 ${snapshot.entryModel.retestConfirmed ? 'border-emerald-300/30 bg-emerald-300/10' : snapshot.entryModel.failedBreakout ? 'border-rose-300/30 bg-rose-300/10' : 'border-amber-300/30 bg-amber-300/10'}`}>
+              <p className="text-xl font-black text-white">{snapshot.entryModel.state.replaceAll('_', ' ')}</p>
+              <p className="mt-2 text-sm text-slate-300">OR High {snapshot.entryModel.openingRangeHigh} | OR Low {snapshot.entryModel.openingRangeLow}</p>
+              <p className="mt-1 text-xs text-slate-400">Retest {snapshot.entryModel.retestConfirmed ? 'confirmed' : 'waiting'} | Failed breakout {snapshot.entryModel.failedBreakout ? 'YES' : 'NO'}</p>
+            </div>
+          </Card>
+        )}
+        {snapshot.pressureMode && (
+          <Card title="Pressure Mode Engine" eyebrow="Under-pressure protection">
+            <div className={`rounded-2xl border p-4 ${snapshot.pressureMode.level === 'CRITICAL' ? 'border-rose-300/30 bg-rose-300/10' : snapshot.pressureMode.level === 'ELEVATED' ? 'border-amber-300/30 bg-amber-300/10' : 'border-emerald-300/30 bg-emerald-300/10'}`}>
+              <p className="text-3xl font-black text-white">{snapshot.pressureMode.level}</p>
+              <p className="mt-2 text-sm text-slate-300">Score {snapshot.pressureMode.score}</p>
+              <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-slate-300">
+                {snapshot.pressureMode.actions.map((action) => <li key={action}>{action}</li>)}
+              </ul>
+            </div>
+          </Card>
+        )}
+        {snapshot.precisionChecklist && (
+          <Card title="Precision Entry Checklist" eyebrow="All critical gates must pass">
+            <p className={`text-2xl font-black ${snapshot.precisionChecklist.passed ? 'text-emerald-300' : 'text-rose-300'}`}>{snapshot.precisionChecklist.passed ? 'PASS' : 'BLOCK'}</p>
+            <p className="mt-1 text-sm text-slate-400">{snapshot.precisionChecklist.passedCount}/{snapshot.precisionChecklist.total} checks passed</p>
+            <div className="mt-3 grid gap-2">
+              {snapshot.precisionChecklist.checks.slice(0, 6).map((check) => (
+                <div key={check.name} className="flex items-center justify-between rounded-xl bg-slate-950/60 px-3 py-2 text-xs">
+                  <span className="text-slate-300">{check.name}</span>
+                  <span className={check.passed ? 'text-emerald-300' : 'text-rose-300'}>{check.passed ? 'OK' : 'FAIL'}</span>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
+      </div>
       <Card title="Active Trades" eyebrow="Automated trade management" className="xl:col-span-5">
         <div className="space-y-4">
           {snapshot.activeTrades.map((trade) => (

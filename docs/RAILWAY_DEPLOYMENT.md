@@ -1,202 +1,102 @@
-# NexusQuant Institutional Terminal
+# Deploy NexusQuant Backend on Railway and Frontend on Vercel
 
-NexusQuant is a deployable institutional-style AI scalping terminal scaffold for Indian index options on NIFTY and SENSEX.
+Use this for the current deployment target:
 
-## AWS + Vercel deployment
+- Backend: Railway
+- Frontend: Vercel
+- Database: Railway PostgreSQL
+- Redis/token cache: Railway Redis
+- Future AWS migration: see `docs/AWS_DEPLOYMENT.md`
 
-For the current Railway backend deployment with Vercel frontend, see [`docs/RAILWAY_DEPLOYMENT.md`](docs/RAILWAY_DEPLOYMENT.md). For future AWS backend deployment, use ECS Fargate with an Application Load Balancer because the backend exposes WebSockets; see [`docs/AWS_DEPLOYMENT.md`](docs/AWS_DEPLOYMENT.md).
+The backend uses WebSockets at `/ws/market`. Railway supports public web services and dynamic ports; the Dockerfile now binds to Railway's `$PORT`.
 
-## Stack
+## 1. Deploy backend on Railway
 
-- Frontend: React, TypeScript, Vite, TailwindCSS, Lightweight Charts, Recharts, Framer Motion, WebSocket client
-- Backend: FastAPI, asyncio, WebSockets, Redis boundary, PostgreSQL boundary, XGBoost-ready AI scoring, Prometheus metrics, Docker
-- Deployment: Vercel frontend, Railway backend now, AWS ECS/Fargate later, PostgreSQL, Redis, Prometheus/Grafana-ready metrics, GitHub Actions CI
+### Step 1: Create Railway project
 
-## Modules
+1. Open Railway.
+2. Click **New Project**.
+3. Choose **Deploy from GitHub repo**.
+4. Select this repository.
 
-The terminal includes Execution HUD, Heatmap Terminal, Orderflow Analytics, AI Matrix, Greeks & IV, Strategy Router, Upstox Portfolio, Risk Engine, Infrastructure Telemetry, AI Analytics, Trade Journal, Session Intelligence, Backtesting, and Settings.
+### Step 2: Configure backend service root
 
-## Vercel build error: frontend directory
-
-If Vercel fails with `cd: frontend: No such file or directory`, set Vercel Root Directory to `./` with output `frontend/dist`, or set Root Directory to `frontend` with build command `npm run build` and output `dist`.
-
-## Local frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-The frontend connects to `VITE_WS_URL`. It does not show dummy prices; if the backend or Upstox is unavailable, it shows an explicit connection/configuration status.
-
-## Local backend
-
-```bash
-cd backend
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload
-```
-
-Useful endpoints:
-
-- `GET /health`
-- `GET /metrics`
-- `GET /api/terminal/state`
-- `GET /api/upstox/health`
-- `WS /ws/market`
-
-## Docker Compose
-
-```bash
-docker compose up --build
-```
-
-Services:
-
-- Frontend: run separately with Vite or deploy to Vercel
-- Backend: `http://localhost:8000`
-- PostgreSQL: `localhost:5432`
-- Redis: `localhost:6379`
-- Prometheus: `http://localhost:9090`
-
-
-## Simple deployment steps
-
-### 1. Deploy the backend on Render
-
-1. Push this repository to GitHub.
-2. Open Render and choose **New +** -> **Blueprint**.
-3. Select this repository. Render will read `render.yaml`.
-4. Create the services:
-   - `nexusquant-api` web service
-   - `nexusquant-postgres` database
-   - `nexusquant-redis` Redis service
-5. Open the `nexusquant-api` service -> **Environment** and add:
+Because this is a monorepo, set the backend service root directory to:
 
 ```text
-CORS_ORIGINS=https://your-vercel-domain.vercel.app,http://localhost:5173
+/backend
+```
+
+Railway should detect:
+
+```text
+backend/Dockerfile
+backend/railway.json
+```
+
+If Railway asks for config file path, use:
+
+```text
+/backend/railway.json
+```
+
+If Railway asks for Dockerfile path, use:
+
+```text
+Dockerfile
+```
+
+or from repo root:
+
+```text
+/backend/Dockerfile
+```
+
+### Step 3: Add PostgreSQL
+
+In the same Railway project:
+
+1. Click **New**.
+2. Choose **Database**.
+3. Choose **PostgreSQL**.
+4. Name it something clear, for example:
+
+```text
+Postgres
+```
+
+Railway automatically creates a `DATABASE_URL` variable on the Postgres service.
+
+### Step 4: Add Redis
+
+In the same Railway project:
+
+1. Click **New**.
+2. Choose **Database**.
+3. Choose **Redis**.
+4. Name it something clear, for example:
+
+```text
+Redis
+```
+
+Railway automatically creates a `REDIS_URL` variable on the Redis service.
+
+### Step 5: Add backend variables
+
+Open the backend service -> **Variables**.
+
+Add these variables:
+
+```text
+ENVIRONMENT=production
+DATABASE_URL=${{Postgres.DATABASE_URL}}
+REDIS_URL=${{Redis.REDIS_URL}}
 UPSTOX_API_KEY=your_upstox_api_key
 UPSTOX_API_SECRET=your_upstox_api_secret
-UPSTOX_REDIRECT_URI=https://your-render-api.onrender.com/api/upstox/callback
-AI_SCORE_THRESHOLD=76
-SAFE_MODE_THRESHOLD=86
-MAX_EXPOSURE_PCT=42
-DAILY_DRAWDOWN_PCT=3
-```
-
-6. Replace `https://your-render-api.onrender.com` with the real Render backend URL.
-7. In the Upstox developer console, set the same redirect URL:
-
-```text
-https://your-render-api.onrender.com/api/upstox/callback
-```
-
-8. Redeploy the Render backend.
-9. Confirm the backend is live:
-
-```text
-https://your-render-api.onrender.com/health
-```
-
-### 2. Get the Upstox access token
-
-Upstox requires a browser login and authorization-code exchange. The backend automates the exchange and stores the access token after you log in.
-
-1. Open this URL in your browser:
-
-```text
-https://your-render-api.onrender.com/api/upstox/login-url
-```
-
-2. Copy the `loginUrl` value from the response and open it.
-3. Log in to Upstox and approve access.
-4. Upstox redirects to:
-
-```text
-https://your-render-api.onrender.com/api/upstox/callback?code=...
-```
-
-5. If successful, the page shows `Upstox access token stored successfully`.
-6. Check token status:
-
-```text
-https://your-render-api.onrender.com/api/upstox/token/status
-```
-
-Expected response:
-
-```json
-{
-  "configured": true,
-  "hasToken": true,
-  "expiresAt": "...",
-  "tokenType": "Bearer"
-}
-```
-
-### 3. Deploy the frontend on Vercel
-
-1. Open Vercel and choose **Add New** -> **Project**.
-2. Import the same GitHub repository.
-3. Keep the root directory as the repository root. `vercel.json` already points to `frontend`.
-4. Add environment variables in Vercel:
-
-```text
-VITE_API_URL=https://your-render-api.onrender.com
-VITE_WS_URL=wss://your-render-api.onrender.com/ws/market
-```
-
-5. Deploy.
-6. After Vercel gives you a frontend URL, go back to Render and update `CORS_ORIGINS`:
-
-```text
-CORS_ORIGINS=https://your-vercel-domain.vercel.app,http://localhost:5173
-```
-
-7. Redeploy Render once more.
-8. Open the Vercel URL. The header should show **Backend stream live** when WebSocket is connected.
-
-### 4. Important security note
-
-Never commit broker secrets to GitHub. Add Upstox credentials only as Render environment variables. If credentials were shared in chat, rotate/regenerate them in the Upstox developer console before funding or live trading.
-
-## Vercel
-
-Use the repository root. `vercel.json` builds `frontend` and serves `frontend/dist`.
-
-Set environment variables:
-
-```text
-VITE_API_URL=https://nexusquant-api.onrender.com
-VITE_WS_URL=wss://nexusquant-api.onrender.com/ws/market
-```
-
-## Render
-
-`render.yaml` defines the FastAPI Docker service plus PostgreSQL and Redis. Configure secrets in Render:
-
-```text
-CORS_ORIGINS=https://your-vercel-domain.vercel.app
-UPSTOX_API_KEY=...
-UPSTOX_API_SECRET=...
-```
-
-
-## Real Upstox data and trading setup
-
-This version does not generate dummy market prices, fake heatmaps, random PnL, or local fallback ticks. The simulator module has been removed. If the backend cannot authenticate with Upstox, verify live funds, or fetch dynamic option expiry/chain data, the frontend blocks the snapshot and shows a setup/status panel instead of a simulated terminal.
-
-### Required Render variables for real data
-
-Set these on the Render backend service:
-
-```text
-UPSTOX_API_KEY=your_upstox_api_key
-UPSTOX_API_SECRET=your_upstox_api_secret
-UPSTOX_REDIRECT_URI=https://your-render-api.onrender.com/api/upstox/callback
+UPSTOX_REDIRECT_URI=https://${{RAILWAY_PUBLIC_DOMAIN}}/api/upstox/callback
+# Optional temporary token override. Leave blank unless you manually paste a valid Upstox access token.
+UPSTOX_ACCESS_TOKEN=
 PRIMARY_SYMBOL=NIFTY
 NIFTY_INSTRUMENT_KEY=NSE_INDEX|Nifty 50
 SENSEX_INSTRUMENT_KEY=BSE_INDEX|SENSEX
@@ -206,126 +106,288 @@ SENSEX_EXPIRY_DATE=
 MARKET_POLL_SECONDS=1
 ENABLE_LIVE_TRADING=false
 AGGRESSIVE_MODE=false
+AI_SCORE_THRESHOLD=76
+SAFE_MODE_THRESHOLD=86
+MAX_EXPOSURE_PCT=42
+DAILY_DRAWDOWN_PCT=3
 ```
 
-`NIFTY_EXPIRY_DATE` and `SENSEX_EXPIRY_DATE` must be the active weekly/monthly option expiries you want to trade. Upstox option-chain API requires an expiry date, so the backend will not invent one.
-
-### Upstox token flow
-
-1. Deploy backend on Render.
-2. Set the same redirect URL in the Upstox developer console:
+If your Railway database service names are different, change references accordingly:
 
 ```text
-https://your-render-api.onrender.com/api/upstox/callback
+DATABASE_URL=${{YourPostgresServiceName.DATABASE_URL}}
+REDIS_URL=${{YourRedisServiceName.REDIS_URL}}
 ```
 
-3. Open:
+Important: keep broker secrets only in Railway backend variables. Do not add Upstox secrets to Vercel.
+
+### Step 6: Generate public backend domain
+
+Open backend service -> **Settings** -> **Networking**.
+
+Click:
 
 ```text
-https://your-render-api.onrender.com/api/upstox/login-url
+Generate Domain
 ```
 
-4. Open the returned `loginUrl`, log in to Upstox, and approve.
-5. Verify token:
+Railway gives a URL like:
 
 ```text
-https://your-render-api.onrender.com/api/upstox/token/status
+https://nexusquant-api-production.up.railway.app
+```
+
+This is your backend URL.
+
+### Step 7: Update CORS variable
+
+After you deploy Vercel, set this to your real Vercel domain. For first backend test, you can use:
+
+```text
+CORS_ORIGINS=http://localhost:5173
+```
+
+After Vercel deploys, update it to:
+
+```text
+CORS_ORIGINS=https://your-vercel-domain.vercel.app,http://localhost:5173
+```
+
+### Step 8: Deploy backend
+
+Railway should deploy automatically after variable changes. If not, click:
+
+```text
+Deploy
+```
+
+Check backend health:
+
+```text
+https://your-railway-domain.up.railway.app/health
 ```
 
 Expected:
 
 ```json
-{"configured": true, "hasToken": true}
+{
+  "status": "ok",
+  "upstoxConfigured": true,
+  "upstoxTokenPresent": false
+}
 ```
 
-### Market phases
+## 2. Configure Upstox token on Railway backend
 
-The backend classifies Indian market time in IST:
+### Step 1: Set Upstox redirect URL
 
-- `PRE_MARKET_ANALYSIS`: 08:30-09:15, analysis only, no live scalps.
-- `LIVE_MARKET`: 09:15-15:30, scalping can be considered if risk gates pass.
-- `POST_MARKET_ANALYSIS`: 15:30-16:15, review only.
-- `CLOSED_MARKET`: outside regular session or weekends, closed-market analysis from latest Upstox data only.
+In Upstox developer console, set redirect URL exactly:
 
-### Real data used
+```text
+https://your-railway-domain.up.railway.app/api/upstox/callback
+```
 
-The terminal snapshot is built from:
+This must match `UPSTOX_REDIRECT_URI`.
 
-- Upstox V3 LTP quotes
-- Upstox V2 option chain, including market data and Greeks
-- Upstox V3 intraday candles
-- Upstox positions, orders, and funds where available
-- Derived analytics from real bid/ask quantity, OI, volume, spreads, candles, and previous real poll state
+### Step 2: Get login URL
 
-REST snapshots cannot prove true exchange aggressor side like a colocated tick/order feed. Therefore orderflow metrics are labelled as Upstox-derived from real depth, LTP, volume and OI changes rather than fabricated institutional tape.
+Open:
 
-### Analysis-only mode
+```text
+https://your-railway-domain.up.railway.app/api/upstox/login-url
+```
 
-Default production mode is analysis only:
+Copy the `loginUrl` from the response and open it.
+
+### Step 3: Login and approve
+
+1. Login to Upstox.
+2. Approve access.
+3. Upstox redirects back to Railway.
+4. Backend stores token in Redis.
+
+Check token:
+
+```text
+https://your-railway-domain.up.railway.app/api/upstox/token/status
+```
+
+Expected:
+
+```json
+{
+  "configured": true,
+  "hasToken": true
+}
+```
+
+## 3. Test real Upstox connection, funds and expiries
+
+Check backend health:
+
+```text
+https://your-railway-domain.up.railway.app/health
+```
+
+Check token:
+
+```text
+https://your-railway-domain.up.railway.app/api/upstox/token/status
+```
+
+Check live Upstox account funds, positions and orders:
+
+```text
+https://your-railway-domain.up.railway.app/api/upstox/account-summary
+```
+
+Check dynamic expiry discovery from Upstox option contracts:
+
+```text
+https://your-railway-domain.up.railway.app/api/market/expiries/NIFTY
+https://your-railway-domain.up.railway.app/api/market/expiries/SENSEX
+```
+
+Test full closed-market/live snapshot. This includes selected expiry, available funds, pre-market/closed-market analysis and tomorrow candidate plan:
+
+```text
+https://your-railway-domain.up.railway.app/api/market/snapshot/NIFTY
+https://your-railway-domain.up.railway.app/api/market/snapshot/SENSEX
+```
+
+`NIFTY_EXPIRY_DATE` and `SENSEX_EXPIRY_DATE` are optional. If you leave them blank, NexusQuant selects the nearest available expiry returned by Upstox `/v2/option/contract`. If you set them and Upstox does not return that expiry, the backend warns and falls back to the nearest available expiry.
+
+## 4. Deploy frontend on Vercel
+
+### Step 1: Import project
+
+1. Open Vercel.
+2. Click **Add New** -> **Project**.
+3. Import the same GitHub repository.
+4. Use one of these two valid configurations:
+
+**Option A, recommended: repo root**
+
+```text
+Root Directory: ./
+Build Command: leave default or use npm --prefix frontend install && npm --prefix frontend run build
+Output Directory: frontend/dist
+```
+
+**Option B: frontend folder**
+
+```text
+Root Directory: frontend
+Build Command: npm run build
+Output Directory: dist
+```
+
+Do not use `cd frontend && ...` when Root Directory is already `frontend`; that causes `cd: frontend: No such file or directory`.
+
+### Step 2: Add Vercel environment variables
+
+```text
+VITE_API_URL=https://your-railway-domain.up.railway.app
+VITE_WS_URL=wss://your-railway-domain.up.railway.app/ws/market
+```
+
+Use:
+
+- `https://` for API URL
+- `wss://` for WebSocket URL
+
+### Step 3: Deploy
+
+Click **Deploy**.
+
+Vercel gives a URL like:
+
+```text
+https://nexusquant-terminal.vercel.app
+```
+
+## 5. Final backend CORS update
+
+Go back to Railway backend service -> **Variables**.
+
+Set:
+
+```text
+CORS_ORIGINS=https://your-vercel-domain.vercel.app,http://localhost:5173
+```
+
+Redeploy Railway backend.
+
+## 6. Open frontend
+
+Open:
+
+```text
+https://your-vercel-domain.vercel.app
+```
+
+If connected, the header should show:
+
+```text
+Real Upstox stream live
+```
+
+If not connected, frontend shows the exact status:
+
+```text
+UPSTOX_AUTH_REQUIRED
+CONFIGURATION_REQUIRED
+UPSTOX_DATA_ERROR
+BACKEND_WS_ERROR
+```
+
+## 7. Live trading mode
+
+Start safely:
 
 ```text
 ENABLE_LIVE_TRADING=false
 AGGRESSIVE_MODE=false
 ```
 
-The system streams real market analysis but blocks order placement.
+This gives real Upstox analysis only and blocks live order placement.
 
-### Aggressive scalping mode
-
-Only after you confirm broker permissions, exchange approvals, lot size, freeze quantity, capital limits, and risk settings, enable:
+Only after verifying broker token, data, expiry, lot size, risk, and small quantity testing, change Railway variables:
 
 ```text
 ENABLE_LIVE_TRADING=true
 AGGRESSIVE_MODE=true
 ```
 
-Live orders use:
+Then redeploy backend.
 
-```http
-POST /api/execution/scalp-order
+## 8. Future AWS migration
+
+When you move to AWS later, keep frontend Vercel variables the same pattern, just replace Railway domain with AWS ALB/custom backend domain:
+
+```text
+VITE_API_URL=https://api.yourdomain.com
+VITE_WS_URL=wss://api.yourdomain.com/ws/market
 ```
 
-Example body:
+See:
 
-```json
-{
-  "instrument_token": "NSE_FO|12345",
-  "quantity": 75,
-  "transaction_type": "BUY",
-  "order_type": "LIMIT",
-  "price": 150.5,
-  "market_protection": 0,
-  "tag": "nexusquant-scalp"
-}
+```text
+docs/AWS_DEPLOYMENT.md
 ```
 
-The backend blocks orders when:
+## No dummy-data guard
 
-- `ENABLE_LIVE_TRADING=false`
-- market phase is not `LIVE_MARKET`
-- Upstox token is missing
-- risk gates fail
-- a MARKET order has no market protection
+The frontend blocks any snapshot that does not include:
 
-Keep `ENABLE_LIVE_TRADING=false` until you have tested with small quantity and confirmed all Upstox responses in production.
+```text
+dataSource=UPSTOX_REALTIME_REST
+upstoxConnection.connected=true
+portfolio.fundsSource=upstox
+expiryState.selectedExpiry
+```
 
-## Production integration notes
-
-The Upstox adapter is intentionally isolated in `backend/app/services/upstox_client.py`. It calls real Upstox endpoints for funds, positions, orders, option contracts, option chain, quotes, candles, and guarded order placement.
-
-The execution pipeline is represented as:
-
-1. Infrastructure telemetry and failsafe validation
-2. Session intelligence and regime classification
-3. Heatmap and liquidity sweep analysis
-4. Multi-engine AI scoring
-5. Option chain, Greeks, and gamma confirmation
-6. Adaptive sizing and smart routing
-7. Execution quality monitoring
-8. Adaptive trailing engine
-9. AI learning and analytics storage
-
-This scaffold does not place live orders by default. Keep execution disabled until broker credentials, exchange approvals, audit logging, and risk limits are validated.
+If you see `NON_UPSTOX_SNAPSHOT_BLOCKED`, Railway is probably running an old backend commit or a non-Upstox response. Redeploy Railway and Vercel using the latest commit.
 
 
 ## Upstox token options

@@ -1,0 +1,8 @@
+{
+  "name": "nexusquant-vercel-compat",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "build": "cd .. && npm install && npm run build && rm -rf frontend/dist && mkdir -p frontend && cp -R dist frontend/dist"
+  }
+}

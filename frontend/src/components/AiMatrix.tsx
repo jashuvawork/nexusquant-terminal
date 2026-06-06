@@ -20,6 +20,17 @@ export function AiMatrix({ snapshot }: AiMatrixProps) {
           <div className="mt-5 rounded-2xl bg-slate-950/70 p-4 text-sm text-slate-300">
             Current router: <span className="font-bold text-cyan-200">{snapshot.strategy.router.replaceAll('_', ' ')}</span> | Threshold: {snapshot.strategy.threshold}
           </div>
+          {snapshot.tqsBreakdown && (
+            <div className="mt-4 rounded-2xl border border-violet-300/20 bg-violet-300/10 p-4 text-sm text-slate-200">
+              <p className="font-bold uppercase tracking-[0.2em] text-violet-200">TQS Breakdown</p>
+              <p className="mt-2 text-xs text-slate-400">{snapshot.tqsBreakdown.explanation}</p>
+              <div className="mt-3 space-y-2">
+                {snapshot.tqsBreakdown.weakComponents.slice(0, 3).map((item) => (
+                  <div key={item.engine} className="flex justify-between text-xs"><span>{item.engine}</span><span className="text-rose-300">{item.score}</span></div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
         <div className="grid gap-3">
           {snapshot.aiMatrix.map((engine) => (
