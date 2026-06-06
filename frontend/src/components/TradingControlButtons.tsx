@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { CircleStop, Play } from 'lucide-react';
-
-const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+import { apiUrl, displayApiUrl } from '../config/api';
 
 interface TradingControlButtonsProps {
   stopped?: boolean;
@@ -48,7 +47,7 @@ export function TradingControlButtons({ stopped = false, compact = false }: Trad
       setLocalStopped(stoppedNow);
       setMessage(stoppedNow ? 'AUTO TRADING STOPPED' : 'AUTO TRADING RESUMED');
     } catch (error) {
-      setMessage(`Control failed: ${error instanceof Error ? error.message : String(error)}. Try ${apiUrl}/api/execution/${action}-now`);
+      setMessage(`Control failed: ${error instanceof Error ? error.message : String(error)}. Try ${displayApiUrl}/api/execution/${action}-now`);
     } finally {
       setBusy(false);
     }

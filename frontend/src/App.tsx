@@ -24,11 +24,11 @@ import { navItems, type ModuleId } from './components/navItems';
 import { TerminalChart } from './components/TerminalChart';
 import { TerminalHeader } from './components/TerminalHeader';
 import { TradingControlButtons } from './components/TradingControlButtons';
+import { displayApiUrl, usesSameOriginApiProxy } from './config/api';
 import { useMarketStream } from './hooks/useMarketStream';
 import type { MarketSymbol } from './types';
 
 function WaitingForRealData({ status, issue }: { status: string; issue: { status: string; message: string } | null }) {
-  const apiUrl = import.meta.env.VITE_API_URL ?? 'https://your-render-api.onrender.com';
   return (
     <main className="terminal-grid min-h-screen p-4 text-slate-100">
       <div className="mx-auto flex min-h-[calc(100vh-2rem)] max-w-5xl items-center justify-center">
@@ -45,10 +45,11 @@ function WaitingForRealData({ status, issue }: { status: string; issue: { status
                 </div>
               </div>
               <p className="mt-5 text-sm leading-6 text-slate-300">
-                {issue?.message ?? 'Connecting to the Railway backend HTTP polling stream. The terminal will stay blank until a real Upstox snapshot is received.'}
+                {issue?.message ?? 'Connecting to the backend HTTP polling stream. The terminal will stay blank until a real Upstox snapshot is received.'}
               </p>
               <div className="mt-6 rounded-2xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm text-amber-100">
-                This build intentionally removed local simulated prices. Configure/redeploy Railway backend, Upstox token, and Vercel URLs to see live or closed-market analysis.
+                This build intentionally removed local simulated prices. Configure the AWS backend, Upstox token, and Vercel URLs to see live or closed-market analysis.
+                {usesSameOriginApiProxy && <span className="mt-2 block">This HTTPS Vercel page is proxying API calls through its own domain because the AWS ALB is currently HTTP-only.</span>}
               </div>
               <div className="mt-4 rounded-2xl border border-slate-700 bg-slate-950/60 p-4">
                 <p className="mb-3 text-xs font-bold uppercase tracking-[0.24em] text-slate-400">Emergency trading control</p>
@@ -58,10 +59,10 @@ function WaitingForRealData({ status, issue }: { status: string; issue: { status
             <div className="rounded-2xl border border-slate-700 bg-slate-950/70 p-4">
               <div className="flex items-center gap-2 text-cyan-200"><KeyRound className="h-4 w-4" /> Required checks</div>
               <ol className="mt-4 list-decimal space-y-3 pl-5 text-sm text-slate-300">
-                <li>Open <span className="font-mono text-cyan-200">{apiUrl}/health</span>.</li>
-                <li>Open <span className="font-mono text-cyan-200">{apiUrl}/api/upstox/token/status</span>.</li>
-                <li>If token is missing, open <span className="font-mono text-cyan-200">{apiUrl}/api/upstox/login-url</span>.</li>
-                <li>Open <span className="font-mono text-cyan-200">{apiUrl}/api/deployment/status</span> and confirm the latest Upstox-only API is deployed.</li>
+                <li>Open <span className="font-mono text-cyan-200">{displayApiUrl}/health</span>.</li>
+                <li>Open <span className="font-mono text-cyan-200">{displayApiUrl}/api/upstox/token/status</span>.</li>
+                <li>If token is missing, open <span className="font-mono text-cyan-200">{displayApiUrl}/api/upstox/login-url</span>.</li>
+                <li>Open <span className="font-mono text-cyan-200">{displayApiUrl}/api/deployment/status</span> and confirm the latest Upstox-only API is deployed.</li>
               </ol>
             </div>
           </div>

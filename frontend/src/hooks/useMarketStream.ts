@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
+import { apiUrl, usesSameOriginApiProxy, wsUrl } from '../config/api';
 import type { MarketSymbol, StreamStatus, TerminalSnapshot } from '../types';
 
-const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
-const wsUrl = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8000/ws/market';
 const configuredStreamMode = (import.meta.env.VITE_STREAM_MODE ?? 'polling') as 'websocket' | 'polling' | 'hybrid';
 const forceWebSocket = import.meta.env.VITE_FORCE_WEBSOCKET === 'true';
 const isRailwayBackend = apiUrl.includes('.up.railway.app');
@@ -90,7 +89,12 @@ export function useMarketStream() {
         // Ignore stale socket close.
       }
       setStatus('connecting');
-      setIssue({ status: 'HTTP_POLLING_FALLBACK', message: 'Using HTTP polling fallback for stable Railway/Vercel connectivity.' });
+      setIssue({
+        status: 'HTTP_POLLING',
+        message: usesSameOriginApiProxy
+          ? 'Using Vercel HTTPS proxy to reach the AWS backend and avoid browser mixed-content blocking.'
+          : 'Using HTTP polling fallback for stable backend connectivity.',
+      });
 
       const poll = async () => {
         if (disposed || pollingInFlight) return;
