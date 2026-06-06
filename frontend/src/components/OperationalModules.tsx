@@ -3,12 +3,12 @@ import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Too
 import { Card } from './Card';
 import { MetricCard } from './MetricCard';
 import { ScoreBar } from './ScoreBar';
+import { apiUrl } from '../config/api';
 import type { TerminalSnapshot } from '../types';
 import { formatCurrency, formatNumber } from '../utils/format';
 
 
 function TradingCapitalControl({ snapshot }: { snapshot: TerminalSnapshot }) {
-  const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
   const currentCapital = snapshot.tradingCapital?.tradingCapital ?? 0;
   const [amount, setAmount] = useState(currentCapital ? String(currentCapital) : '');
   const [message, setMessage] = useState<string | null>(null);
