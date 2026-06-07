@@ -398,10 +398,12 @@ class HistoricalTrainer:
                 continue
 
             entry = current["close"]
-            target_points = max(5.0, atr * 0.8)
-            initial_stop = max(2.0, min(3.0, atr * 0.55))
-            trail_distance = max(1.0, atr * 0.35)
+            target_points = max(float(self.settings.paper_target_points), atr * 1.2)
+            initial_stop = max(float(self.settings.paper_stop_points), atr * 0.65)
+            breakeven_shift = float(self.settings.paper_breakeven_shift_points)
+            trail_distance = max(2.0, atr * 0.5)
             partial_taken = False
+            breakeven_armed = False
             stop_price = entry - initial_stop if direction == "CALL" else entry + initial_stop
             best_favorable = entry
             exit_price = entry
@@ -414,9 +416,12 @@ class HistoricalTrainer:
                         exit_price = stop_price
                         exit_reason = "fast_stop_or_delta_reversal"
                         break
+                    if not breakeven_armed and candle["high"] >= entry + breakeven_shift:
+                        breakeven_armed = True
+                        stop_price = max(stop_price, entry)
                     if not partial_taken and candle["high"] >= entry + target_points:
                         partial_taken = True
-                        stop_price = max(stop_price, entry + 0.25)
+                        stop_price = max(stop_price, entry + breakeven_shift * 0.25)
                     if partial_taken:
                         stop_price = max(stop_price, best_favorable - trail_distance)
                     exit_price = candle["close"]
@@ -426,9 +431,12 @@ class HistoricalTrainer:
                         exit_price = stop_price
                         exit_reason = "fast_stop_or_delta_reversal"
                         break
+                    if not breakeven_armed and candle["low"] <= entry - breakeven_shift:
+                        breakeven_armed = True
+                        stop_price = min(stop_price, entry)
                     if not partial_taken and candle["low"] <= entry - target_points:
                         partial_taken = True
-                        stop_price = min(stop_price, entry - 0.25)
+                        stop_price = min(stop_price, entry - breakeven_shift * 0.25)
                     if partial_taken:
                         stop_price = min(stop_price, best_favorable + trail_distance)
                     exit_price = candle["close"]

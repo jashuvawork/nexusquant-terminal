@@ -57,6 +57,9 @@ class PaperTrade:
     exit_reason: str | None = None
     exited_at: str | None = None
     pnl: float = 0.0
+    best_price: float = 0.0
+    breakeven_armed: bool = False
+    partial_exit_taken: bool = False
     lifecycle: list[LifecycleEvent] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -81,6 +84,9 @@ class PaperTrade:
             "exitReason": self.exit_reason,
             "exitedAt": self.exited_at,
             "pnl": round(self.pnl, 2),
+            "bestPrice": self.best_price,
+            "breakevenArmed": self.breakeven_armed,
+            "partialExitTaken": self.partial_exit_taken,
             "lifecycle": [event.__dict__ for event in self.lifecycle],
         }
 
@@ -333,6 +339,7 @@ class AutoTraderEngine:
             opened_at=datetime.now(timezone.utc).isoformat(),
             mode=str(candidate.get("mode")),
             strategy_type=str(candidate.get("strategyType") or "SCALP"),
+            best_price=float(candidate.get("lastPremium") or 0),
         )
         trade.lifecycle.extend([
             LifecycleEvent("RISK_CHECKED", trade.opened_at, quality["reason"], quality),
@@ -350,18 +357,29 @@ class AutoTraderEngine:
         for trade_id, trade in list(self.open_paper.items()):
             candidate = candidates_by_id.get(trade_id)
             current = float((candidate or {}).get("lastPremium") or trade.entry_price)
+            trade.best_price = max(trade.best_price or trade.entry_price, current)
             age = self._age_seconds(trade.opened_at)
             reason = None
             profile = (candidate or {}).get("optimizedProfile") or {}
             target_points = float(profile.get("targetPoints") or self.settings.paper_target_points)
             stop_points = float(profile.get("stopPoints") or self.settings.paper_stop_points)
+            partial_exit_at = max(1.0, target_points * float(profile.get("partialExitPct") or 0.6))
+            breakeven_shift = float(self.settings.paper_breakeven_shift_points)
             style = str(profile.get("executionStyle") or "GENERIC")
             if style == "RUNNER_BREAKOUT":
                 target_points = max(target_points, self.settings.paper_target_points * 1.2)
             elif style == "HIGH_WIN_SCALP":
-                target_points = min(target_points, self.settings.paper_target_points)
+                target_points = max(target_points, self.settings.paper_target_points)
+            if not trade.breakeven_armed and trade.best_price >= trade.entry_price + breakeven_shift:
+                trade.breakeven_armed = True
+                trade.lifecycle.append(LifecycleEvent("MODIFIED", datetime.now(timezone.utc).isoformat(), "breakeven stop armed", {"breakevenAt": trade.entry_price, "bestPrice": trade.best_price}))
+            if not trade.partial_exit_taken and trade.best_price >= trade.entry_price + partial_exit_at:
+                trade.partial_exit_taken = True
+                trade.lifecycle.append(LifecycleEvent("PARTIAL_FILL", datetime.now(timezone.utc).isoformat(), "partial exit threshold reached in paper model", {"partialExitAt": round(partial_exit_at, 2), "bestPrice": trade.best_price}))
             if current >= trade.entry_price + target_points:
                 reason = "trailing profit lock / target extension"
+            elif trade.breakeven_armed and current <= trade.entry_price:
+                reason = "breakeven protection after +8 move"
             elif current <= trade.entry_price - stop_points:
                 reason = "momentum decay or delta reversal stop"
             elif age >= self.settings.max_paper_trade_seconds:

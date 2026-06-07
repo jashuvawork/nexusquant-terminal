@@ -1378,6 +1378,7 @@ class RealTimeMarketEngine:
             "executionStyle": style,
             "targetPoints": round(target, 2),
             "stopPoints": round(stop, 2),
+            "breakevenShiftPoints": round(float(self.settings.paper_breakeven_shift_points), 2),
             "trailPoints": round(trail, 2),
             "partialExitAt": round(target * partial_pct, 2),
             "partialExitPct": partial_pct,

@@ -51,25 +51,26 @@ class Settings(BaseSettings):
     nifty_opt_min_tqs: int = 72
     nifty_opt_breakout_atr: float = 0.35
     nifty_opt_volume_multiplier: float = 2.0
-    nifty_opt_target_points: float = 4.0
-    nifty_opt_stop_points: float = 2.5
-    nifty_opt_trail_atr: float = 0.75
+    nifty_opt_target_points: float = 15.0
+    nifty_opt_stop_points: float = 7.0
+    nifty_opt_trail_atr: float = 0.65
     nifty_opt_entry_model: str = "breakout"
     sensex_opt_min_tqs: int = 68
     sensex_opt_breakout_atr: float = 0.35
     sensex_opt_volume_multiplier: float = 1.3
-    sensex_opt_target_points: float = 6.0
-    sensex_opt_stop_points: float = 2.5
-    sensex_opt_trail_atr: float = 0.75
+    sensex_opt_target_points: float = 20.0
+    sensex_opt_stop_points: float = 10.0
+    sensex_opt_trail_atr: float = 0.7
     sensex_opt_entry_model: str = "breakout"
     profit_lock_retain_pct: float = 100.0
     profit_target_fallback_pct: float = 11.0
     profit_target_secondary_pct: float = 22.0
     profit_target_primary_pct: float = 33.0
-    max_paper_trade_seconds: int = 180
+    max_paper_trade_seconds: int = 600
     paper_duplicate_signal_cooldown_seconds: int = 900
-    paper_stop_points: float = 3.0
-    paper_target_points: float = 5.0
+    paper_stop_points: float = 7.0
+    paper_target_points: float = 15.0
+    paper_breakeven_shift_points: float = 8.0
     option_brokerage_per_order: float = 20.0
     option_stt_sell_pct: float = 0.0625
     option_exchange_txn_pct: float = 0.03503
@@ -108,8 +109,8 @@ class Settings(BaseSettings):
                 "mode": "runner_profile",
                 "executionStyle": "RUNNER_BREAKOUT",
                 "holdBias": "extend_winners",
-                "partialExitPct": 0.35,
-                "runnerPct": 0.65,
+                "partialExitPct": 0.6,
+                "runnerPct": 0.4,
                 "minTqs": self.sensex_opt_min_tqs,
                 "breakoutAtr": self.sensex_opt_breakout_atr,
                 "volumeMultiplier": self.sensex_opt_volume_multiplier,
@@ -122,9 +123,9 @@ class Settings(BaseSettings):
             "symbol": "NIFTY",
             "mode": "high_win_scalp_profile",
             "executionStyle": "HIGH_WIN_SCALP",
-            "holdBias": "fast_capture",
-            "partialExitPct": 0.7,
-            "runnerPct": 0.3,
+            "holdBias": "adaptive_momentum_capture",
+            "partialExitPct": 0.75,
+            "runnerPct": 0.25,
             "minTqs": self.nifty_opt_min_tqs,
             "breakoutAtr": self.nifty_opt_breakout_atr,
             "volumeMultiplier": self.nifty_opt_volume_multiplier,

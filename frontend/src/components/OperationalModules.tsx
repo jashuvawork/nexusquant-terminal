@@ -241,6 +241,7 @@ export function RiskEnginePanel({ snapshot }: { snapshot: TerminalSnapshot }) {
           <div className="mt-3 grid gap-2 sm:grid-cols-4">
             <span>Target <b>{snapshot.adaptiveExit.targetPoints}</b></span>
             <span>Stop <b>{snapshot.adaptiveExit.stopPoints}</b></span>
+            <span>BE <b>{snapshot.adaptiveExit.breakevenShiftPoints ?? 0}</b></span>
             <span>Trail <b>{snapshot.adaptiveExit.trailPoints}</b></span>
             <span>Partial <b>{snapshot.adaptiveExit.partialExitAt}</b></span>
             <span>ATR <b>{snapshot.adaptiveExit.atrPoints ?? 0}</b></span>

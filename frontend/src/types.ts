@@ -320,6 +320,7 @@ export interface AdaptiveExitState {
   executionStyle?: string;
   targetPoints: number;
   stopPoints: number;
+  breakevenShiftPoints?: number;
   trailPoints: number;
   partialExitAt: number;
   partialExitPct?: number;
@@ -371,6 +372,7 @@ export interface PaperTrade {
   entryTqs: number;
   spreadCost: number;
   slippageEstimate: number;
+  chargesEstimate?: number;
   openedAt: string;
   mode: string;
   status: string;
@@ -378,6 +380,9 @@ export interface PaperTrade {
   exitReason?: string | null;
   exitedAt?: string | null;
   pnl: number;
+  bestPrice?: number;
+  breakevenArmed?: boolean;
+  partialExitTaken?: boolean;
   lifecycle: PaperLifecycleEvent[];
 }
 
