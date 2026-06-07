@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     upstox_api_secret: str | None = None
     upstox_redirect_uri: str | None = None
     upstox_access_token: str | None = None
+    upstox_token_file: str = "/opt/nexusquant/upstox_token.json"
     primary_symbol: str = "NIFTY"
     nifty_instrument_key: str = "NSE_INDEX|Nifty 50"
     sensex_instrument_key: str = "BSE_INDEX|SENSEX"

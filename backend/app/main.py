@@ -32,6 +32,7 @@ auth_service = UpstoxAuthService(
     redirect_uri=settings.upstox_redirect_uri,
     redis_url=settings.redis_url,
     access_token=settings.upstox_access_token,
+    token_file=settings.upstox_token_file,
 )
 upstox_client = UpstoxClient(settings.upstox_api_key, settings.upstox_api_secret, auth_service)
 trading_control = TradingControl(settings.redis_url)

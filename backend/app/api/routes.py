@@ -71,6 +71,7 @@ def get_upstox_auth(settings: Settings = Depends(get_settings)) -> UpstoxAuthSer
         redirect_uri=settings.upstox_redirect_uri,
         redis_url=settings.redis_url,
         access_token=settings.upstox_access_token,
+        token_file=settings.upstox_token_file,
     )
 
 
@@ -304,6 +305,7 @@ async def upstox_token_diagnostics(settings: Settings = Depends(get_settings), a
         "apiSecretConfigured": bool(settings.upstox_api_secret),
         "redirectUriConfigured": bool(settings.upstox_redirect_uri),
         "envAccessTokenConfigured": bool(settings.upstox_access_token),
+        "tokenFile": settings.upstox_token_file,
         "tokenStatus": status,
         "note": "Token value is intentionally not returned.",
     }
