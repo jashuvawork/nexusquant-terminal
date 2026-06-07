@@ -372,6 +372,10 @@ async def set_capital(request: TradingCapitalRequest, control: TradingControl = 
 async def execution_status(control: TradingControl = Depends(get_trading_control), settings: Settings = Depends(get_settings)) -> dict:
     status = await control.status()
     capital = await control.capital_status()
+    if capital["tradingCapital"] <= 0 and settings.trading_capital_default > 0:
+        capital = {**capital, "tradingCapital": settings.trading_capital_default, "source": "TRADING_CAPITAL_DEFAULT"}
+    else:
+        capital = {**capital, "source": "runtime"}
     return {
         **status,
         "capital": capital,
@@ -749,9 +753,10 @@ async def auto_trader_status(engine: AutoTraderEngine = Depends(get_auto_trader)
 
 
 @router.get("/auto-trader/profit-lock")
-async def auto_trader_profit_lock(engine: AutoTraderEngine = Depends(get_auto_trader), control: TradingControl = Depends(get_trading_control)) -> dict:
+async def auto_trader_profit_lock(engine: AutoTraderEngine = Depends(get_auto_trader), control: TradingControl = Depends(get_trading_control), settings: Settings = Depends(get_settings)) -> dict:
     capital = await control.capital_status()
-    return engine.profit_lock_status(capital.get("tradingCapital", 0))
+    amount = capital.get("tradingCapital", 0) or settings.trading_capital_default
+    return engine.profit_lock_status(amount)
 
 
 @router.get("/auto-trader/replay")
