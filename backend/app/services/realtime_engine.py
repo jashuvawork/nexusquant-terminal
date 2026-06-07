@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 import ast
 from inspect import signature
 from datetime import date, datetime, timedelta, timezone
-from time import perf_counter
+from time import monotonic, perf_counter
 from statistics import mean
 from typing import Any
 
@@ -109,12 +110,24 @@ class RealTimeMarketEngine:
         self.trading_control = trading_control or TradingControl(settings.redis_url)
         self.previous: dict[str, PreviousTick] = {}
         self.previous_options: dict[str, PreviousTick] = {}
+        self._snapshot_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._expiry_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._account_cache: tuple[float, tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]] | None = None
 
     async def snapshot(self, symbol: str | None = None) -> dict[str, Any]:
         processing_started = perf_counter()
         selected_symbol = (symbol or self.settings.primary_symbol).upper()
         if selected_symbol not in {"NIFTY", "SENSEX"}:
             raise MarketConfigurationError("PRIMARY_SYMBOL must be NIFTY or SENSEX.")
+        cached = self._snapshot_cache.get(selected_symbol)
+        if cached:
+            age_seconds = monotonic() - cached[0]
+            if age_seconds <= max(0.0, float(self.settings.snapshot_cache_seconds)):
+                payload = deepcopy(cached[1])
+                payload["cacheStatus"] = {"source": "engine_snapshot_cache", "ageSeconds": round(age_seconds, 2), "ttlSeconds": self.settings.snapshot_cache_seconds}
+                payload.setdefault("infra", {})["cacheAgeSeconds"] = round(age_seconds, 2)
+                payload["infra"]["websocketLatencyMs"] = round((perf_counter() - processing_started) * 1000, 2)
+                return payload
 
         instrument_key = self.settings.instrument_key_for(selected_symbol)
         optimized_profile = self.settings.optimized_profile_for(selected_symbol)
@@ -126,16 +139,15 @@ class RealTimeMarketEngine:
         option_chain_task = self.client.option_chain(instrument_key, expiry)
         candle_task = self.client.intraday_candles(instrument_key, "minutes", 1)
         quote_task = self.client.ltp([instrument_key])
-        funds_task = self._optional(self.client.funds(), "funds", data_warnings)
-        positions_task = self._optional(self.client.positions(), "positions", data_warnings)
-        orders_task = self._optional(self.client.orders(), "orders", data_warnings)
+        account_task = self._account_snapshot(data_warnings)
         external_news_task = self._optional(NewsProvider(self.settings).fetch(selected_symbol), "external_news", data_warnings)
         use_upstox_news = self.settings.upstox_news_enabled or self.settings.news_provider.lower().strip() == "upstox"
         upstox_news_task = self._optional(self.client.news_headlines(instrument_key), "upstox_news", data_warnings) if use_upstox_news else asyncio.sleep(0, result=None)
 
-        option_chain, candles, ltp_quote, funds, positions, orders, external_news, upstox_news = await asyncio.gather(
-            option_chain_task, candle_task, quote_task, funds_task, positions_task, orders_task, external_news_task, upstox_news_task
+        option_chain, candles, ltp_quote, account_payload, external_news, upstox_news = await asyncio.gather(
+            option_chain_task, candle_task, quote_task, account_task, external_news_task, upstox_news_task
         )
+        funds, positions, orders = account_payload
         news_payload = external_news if (external_news or {}).get("data") else upstox_news
         news_reason = None
         if not (external_news or {}).get("data") and not upstox_news:
@@ -322,7 +334,7 @@ class RealTimeMarketEngine:
             )
         )
 
-        return {
+        payload = {
             "type": "snapshot",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "marketPhase": session.phase.value,
@@ -424,10 +436,20 @@ class RealTimeMarketEngine:
                 "candidateLtp": selected_ltp,
             },
         }
+        payload["cacheStatus"] = {"source": "fresh", "ageSeconds": 0, "ttlSeconds": self.settings.snapshot_cache_seconds}
+        self._snapshot_cache[selected_symbol] = (monotonic(), deepcopy(payload))
+        return payload
 
 
     async def resolve_expiry(self, symbol: str, instrument_key: str, warnings: list[str] | None = None) -> dict[str, Any]:
         warnings = warnings if warnings is not None else []
+        cached = self._expiry_cache.get(symbol)
+        if cached:
+            age_seconds = monotonic() - cached[0]
+            if age_seconds <= max(0.0, float(self.settings.expiry_cache_seconds)):
+                payload = deepcopy(cached[1])
+                payload["cache"] = {"hit": True, "ageSeconds": round(age_seconds, 2), "ttlSeconds": self.settings.expiry_cache_seconds}
+                return payload
         configured = self.settings.expiry_for(symbol)
         contracts_payload = await self.client.option_contracts(instrument_key)
         contracts = contracts_payload.get("data") or []
@@ -457,7 +479,7 @@ class RealTimeMarketEngine:
                 warnings.append(f"Configured {symbol}_EXPIRY_DATE={configured} not found in Upstox contracts; using nearest available {selected}.")
 
         selected_contracts = [item for item in contracts if item.get("expiry") == selected]
-        return {
+        payload = {
             "symbol": symbol,
             "underlyingInstrumentKey": instrument_key,
             "selectedExpiry": selected,
@@ -468,6 +490,9 @@ class RealTimeMarketEngine:
             "selectedContractCount": len(selected_contracts),
             "lastCheckedAt": datetime.now(timezone.utc).isoformat(),
         }
+        payload["cache"] = {"hit": False, "ageSeconds": 0, "ttlSeconds": self.settings.expiry_cache_seconds}
+        self._expiry_cache[symbol] = (monotonic(), deepcopy(payload))
+        return payload
 
     async def _optional(self, coroutine: Any, label: str, warnings: list[str]) -> dict[str, Any] | None:
         try:
@@ -475,6 +500,21 @@ class RealTimeMarketEngine:
         except Exception as exc:
             warnings.append(f"Upstox {label} unavailable: {exc}")
             return None
+
+    async def _account_snapshot(self, warnings: list[str]) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
+        cached = self._account_cache
+        if cached:
+            age_seconds = monotonic() - cached[0]
+            if age_seconds <= max(0.0, float(self.settings.account_snapshot_cache_seconds)):
+                return deepcopy(cached[1])
+        funds, positions, orders = await asyncio.gather(
+            self._optional(self.client.funds(), "funds", warnings),
+            self._optional(self.client.positions(), "positions", warnings),
+            self._optional(self.client.orders(), "orders", warnings),
+        )
+        payload = (funds, positions, orders)
+        self._account_cache = (monotonic(), deepcopy(payload))
+        return payload
 
     def _underlying_spot(self, rows: list[dict[str, Any]], ltp_quote: dict[str, Any]) -> float:
         for row in rows:

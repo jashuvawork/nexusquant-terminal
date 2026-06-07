@@ -36,9 +36,14 @@ class Settings(BaseSettings):
     explosive_runner_premium_max: float = 250.0
     background_market_monitor_enabled: bool = True
     news_lookback_items: int = 20
+    news_cache_ttl_seconds: float = 300.0
+    news_timeout_seconds: float = 3.0
     finnhub_api_key: str | None = None
     news_provider: str = "finnhub"
     upstox_news_enabled: bool = False
+    snapshot_cache_seconds: float = 5.0
+    account_snapshot_cache_seconds: float = 30.0
+    expiry_cache_seconds: float = 3600.0
     market_snapshot_instrument_keys: str = "NSE_INDEX|Nifty 50,BSE_INDEX|SENSEX"
     market_snapshot_monitor_enabled: bool = True
     market_snapshot_poll_seconds: float = 60.0

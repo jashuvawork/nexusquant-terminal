@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from copy import deepcopy
+from time import monotonic
 from typing import Any
 
 import httpx
@@ -16,6 +18,8 @@ SYMBOL_KEYWORDS = {
 
 
 class NewsProvider:
+    _cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
@@ -25,23 +29,38 @@ class NewsProvider:
             return {"status": "disabled", "provider": provider, "data": [], "reason": f"Unsupported NEWS_PROVIDER={self.settings.news_provider}"}
         if not self.settings.finnhub_api_key:
             return {"status": "missing_api_key", "provider": "finnhub", "data": [], "reason": "FINNHUB_API_KEY is not configured"}
+        cache_key = f"{provider}:{symbol.upper()}"
+        cached = self._cache.get(cache_key)
+        if cached:
+            age_seconds = monotonic() - cached[0]
+            if age_seconds <= max(0.0, float(self.settings.news_cache_ttl_seconds)):
+                payload = deepcopy(cached[1])
+                payload["cache"] = {"hit": True, "ageSeconds": round(age_seconds, 2), "ttlSeconds": self.settings.news_cache_ttl_seconds}
+                return payload
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=max(1.0, float(self.settings.news_timeout_seconds))) as client:
                 response = await client.get(FINNHUB_URL, params={"category": "general", "token": self.settings.finnhub_api_key})
             if response.status_code >= 400:
                 return {"status": "error", "provider": "finnhub", "data": [], "reason": f"Finnhub HTTP {response.status_code}: {response.text[:300]}"}
             raw = response.json()
             items = raw if isinstance(raw, list) else []
             filtered = self._filter(symbol, items)
-            return {
+            payload = {
                 "status": "ok",
                 "provider": "finnhub",
                 "fetchedAt": datetime.now(timezone.utc).isoformat(),
                 "data": filtered[: self.settings.news_lookback_items],
                 "totalFetched": len(items),
                 "matched": len(filtered),
+                "cache": {"hit": False, "ageSeconds": 0, "ttlSeconds": self.settings.news_cache_ttl_seconds},
             }
+            self._cache[cache_key] = (monotonic(), deepcopy(payload))
+            return payload
         except Exception as exc:
+            if cached:
+                payload = deepcopy(cached[1])
+                payload["cache"] = {"hit": True, "stale": True, "ageSeconds": round(monotonic() - cached[0], 2), "ttlSeconds": self.settings.news_cache_ttl_seconds}
+                return payload
             return {"status": "error", "provider": "finnhub", "data": [], "reason": str(exc)}
 
     def _filter(self, symbol: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
