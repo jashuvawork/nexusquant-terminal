@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     aggression_profile: str = "realistic_aggressive"
     ai_score_threshold: int = 76
     safe_mode_threshold: int = 86
-    max_exposure_pct: int = 42
+    max_exposure_pct: int = 100
     daily_drawdown_pct: float = 3.0
     trading_capital_default: float = 500000.0
     min_required_move_points: float = 5.0
