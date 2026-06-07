@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     upstox_news_enabled: bool = False
     market_snapshot_instrument_keys: str = "NSE_INDEX|Nifty 50,BSE_INDEX|SENSEX"
     market_snapshot_monitor_enabled: bool = True
-    market_snapshot_poll_seconds: float = 5.0
+    market_snapshot_poll_seconds: float = 15.0
     # Optimized profiles from high-win optimizer run.
     nifty_opt_min_tqs: int = 72
     nifty_opt_breakout_atr: float = 0.35
@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     paper_trading: bool = True
     paper_trading_respects_stop: bool = False
     shadow_trade_all_signals: bool = True
-    market_poll_seconds: float = 1.0
+    market_poll_seconds: float = 5.0
     websocket_heartbeat_seconds: float = 10.0
     websocket_send_interval_seconds: float = 1.0
 
