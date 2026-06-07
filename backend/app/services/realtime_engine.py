@@ -272,7 +272,7 @@ class RealTimeMarketEngine:
         trading_capital = capital_status.get("tradingCapital") or self.settings.trading_capital_default
         auto_trading_stopped = bool(trading_control_status.get("autoTradingStopped"))
         atr_points = self._atr_points(candles_list)
-        adaptive_exit = self._adaptive_exit_engine(selected_ltp, selected_side, orderflow, spread_quality, volume_state, greeks, pressure_mode, risk_decision.safe_mode, atr_points, optimized_profile)
+        adaptive_exit = self._adaptive_exit_engine(plan_ltp, plan_side, orderflow, spread_quality, volume_state, greeks, pressure_mode, risk_decision.safe_mode, atr_points, optimized_profile)
         precision_checklist = self._precision_entry_checklist(
             tqs=tqs,
             threshold=adaptive_risk["minimumTqs"],
@@ -302,17 +302,17 @@ class RealTimeMarketEngine:
             and pressure_mode["level"] != "CRITICAL"
             and production_readiness["readyForFullCapital"]
             and not chop_filter["blocked"]
-            and selected_instrument
-            and selected_ltp > 0
+            and plan_instrument
+            and plan_ltp > 0
         )
         trade_mode = "AUTO_EXECUTION_READY" if execution_allowed else "PAPER_EXECUTION" if self.settings.paper_trading else "ANALYSIS_BACKTEST_ONLY"
         suggested_trades = self._suggested_trades(
             symbol=selected_symbol,
             expiry=expiry,
-            side=selected_side,
-            strike=atm_strike,
-            instrument=selected_instrument,
-            premium=selected_ltp,
+            side=plan_side,
+            strike=plan_strike,
+            instrument=plan_instrument,
+            premium=plan_ltp,
             tqs=tqs,
             spread_quality=spread_quality,
             option_bias=option_bias,
@@ -437,9 +437,9 @@ class RealTimeMarketEngine:
             "executionDecision": {
                 "allowNewTrade": execution_allowed,
                 "reason": "NOT_PRODUCTION_READY" if not production_readiness["readyForFullCapital"] else "NO_TRADE_ZONE" if no_trade_zones["blocked"] else "PRESSURE_MODE_CRITICAL" if pressure_mode["level"] == "CRITICAL" else "PRECISION_CHECKLIST_FAILED" if not precision_checklist["passed"] else "CHOP_FILTER_BLOCKED" if chop_filter["blocked"] else "AUTO_TRADING_STOPPED" if auto_trading_stopped else "LIVE_TRADING_DISABLED" if not self.settings.enable_live_trading else risk_decision.reason,
-                "candidateInstrument": selected_instrument,
-                "candidateSide": selected_side,
-                "candidateLtp": selected_ltp,
+                "candidateInstrument": plan_instrument,
+                "candidateSide": plan_side,
+                "candidateLtp": plan_ltp,
             },
         }
         payload["cacheStatus"] = {"source": "fresh", "ageSeconds": 0, "ttlSeconds": self.settings.snapshot_cache_seconds}
