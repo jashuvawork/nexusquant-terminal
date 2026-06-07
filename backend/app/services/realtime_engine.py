@@ -258,6 +258,11 @@ class RealTimeMarketEngine:
             tqs=tqs,
         )
         runner_signal = runner_watchlist[0] if runner_watchlist else self._explosive_runner_disabled(selected_symbol, expiry)
+        plan_signal = self._best_in_range_runner_signal(runner_watchlist)
+        plan_strike = as_int(plan_signal.get("strike")) if plan_signal else atm_strike
+        plan_side = str(plan_signal.get("side") or selected_side) if plan_signal else selected_side
+        plan_instrument = plan_signal.get("instrumentKey") if plan_signal else selected_instrument
+        plan_ltp = as_float(plan_signal.get("premium") or plan_signal.get("lastPremium")) if plan_signal else selected_ltp
         current = PreviousTick(spot=spot, selected_ltp=selected_ltp, selected_volume=as_int(selected_md.get("volume")), timestamp=datetime.now(timezone.utc))
         self.previous[selected_symbol] = current
 
@@ -372,12 +377,12 @@ class RealTimeMarketEngine:
             },
             "expiryState": expiry_state,
             "premarketAnalysis": self._premarket_analysis(session.phase, market_profile, option_bias, spread_quality, tqs),
-            "tomorrowTradePlan": self._tomorrow_trade_plan(selected_symbol, expiry, atm_strike, selected_side, selected_instrument, selected_ltp, tqs, market_profile, option_bias, risk_decision.safe_mode),
+            "tomorrowTradePlan": self._tomorrow_trade_plan(selected_symbol, expiry, plan_strike, plan_side, plan_instrument, plan_ltp, tqs, market_profile, option_bias, risk_decision.safe_mode, plan_signal),
             "suggestedTrades": suggested_trades,
             "symbol": selected_symbol,
             "spot": round(spot, 2),
             "atmStrike": atm_strike,
-            "premiumFocusZone": f"{atm_strike} {selected_side} {expiry} | {selected_instrument or 'instrument unavailable'}",
+            "premiumFocusZone": f"{plan_strike} {plan_side} {expiry} | {plan_instrument or 'instrument unavailable'} | LTP {round(plan_ltp, 2)} | Range {self.settings.explosive_runner_premium_min:.0f}-{self.settings.explosive_runner_premium_max:.0f}",
             "aiConfidence": tqs,
             "tradeQualityScore": tqs,
             "pnl": portfolio["unrealizedPnl"],
@@ -894,6 +899,15 @@ class RealTimeMarketEngine:
                 signal["watchMode"] = "ALWAYS_ON_OPEN_EXPLOSIVE_SCAN"
                 watchlist.append(signal)
         return sorted(watchlist, key=lambda item: (bool(item.get("candidate")), as_float(item.get("score"))), reverse=True)
+
+    def _best_in_range_runner_signal(self, runner_watchlist: list[dict[str, Any]]) -> dict[str, Any] | None:
+        in_range = [
+            signal for signal in runner_watchlist
+            if (signal.get("premiumRange") or {}).get("withinRange") and as_float(signal.get("premium") or signal.get("lastPremium")) > 0
+        ]
+        if not in_range:
+            return None
+        return sorted(in_range, key=lambda item: (bool(item.get("candidate")), as_float(item.get("score")), as_float(item.get("volumeState", {}).get("effectiveVolume"))), reverse=True)[0]
 
     def _row_has_premium_in_range(self, row: dict[str, Any], premium_min: float, premium_max: float) -> bool:
         for option_key in ["call_options", "put_options"]:
@@ -1534,10 +1548,12 @@ class RealTimeMarketEngine:
                 "val": profile.get("val"),
             },
             "checklist": [
+                "Pre-market analysis phase runs on trading days from 08:30 to 09:15 IST; weekends/after-hours show closed-market review",
                 "Confirm first 5-minute candle direction after 09:15 IST",
                 "Trade only if spread quality stays above threshold",
                 "Confirm option-chain OI bias and ATM liquidity before entry",
-                "Keep explosive runner watchlist active every second from pre-open into 09:15 open",
+                f"Only consider option premium LTP inside {self.settings.explosive_runner_premium_min:.0f}-{self.settings.explosive_runner_premium_max:.0f}",
+                "Keep explosive runner watchlist active from pre-open into the 09:15 open",
                 "Open only paper trades while ENABLE_LIVE_TRADING=false",
                 "Avoid live orders until ENABLE_LIVE_TRADING is intentionally enabled",
             ],
@@ -1568,12 +1584,18 @@ class RealTimeMarketEngine:
         profile: dict[str, Any],
         bias: dict[str, Any],
         safe_mode: bool,
+        source_signal: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        premium_min = float(self.settings.explosive_runner_premium_min)
+        premium_max = float(self.settings.explosive_runner_premium_max)
+        within_range = premium_min <= ltp <= premium_max
         return {
             "generatedFor": "next_trading_session",
             "symbol": symbol,
             "expiry": expiry,
             "primaryBias": bias.get("direction"),
+            "source": "in_range_runner_watchlist" if source_signal else "atm_bias_fallback",
+            "premiumRange": {"min": premium_min, "max": premium_max, "withinRange": within_range},
             "candidate": {
                 "side": side,
                 "strike": atm_strike,
@@ -1581,6 +1603,7 @@ class RealTimeMarketEngine:
                 "lastPremium": ltp,
             },
             "entryRules": [
+                f"Candidate must remain inside LTP range {premium_min:.0f}-{premium_max:.0f}; current LTP {ltp:.2f}",
                 f"Prefer {side} scalp only if spot accepts above VAH" if side == "CALL" else f"Prefer {side} scalp only if spot rejects below VAL",
                 "Require TQS above configured threshold after live market opens",
                 "Require tight bid/ask spread and fresh volume expansion",

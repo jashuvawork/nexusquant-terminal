@@ -440,6 +440,11 @@ export function SessionIntelligence({ snapshot }: { snapshot: TerminalSnapshot }
                 <span className="font-mono text-white">{snapshot.tomorrowTradePlan.expiry}</span> | Last premium{' '}
                 <span className="font-mono text-white">{snapshot.tomorrowTradePlan.candidate.lastPremium}</span>
               </p>
+              {snapshot.tomorrowTradePlan.premiumRange && (
+                <p className={`mt-2 text-xs ${snapshot.tomorrowTradePlan.premiumRange.withinRange ? 'text-emerald-200' : 'text-amber-200'}`}>
+                  LTP range {snapshot.tomorrowTradePlan.premiumRange.min}-{snapshot.tomorrowTradePlan.premiumRange.max}: {snapshot.tomorrowTradePlan.premiumRange.withinRange ? 'inside considerable range' : 'outside range, watch only'} | Source {snapshot.tomorrowTradePlan.source ?? 'plan'}
+                </p>
+              )}
               <p className="mt-2 text-xs text-slate-400">Instrument: {snapshot.tomorrowTradePlan.candidate.instrumentKey ?? 'not available'}</p>
               <ul className="mt-4 list-disc space-y-1 pl-5 text-xs text-slate-300">
                 {snapshot.tomorrowTradePlan.entryRules.map((item) => <li key={item}>{item}</li>)}

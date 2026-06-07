@@ -194,6 +194,8 @@ export interface TomorrowTradePlan {
   symbol: MarketSymbol;
   expiry: string;
   primaryBias: string;
+  source?: string;
+  premiumRange?: { min: number; max: number; withinRange: boolean };
   candidate: { side: 'CALL' | 'PUT'; strike: number; instrumentKey?: string; lastPremium: number };
   entryRules: string[];
   invalidations: string[];
