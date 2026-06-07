@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     finnhub_api_key: str | None = None
     news_provider: str = "finnhub"
     upstox_news_enabled: bool = False
-    snapshot_cache_seconds: float = 1.0
+    snapshot_cache_seconds: float = 15.0
     account_snapshot_cache_seconds: float = 30.0
     expiry_cache_seconds: float = 3600.0
     market_snapshot_instrument_keys: str = "NSE_INDEX|Nifty 50,BSE_INDEX|SENSEX"
@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     paper_trading: bool = True
     paper_trading_respects_stop: bool = False
     shadow_trade_all_signals: bool = True
-    market_poll_seconds: float = 1.0
+    market_poll_seconds: float = 15.0
     websocket_heartbeat_seconds: float = 10.0
     websocket_send_interval_seconds: float = 1.0
 
