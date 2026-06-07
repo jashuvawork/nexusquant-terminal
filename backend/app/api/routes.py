@@ -31,6 +31,8 @@ from app.services.upstox_client import UpstoxAuthRequired, UpstoxClient, UpstoxD
 
 router = APIRouter(prefix="/api", tags=["terminal"])
 alias_router = APIRouter(tags=["upstox-aliases"])
+_auto_trader_instance: AutoTraderEngine | None = None
+_market_engine_instance: RealTimeMarketEngine | None = None
 
 
 class ScalpOrderRequest(BaseModel):
@@ -99,7 +101,10 @@ def get_auto_trader(
     control: TradingControl = Depends(get_trading_control),
     learner: ContinuousAILearner = Depends(get_ai_learner),
 ) -> AutoTraderEngine:
-    return AutoTraderEngine(settings, control, learner)
+    global _auto_trader_instance
+    if _auto_trader_instance is None:
+        _auto_trader_instance = AutoTraderEngine(settings, control, learner)
+    return _auto_trader_instance
 
 
 def get_historical_trainer(
@@ -123,9 +128,12 @@ def get_market_engine(
     client: UpstoxClient = Depends(get_upstox),
     trading_control: TradingControl = Depends(get_trading_control),
 ) -> RealTimeMarketEngine:
-    scorer = TradeQualityScorer()
-    risk_engine = RiskEngine(settings.ai_score_threshold, settings.safe_mode_threshold, settings.max_exposure_pct)
-    return RealTimeMarketEngine(settings, client, scorer, risk_engine, trading_control)
+    global _market_engine_instance
+    if _market_engine_instance is None:
+        scorer = TradeQualityScorer()
+        risk_engine = RiskEngine(settings.ai_score_threshold, settings.safe_mode_threshold, settings.max_exposure_pct)
+        _market_engine_instance = RealTimeMarketEngine(settings, client, scorer, risk_engine, trading_control)
+    return _market_engine_instance
 
 
 @router.get("/terminal/state")
