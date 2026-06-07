@@ -6,6 +6,8 @@ NexusQuant is a deployable institutional-style AI scalping terminal scaffold for
 
 For the current Railway backend deployment with Vercel frontend, see [`docs/RAILWAY_DEPLOYMENT.md`](docs/RAILWAY_DEPLOYMENT.md). For future AWS backend deployment, use ECS Fargate with an Application Load Balancer because the backend exposes WebSockets; see [`docs/AWS_DEPLOYMENT.md`](docs/AWS_DEPLOYMENT.md).
 
+For a full explanation of the website modules, AI engines, paper trading flow, AWS runtime, variables, examples, and troubleshooting, see [`docs/NEXUSQUANT_SYSTEM_GUIDE.md`](docs/NEXUSQUANT_SYSTEM_GUIDE.md).
+
 ## Stack
 
 - Frontend: React, TypeScript, Vite, TailwindCSS, Lightweight Charts, Recharts, Framer Motion, WebSocket client
