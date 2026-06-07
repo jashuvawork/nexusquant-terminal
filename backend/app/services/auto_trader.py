@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from time import monotonic
 from typing import Any
 from uuid import uuid4
 
@@ -97,6 +98,7 @@ class AutoTraderEngine:
     _shared_learning_samples = 0
     _shared_learning_score = 50.0
     _shared_last_learning_update: str | None = None
+    _shared_recent_signal_times: dict[str, float] = {}
 
     def __init__(self, settings: Settings, trading_control: TradingControl, learner: ContinuousAILearner | None = None) -> None:
         self.settings = settings
@@ -114,6 +116,7 @@ class AutoTraderEngine:
         capital = await self.trading_control.capital_status()
         candidates = payload.get("executionCandidates") or []
         snapshots = payload.get("snapshots") or {payload.get("symbol", "NIFTY"): payload}
+        cached_snapshot = self._all_snapshots_cached(snapshots)
 
         signal_events = []
         skipped = []
@@ -121,6 +124,13 @@ class AutoTraderEngine:
             event = self._signal_event(candidate, payload)
             signal_events.append(event)
             self.lifecycle_events.append(event)
+            signal_id = str(candidate.get("id") or "")
+            if cached_snapshot:
+                skipped.append({"candidate": signal_id, "reason": "cached snapshot; paper open skipped to avoid duplicate training sample"})
+                continue
+            if self._recent_signal_active(signal_id):
+                skipped.append({"candidate": signal_id, "reason": "duplicate signal cooldown active"})
+                continue
             quality = self._pre_trade_quality(candidate)
             if quality["blocked"]:
                 skipped.append({"candidate": candidate.get("id"), "reason": quality["reason"], "quality": quality})
@@ -182,6 +192,7 @@ class AutoTraderEngine:
         self.open_paper.clear()
         self.closed_paper.clear()
         self.lifecycle_events.clear()
+        AutoTraderEngine._shared_recent_signal_times.clear()
         AutoTraderEngine._shared_learning_samples = 0
         AutoTraderEngine._shared_learning_score = 50.0
         AutoTraderEngine._shared_last_learning_update = None
@@ -295,6 +306,8 @@ class AutoTraderEngine:
         trade_id = str(candidate.get("id") or uuid4())
         if trade_id in self.open_paper:
             return None
+        if self._recent_signal_active(trade_id):
+            return None
         quantity = int(candidate.get("quantityEstimate") or 1)
         trade = PaperTrade(
             id=trade_id,
@@ -354,6 +367,7 @@ class AutoTraderEngine:
                 trade.pnl = (current - trade.entry_price - trade.spread_cost - trade.slippage_estimate) * trade.quantity
                 trade.lifecycle.append(LifecycleEvent("EXITED", trade.exited_at, reason, {"exit": current, "pnl": trade.pnl}))
                 self.closed_paper.append(trade)
+                AutoTraderEngine._shared_recent_signal_times[trade_id] = monotonic()
                 self.lifecycle_events.extend(trade.lifecycle[-1:])
                 del self.open_paper[trade_id]
                 exits.append(trade.to_dict())
@@ -399,6 +413,24 @@ class AutoTraderEngine:
             "marketPhase": payload.get("marketPhase"),
             "executionCandidates": payload.get("executionCandidates", [])[:10],
         }
+
+    def _all_snapshots_cached(self, snapshots: dict[str, Any]) -> bool:
+        if not snapshots:
+            return False
+        statuses = [(snapshot.get("cacheStatus") or {}).get("source") for snapshot in snapshots.values() if isinstance(snapshot, dict)]
+        return bool(statuses) and all(status == "engine_snapshot_cache" for status in statuses)
+
+    def _recent_signal_active(self, signal_id: str) -> bool:
+        if not signal_id:
+            return False
+        last_seen = AutoTraderEngine._shared_recent_signal_times.get(signal_id)
+        if last_seen is None:
+            return False
+        age = monotonic() - last_seen
+        if age > max(0, self.settings.paper_duplicate_signal_cooldown_seconds):
+            AutoTraderEngine._shared_recent_signal_times.pop(signal_id, None)
+            return False
+        return True
 
     def _age_seconds(self, iso_timestamp: str) -> float:
         try:

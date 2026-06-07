@@ -67,6 +67,7 @@ class Settings(BaseSettings):
     profit_target_secondary_pct: float = 22.0
     profit_target_primary_pct: float = 33.0
     max_paper_trade_seconds: int = 180
+    paper_duplicate_signal_cooldown_seconds: int = 900
     paper_stop_points: float = 3.0
     paper_target_points: float = 5.0
     ai_learning_enabled: bool = True
