@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     safe_mode_threshold: int = 86
     max_exposure_pct: int = 42
     daily_drawdown_pct: float = 3.0
-    trading_capital_default: float = 100000.0
+    trading_capital_default: float = 500000.0
     min_required_move_points: float = 5.0
     historical_training_target_trades: int = 1000
     option_premium_history_available: bool = True
