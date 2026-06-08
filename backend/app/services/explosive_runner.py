@@ -102,9 +102,16 @@ class ExplosiveRunnerEngine:
 
         missing_ideal = [item for item in self.IDEAL_DATA if not (item == "historical option premium candles" and self.option_premium_history_available)]
         ideal_available = ["historical option premium candles"] if self.option_premium_history_available else []
+        option_tape_override = spread_quality >= 85 and volume_accel >= 70 and (breakout >= 65 or delta_velocity >= 60)
         confidence = "LOW"
-        if score >= 75 and tqs >= 70:
+        if score >= 85 and option_tape_override and breakout >= 75 and delta_velocity >= 60:
             confidence = "HIGH"
+            reasons.append("option tape override: explosive premium momentum despite lower global TQS")
+        elif score >= 75 and tqs >= 70:
+            confidence = "HIGH"
+        elif score >= 70 and option_tape_override:
+            confidence = "MEDIUM"
+            reasons.append("option tape override: runner watch despite lower global TQS")
         elif score >= 55 and tqs >= 60:
             confidence = "MEDIUM"
 
