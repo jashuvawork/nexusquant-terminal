@@ -64,6 +64,26 @@ export function TerminalChart({ snapshot }: TerminalChartProps) {
 
   return (
     <Card title="Market Microstructure Chart" eyebrow="Realtime price telemetry" className="min-h-[396px]">
+      {snapshot.chartAnalysis && (
+        <div className="mb-4 grid gap-3 text-xs text-slate-300 sm:grid-cols-3">
+          <div className="rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-3">
+            <p className="font-bold uppercase tracking-[0.22em] text-cyan-200">Trend</p>
+            <p className="mt-1 text-sm text-white">{snapshot.chartAnalysis.trend.replaceAll('_', ' ')}</p>
+            <p>Bias {snapshot.chartAnalysis.bias} | Strength {snapshot.chartAnalysis.strength}</p>
+          </div>
+          <div className="rounded-2xl border border-emerald-300/20 bg-emerald-300/10 p-3">
+            <p className="font-bold uppercase tracking-[0.22em] text-emerald-200">Chart Stack</p>
+            <p>EMA {snapshot.chartAnalysis.emaFast ?? '-'} / {snapshot.chartAnalysis.emaSlow ?? '-'}</p>
+            <p>VWAP {snapshot.chartAnalysis.vwap ?? '-'} | RSI {snapshot.chartAnalysis.rsi ?? '-'}</p>
+          </div>
+          <div className="rounded-2xl border border-violet-300/20 bg-violet-300/10 p-3">
+            <p className="font-bold uppercase tracking-[0.22em] text-violet-200">Levels</p>
+            <p>S {snapshot.chartAnalysis.levels?.support ?? '-'} | R {snapshot.chartAnalysis.levels?.resistance ?? '-'}</p>
+            <p>{snapshot.chartAnalysis.pattern?.replaceAll('_', ' ') ?? 'Pattern pending'}</p>
+          </div>
+          <p className="sm:col-span-3 rounded-2xl bg-slate-950/60 p-3">{snapshot.chartAnalysis.recommendation}</p>
+        </div>
+      )}
       <div ref={containerRef} className="h-80 w-full" />
     </Card>
   );

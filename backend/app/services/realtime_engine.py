@@ -186,6 +186,7 @@ class RealTimeMarketEngine:
         market_profile = self._market_profile(candles_list, atm_strike, volume_state)
         telemetry = self._telemetry(candles_list, volume_state)
         momentum = self._momentum_score(candles_list, spot)
+        chart_analysis = self._chart_analysis(candles_list, spot)
         volume_score = volume_state["score"]
         spread_quality = self._spread_quality(call_md, put_md)
         heatmap = self._heatmap(selected_symbol, chain_rows, spot)
@@ -360,6 +361,7 @@ class RealTimeMarketEngine:
             "noTradeZones": no_trade_zones,
             "tqsBreakdown": tqs_breakdown,
             "entryModel": entry_model,
+            "chartAnalysis": chart_analysis,
             "newsState": news_state,
             "explosiveRunner": runner_signal,
             "explosiveRunnerWatchlist": runner_watchlist[:10],
@@ -638,6 +640,152 @@ class RealTimeMarketEngine:
         ranges = [abs(c["high"] - c["low"]) for c in candles[-10:] if c["high"] and c["low"]]
         avg_range_pct = (mean(ranges) / last) * 100 if ranges and last else 0
         return round(clamp(35 + move_pct * 35 + avg_range_pct * 55))
+
+    def _chart_analysis(self, candles: list[dict[str, Any]], spot: float) -> dict[str, Any]:
+        if len(candles) < 8:
+            return {
+                "available": False,
+                "trend": "INSUFFICIENT_DATA",
+                "strength": 0,
+                "bias": "WAIT",
+                "recommendation": "Wait for more candles before trusting chart analysis.",
+                "levels": {},
+                "signals": [],
+            }
+
+        closes = [candle["close"] for candle in candles if candle["close"] > 0]
+        highs = [candle["high"] for candle in candles if candle["high"] > 0]
+        lows = [candle["low"] for candle in candles if candle["low"] > 0]
+        if len(closes) < 8:
+            return {"available": False, "trend": "INSUFFICIENT_DATA", "strength": 0, "bias": "WAIT", "recommendation": "No reliable close series returned.", "levels": {}, "signals": []}
+
+        last = closes[-1] or spot
+        ema_fast = self._ema(closes, min(9, len(closes)))
+        ema_slow = self._ema(closes, min(21, len(closes)))
+        vwap = self._vwap(candles[-30:]) or mean(closes[-min(20, len(closes)):])
+        rsi = self._rsi(closes[-min(30, len(closes)):])
+        atr = self._atr_points(candles)
+        recent = candles[-min(12, len(candles)):]
+        recent_high = max(candle["high"] for candle in recent)
+        recent_low = min(candle["low"] for candle in recent)
+        prev_high = max(highs[-min(30, len(highs)):-1] or highs)
+        prev_low = min(lows[-min(30, len(lows)):-1] or lows)
+        opening = candles[:15]
+        opening_high = max(candle["high"] for candle in opening) if opening else recent_high
+        opening_low = min(candle["low"] for candle in opening) if opening else recent_low
+
+        signals: list[str] = []
+        bullish = 0
+        bearish = 0
+        if last > ema_fast > ema_slow:
+            bullish += 2
+            signals.append("price above fast/slow EMA")
+        elif last < ema_fast < ema_slow:
+            bearish += 2
+            signals.append("price below fast/slow EMA")
+        if last > vwap:
+            bullish += 1
+            signals.append("price above VWAP")
+        elif last < vwap:
+            bearish += 1
+            signals.append("price below VWAP")
+        if last >= recent_high - atr * 0.2 and last > opening_high:
+            bullish += 2
+            signals.append("opening/recent range breakout")
+        if last <= recent_low + atr * 0.2 and last < opening_low:
+            bearish += 2
+            signals.append("opening/recent range breakdown")
+        if rsi >= 58:
+            bullish += 1
+            signals.append("RSI momentum bullish")
+        elif rsi <= 42:
+            bearish += 1
+            signals.append("RSI momentum bearish")
+
+        last_candle = candles[-1]
+        candle_range = max(0.01, last_candle["high"] - last_candle["low"])
+        body = abs(last_candle["close"] - last_candle["open"])
+        upper_wick = last_candle["high"] - max(last_candle["close"], last_candle["open"])
+        lower_wick = min(last_candle["close"], last_candle["open"]) - last_candle["low"]
+        pattern = "NEUTRAL"
+        if body / candle_range >= 0.6 and last_candle["close"] > last_candle["open"]:
+            pattern = "BULLISH_MOMENTUM_CANDLE"
+            bullish += 1
+        elif body / candle_range >= 0.6 and last_candle["close"] < last_candle["open"]:
+            pattern = "BEARISH_MOMENTUM_CANDLE"
+            bearish += 1
+        elif upper_wick / candle_range >= 0.5:
+            pattern = "UPPER_WICK_REJECTION"
+            bearish += 1
+        elif lower_wick / candle_range >= 0.5:
+            pattern = "LOWER_WICK_REJECTION"
+            bullish += 1
+
+        if bullish >= bearish + 2:
+            trend = "BULLISH_TREND"
+            bias = "CALL"
+        elif bearish >= bullish + 2:
+            trend = "BEARISH_TREND"
+            bias = "PUT"
+        else:
+            trend = "RANGE_OR_CHOP"
+            bias = "WAIT"
+        strength = round(clamp(abs(bullish - bearish) * 16 + min(30, atr / max(last, 1) * 10000)))
+        recommendation = "Trade only with option-tape confirmation." if bias != "WAIT" else "Avoid fresh scalp until range breaks with volume and delta confirmation."
+
+        return {
+            "available": True,
+            "trend": trend,
+            "bias": bias,
+            "strength": strength,
+            "pattern": pattern,
+            "emaFast": round(ema_fast, 2),
+            "emaSlow": round(ema_slow, 2),
+            "vwap": round(vwap, 2),
+            "rsi": round(rsi, 2),
+            "atrPoints": round(atr, 2),
+            "levels": {
+                "support": round(max(prev_low, recent_low), 2),
+                "resistance": round(min(prev_high, recent_high), 2),
+                "recentHigh": round(recent_high, 2),
+                "recentLow": round(recent_low, 2),
+                "openingHigh": round(opening_high, 2),
+                "openingLow": round(opening_low, 2),
+            },
+            "signals": signals[:8],
+            "recommendation": recommendation,
+        }
+
+    def _ema(self, values: list[float], period: int) -> float:
+        if not values:
+            return 0.0
+        period = max(1, min(period, len(values)))
+        multiplier = 2 / (period + 1)
+        ema = mean(values[:period])
+        for value in values[period:]:
+            ema = (value - ema) * multiplier + ema
+        return ema
+
+    def _vwap(self, candles: list[dict[str, Any]]) -> float:
+        total_volume = sum(max(0, as_int(candle.get("volume"))) for candle in candles)
+        if total_volume <= 0:
+            return 0.0
+        return sum(((candle["high"] + candle["low"] + candle["close"]) / 3) * max(0, as_int(candle.get("volume"))) for candle in candles) / total_volume
+
+    def _rsi(self, closes: list[float], period: int = 14) -> float:
+        if len(closes) < 2:
+            return 50.0
+        period = max(2, min(period, len(closes) - 1))
+        changes = [closes[index] - closes[index - 1] for index in range(1, len(closes))]
+        recent = changes[-period:]
+        gains = [max(0.0, value) for value in recent]
+        losses = [abs(min(0.0, value)) for value in recent]
+        avg_gain = sum(gains) / period
+        avg_loss = sum(losses) / period
+        if avg_loss == 0:
+            return 100.0 if avg_gain > 0 else 50.0
+        rs = avg_gain / avg_loss
+        return 100 - (100 / (1 + rs))
 
     def _volume_state(self, candles: list[dict[str, Any]], rows: list[dict[str, Any]], ltp_quote: dict[str, Any], call_md: dict[str, Any], put_md: dict[str, Any]) -> dict[str, Any]:
         candle_volume = sum(as_int(candle.get("volume")) for candle in candles[-10:])

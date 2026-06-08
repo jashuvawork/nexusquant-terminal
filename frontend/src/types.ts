@@ -301,6 +301,29 @@ export interface ExplosiveRunnerState { strategyType: string; candidate: boolean
 
 export interface EntryModelState { model: string; state: string; openingRangeHigh?: number; openingRangeLow?: number; spot?: number; retestConfirmed: boolean; failedBreakout: boolean; direction?: string; }
 
+export interface ChartAnalysisState {
+  available: boolean;
+  trend: string;
+  bias: 'CALL' | 'PUT' | 'WAIT' | string;
+  strength: number;
+  pattern?: string;
+  emaFast?: number;
+  emaSlow?: number;
+  vwap?: number;
+  rsi?: number;
+  atrPoints?: number;
+  levels?: {
+    support?: number;
+    resistance?: number;
+    recentHigh?: number;
+    recentLow?: number;
+    openingHigh?: number;
+    openingLow?: number;
+  };
+  signals?: string[];
+  recommendation: string;
+}
+
 export interface PressureModeState {
   level: 'NORMAL' | 'ELEVATED' | 'CRITICAL' | string;
   triggers: string[];
@@ -440,6 +463,7 @@ export interface TerminalSnapshot {
   tradeMode?: 'ANALYSIS_BACKTEST_ONLY' | 'AUTO_EXECUTION_READY' | string;
   qualityFilters?: QualityFilters;
   entryModel?: EntryModelState;
+  chartAnalysis?: ChartAnalysisState;
   newsState?: NewsState;
   explosiveRunner?: ExplosiveRunnerState;
   explosiveRunnerWatchlist?: ExplosiveRunnerState[];
