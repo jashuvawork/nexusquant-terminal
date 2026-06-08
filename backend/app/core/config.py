@@ -83,6 +83,8 @@ class Settings(BaseSettings):
     option_gst_pct: float = 18.0
     ai_learning_enabled: bool = True
     ai_state_file: str = "/opt/nexusquant/ai_state.json"
+    paper_replay_file: str = "/opt/nexusquant/paper_replay.jsonl"
+    paper_replay_persist_limit: int = 20000
     paper_trading: bool = True
     paper_trading_respects_stop: bool = False
     shadow_trade_all_signals: bool = False

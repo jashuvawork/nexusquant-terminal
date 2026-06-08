@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from time import monotonic
 from typing import Any
 from uuid import uuid4
@@ -124,10 +126,13 @@ class AutoTraderEngine:
         self.open_paper = AutoTraderEngine._shared_open_paper
         self.closed_paper = AutoTraderEngine._shared_closed_paper
         self.lifecycle_events = AutoTraderEngine._shared_lifecycle_events
+        self._load_replay_file()
 
     async def process(self, payload: dict[str, Any]) -> dict[str, Any]:
         now = datetime.now(timezone.utc).isoformat()
-        self.replay_buffer.append({"timestamp": now, "payload": self._compact_snapshot(payload)})
+        replay_item = {"timestamp": now, "payload": self._compact_snapshot(payload)}
+        self.replay_buffer.append(replay_item)
+        self._append_replay_file(replay_item)
         trading_control = await self.trading_control.status()
         capital = await self.trading_control.capital_status()
         trading_capital = float(capital.get("tradingCapital") or self.settings.trading_capital_default or 0)
@@ -223,6 +228,39 @@ class AutoTraderEngine:
 
     def replay(self, limit: int = 250) -> dict[str, Any]:
         return {"snapshots": list(self.replay_buffer)[-limit:], "count": min(limit, len(self.replay_buffer))}
+
+    def _load_replay_file(self) -> None:
+        if self.replay_buffer or not self.settings.paper_replay_file:
+            return
+        path = Path(self.settings.paper_replay_file)
+        if not path.exists():
+            return
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+            for line in lines[-self.replay_buffer.maxlen:]:
+                if not line.strip():
+                    continue
+                item = json.loads(line)
+                if isinstance(item, dict) and item.get("payload"):
+                    self.replay_buffer.append(item)
+        except Exception:
+            return
+
+    def _append_replay_file(self, item: dict[str, Any]) -> None:
+        if not self.settings.paper_replay_file:
+            return
+        try:
+            path = Path(self.settings.paper_replay_file)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(item, separators=(",", ":")) + "\n")
+            limit = max(1000, int(self.settings.paper_replay_persist_limit))
+            # Keep the replay file bounded so a long paper session does not grow indefinitely.
+            lines = path.read_text(encoding="utf-8").splitlines()
+            if len(lines) > limit:
+                path.write_text("\n".join(lines[-limit:]) + "\n", encoding="utf-8")
+        except Exception:
+            return
 
     async def train_replay_opportunities(
         self,
