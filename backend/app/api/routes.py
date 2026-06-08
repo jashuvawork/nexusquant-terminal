@@ -712,6 +712,17 @@ async def ai_learning_train_explosive_high_profit_both(
     return {"results": results, "errors": errors}
 
 
+@router.get("/ai-learning/train-replay-missed")
+async def ai_learning_train_replay_missed(
+    target_trades: int = 500,
+    horizon_ticks: int = 60,
+    min_profit_points: float = 8.0,
+    include_losses: bool = True,
+    auto_engine: AutoTraderEngine = Depends(get_auto_trader),
+) -> dict:
+    return await auto_engine.train_replay_opportunities(target_trades, horizon_ticks, min_profit_points, include_losses)
+
+
 @router.get("/ai-learning/train-runner")
 async def ai_learning_train_runner(
     symbol: Literal["NIFTY", "SENSEX"] = "NIFTY",

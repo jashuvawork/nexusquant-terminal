@@ -208,6 +208,8 @@ class ContinuousAILearner:
         avg_tqs = sum(float(sample.get("tqs", 0)) for sample in samples) / len(samples)
         chop_losses = sum(1 for sample in losses if sample.get("regime") in {"RANGE_ABSORPTION", "REVERSAL_RISK"})
         trend_wins = sum(1 for sample in wins if sample.get("regime") == "TREND_EXPANSION")
+        chart_aligned = sum(1 for sample in samples if sample.get("chartAligned"))
+        runner_samples = sum(1 for sample in samples if sample.get("strategyType") == "EXPLOSIVE_RUNNER")
 
         state["samples"] += len(samples)
         state["paperSamples"] += len(samples)
@@ -222,12 +224,12 @@ class ContinuousAILearner:
         calibration["chopPenalty"] = round(max(0, min(10, float(calibration.get("chopPenalty", 0)) + chop_losses * 0.01)), 4)
         calibration["volumeReward"] = round(max(0, min(10, float(calibration.get("volumeReward", 0)) + trend_wins * 0.005)), 4)
         state["learningScore"] = round(max(0, min(100, float(state["learningScore"]) * 0.9 + avg_tqs * 0.1 + (len(wins) - len(losses)) * 0.01)), 3)
-        state["lastFeatures"] = {"historicalSamples": len(samples), "avgTqs": round(avg_tqs, 2), "wins": len(wins), "losses": len(losses)}
+        state["lastFeatures"] = {"historicalSamples": len(samples), "avgTqs": round(avg_tqs, 2), "wins": len(wins), "losses": len(losses), "chartAligned": chart_aligned, "runnerSamples": runner_samples}
         state["lastOutcome"] = "historical_training"
         state["lastUpdatedAt"] = datetime.now(timezone.utc).isoformat()
         ContinuousAILearner._state = state
         await self.persist()
-        return {**self.status_from_state(state), "historicalTraining": {"samplesAdded": len(samples), "wins": len(wins), "losses": len(losses), "grossProfit": round(gross_profit, 2), "grossLoss": round(gross_loss, 2)}}
+        return {**self.status_from_state(state), "historicalTraining": {"samplesAdded": len(samples), "wins": len(wins), "losses": len(losses), "grossProfit": round(gross_profit, 2), "grossLoss": round(gross_loss, 2), "chartAligned": chart_aligned, "runnerSamples": runner_samples}}
 
     def status_from_state(self, state: dict[str, Any] | None = None) -> dict[str, Any]:
         state = state or ContinuousAILearner._state

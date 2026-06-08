@@ -224,6 +224,123 @@ class AutoTraderEngine:
     def replay(self, limit: int = 250) -> dict[str, Any]:
         return {"snapshots": list(self.replay_buffer)[-limit:], "count": min(limit, len(self.replay_buffer))}
 
+    async def train_replay_opportunities(
+        self,
+        target_trades: int = 500,
+        horizon_ticks: int = 60,
+        min_profit_points: float = 8.0,
+        include_losses: bool = True,
+    ) -> dict[str, Any]:
+        snapshots = list(self.replay_buffer)
+        samples: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        horizon_ticks = max(1, int(horizon_ticks))
+        min_profit_points = max(0.5, float(min_profit_points))
+        target_trades = max(1, int(target_trades))
+
+        for index, replay_item in enumerate(snapshots):
+            payload = replay_item.get("payload") or {}
+            timestamp = str(replay_item.get("timestamp") or payload.get("timestamp") or "")
+            minute_bucket = timestamp[:16]
+            for candidate in payload.get("executionCandidates") or []:
+                candidate_id = str(candidate.get("id") or "")
+                instrument = str(candidate.get("instrumentKey") or "")
+                entry = float(candidate.get("lastPremium") or 0)
+                if entry <= 0 or not (candidate_id or instrument):
+                    continue
+                dedupe_key = f"{candidate_id or instrument}:{minute_bucket}"
+                if dedupe_key in seen:
+                    continue
+                future_prices = self._future_candidate_prices(snapshots, index, horizon_ticks, candidate_id, instrument)
+                if not future_prices:
+                    continue
+                seen.add(dedupe_key)
+                best = max(future_prices)
+                worst = min(future_prices)
+                final = future_prices[-1]
+                mfe = best - entry
+                mae = worst - entry
+                quantity = max(1, int(candidate.get("quantityEstimate") or candidate.get("lotSize") or 1))
+                costs_per_unit = self._charges_estimate(entry, final, quantity) / quantity
+                costs_per_unit += max(0.0, entry * 0.004) + max(0.05, entry * 0.002)
+                chart_bias = candidate.get("chartBias")
+                side = candidate.get("side")
+                chart_aligned = chart_bias in {"CALL", "PUT"} and side == chart_bias
+                runner = candidate.get("runnerSignal") or {}
+                runner_score = float(runner.get("score") or 0)
+                metrics = runner.get("metrics") or {}
+                breakout = float(metrics.get("breakoutVelocity") or 0)
+                delta_velocity = abs(float(metrics.get("deltaVelocity") or 0))
+
+                if mfe >= min_profit_points:
+                    pnl = mfe - costs_per_unit
+                    outcome = "missed_profitable_move"
+                elif include_losses:
+                    pnl = min(final - entry, mae) - costs_per_unit
+                    outcome = "avoid_or_wait"
+                else:
+                    continue
+
+                regime = "TREND_EXPANSION" if pnl > 0 and chart_aligned and breakout >= 65 else "REVERSAL_RISK" if pnl < 0 else "RANGE_ABSORPTION"
+                samples.append({
+                    "symbol": candidate.get("symbol"),
+                    "instrumentKey": instrument,
+                    "time": timestamp,
+                    "side": side,
+                    "entry": round(entry, 2),
+                    "pnl": round(pnl, 2),
+                    "tqs": round(float(candidate.get("tqs") or 0)),
+                    "chartBias": chart_bias,
+                    "chartTrend": candidate.get("chartTrend"),
+                    "chartAligned": chart_aligned,
+                    "runnerScore": runner_score,
+                    "breakoutVelocity": breakout,
+                    "deltaVelocity": delta_velocity,
+                    "bestMovePoints": round(mfe, 2),
+                    "worstMovePoints": round(mae, 2),
+                    "regime": regime,
+                    "strategyType": candidate.get("strategyType") or "REPLAY_CANDIDATE",
+                    "outcome": outcome,
+                })
+                if len(samples) >= target_trades:
+                    break
+            if len(samples) >= target_trades:
+                break
+
+        learning = await self.learner.train_from_historical_samples(samples)
+        wins = [sample for sample in samples if float(sample.get("pnl") or 0) > 0]
+        losses = [sample for sample in samples if float(sample.get("pnl") or 0) < 0]
+        return {
+            "available": bool(samples),
+            "trainingMode": "TODAY_REPLAY_MISSED_OPPORTUNITIES",
+            "targetTrades": target_trades,
+            "samplesAdded": len(samples),
+            "wins": len(wins),
+            "losses": len(losses),
+            "grossProfit": round(sum(float(sample.get("pnl") or 0) for sample in wins), 2),
+            "grossLoss": round(abs(sum(float(sample.get("pnl") or 0) for sample in losses)), 2),
+            "chartAlignedWins": sum(1 for sample in wins if sample.get("chartAligned")),
+            "runnerSamples": sum(1 for sample in samples if sample.get("strategyType") == "EXPLOSIVE_RUNNER"),
+            "horizonTicks": horizon_ticks,
+            "minProfitPoints": min_profit_points,
+            "learning": learning,
+            "note": "Replay training labels today's candidates by future option premium movement. It trains both missed winners and avoid/wait losers with chart context.",
+        }
+
+    def _future_candidate_prices(self, snapshots: list[dict[str, Any]], index: int, horizon_ticks: int, candidate_id: str, instrument: str) -> list[float]:
+        prices: list[float] = []
+        for future in snapshots[index + 1:index + 1 + horizon_ticks]:
+            payload = future.get("payload") or {}
+            for candidate in payload.get("executionCandidates") or []:
+                same_id = candidate_id and str(candidate.get("id") or "") == candidate_id
+                same_instrument = instrument and str(candidate.get("instrumentKey") or "") == instrument
+                if same_id or same_instrument:
+                    price = float(candidate.get("lastPremium") or 0)
+                    if price > 0:
+                        prices.append(price)
+                    break
+        return prices
+
     def profit_lock_status(self, capital: float | None = None) -> dict[str, Any]:
         capital = float(capital or 0)
         report = self.daily_report()
