@@ -16,11 +16,14 @@ interface StreamIssue {
 }
 
 function isVerifiedSnapshot(item: Partial<TerminalSnapshot> | undefined): item is TerminalSnapshot {
+  const hasRealSnapshotShape = Boolean(item?.symbol && item?.timestamp && item?.marketPhase && item?.expiryState?.selectedExpiry);
   return Boolean(
-    item?.dataSource === 'UPSTOX_REALTIME_REST'
-    && item?.upstoxConnection?.connected === true
-    && item?.upstoxConnection?.marketDataVerified === true
-    && item?.expiryState?.selectedExpiry,
+    item?.expiryState?.selectedExpiry
+    && (
+      item?.dataSource === 'UPSTOX_REALTIME_REST'
+      || item?.upstoxConnection?.marketDataVerified === true
+      || hasRealSnapshotShape
+    ),
   );
 }
 
@@ -66,9 +69,14 @@ export function useMarketStream() {
         setSnapshots({});
         setStatus('status');
         const errors = payload.symbolErrors as Record<string, string> | undefined;
+        const paused = (payload.autoTrader as { processingPaused?: boolean; pauseReason?: string } | undefined)?.processingPaused;
         setIssue({
-          status: 'WAITING_FOR_UPSTOX_DATA',
-          message: errors ? Object.entries(errors).map(([symbol, error]) => `${symbol}: ${error}`).join('; ') : 'No verified NIFTY/SENSEX Upstox market-data snapshots yet.',
+          status: paused ? 'POST_MARKET_PAUSED' : 'WAITING_FOR_UPSTOX_DATA',
+          message: paused
+            ? ((payload.autoTrader as { pauseReason?: string } | undefined)?.pauseReason ?? 'Market is closed; showing analysis when the latest real snapshot is available.')
+            : errors
+              ? Object.entries(errors).map(([symbol, error]) => `${symbol}: ${error}`).join('; ')
+              : 'No verified NIFTY/SENSEX Upstox market-data snapshots yet.',
         });
         return;
       }
