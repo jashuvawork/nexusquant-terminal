@@ -200,7 +200,7 @@ async def emit_journal_events(payload: dict) -> list[dict]:
             emitted.append(event)
     return emitted
 
-async def build_multi_symbol_snapshot() -> dict:
+async def build_multi_symbol_snapshot(*, include_auto_trader: bool | None = None) -> dict:
     symbols = ["NIFTY", "SENSEX"]
     results = await asyncio.gather(*(market_engine.snapshot(symbol) for symbol in symbols), return_exceptions=True)
     snapshots: dict[str, dict] = {}
@@ -233,7 +233,11 @@ async def build_multi_symbol_snapshot() -> dict:
         "executionCandidates": execution_candidates,
         "marketSnapshot": MARKET_SNAPSHOT_CACHE,
     }
-    payload["autoTrader"] = await auto_trader.process(payload)
+    session_live = any((snapshot.get("marketPhase") == "LIVE_MARKET") for snapshot in snapshots.values())
+    should_process_auto = session_live if include_auto_trader is None else include_auto_trader
+    payload["autoTrader"] = await auto_trader.process(payload) if should_process_auto else auto_trader.status()
+    if not should_process_auto:
+        payload["autoTrader"] = {**payload["autoTrader"], "processingPaused": True, "pauseReason": "Market is closed; replay/learning mutations paused."}
     payload["institutionalReadiness"] = InstitutionalReadinessEngine().score_snapshot(payload)
     await emit_journal_events(payload)
     payload["eventJournal"] = await event_journal.recent(50)
@@ -249,7 +253,14 @@ async def background_market_monitor() -> None:
             if settings.market_snapshot_monitor_enabled and _market_snapshot_tick >= max(1.0, float(settings.market_snapshot_poll_seconds or 5)):
                 _market_snapshot_tick = 0.0
                 await refresh_market_snapshot_cache()
-            payload = await build_multi_symbol_snapshot()
+            session = current_session_state()
+            if session.phase != MarketPhase.LIVE_MARKET:
+                if settings.market_snapshot_monitor_enabled and _market_snapshot_tick >= max(1.0, float(settings.market_snapshot_poll_seconds or 5)):
+                    _market_snapshot_tick = 0.0
+                    await refresh_market_snapshot_cache()
+                await asyncio.sleep(max(15.0, float(settings.market_poll_seconds or 1)))
+                continue
+            payload = await build_multi_symbol_snapshot(include_auto_trader=True)
             LATEST_TQS.set(payload["tradeQualityScore"])
             SNAPSHOTS_STREAMED.inc(len(payload.get("snapshots", {})) or 1)
         except (UpstoxAuthRequired, MarketConfigurationError, UpstoxDataError):

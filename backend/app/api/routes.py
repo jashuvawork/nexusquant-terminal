@@ -225,7 +225,11 @@ async def market_snapshots(engine: RealTimeMarketEngine = Depends(get_market_eng
         for trade in snapshot.get("suggestedTrades") or []:
             candidates.append({"symbol": symbol, **trade})
     payload = {"type": "multi_snapshot", "snapshots": snapshots, "symbolErrors": errors, "executionCandidates": candidates}
-    payload["autoTrader"] = await auto_engine.process(payload)
+    session_state = current_session_state()
+    if session_state.phase == "LIVE_MARKET":
+        payload["autoTrader"] = await auto_engine.process(payload)
+    else:
+        payload["autoTrader"] = {**auto_engine.status(), "processingPaused": True, "pauseReason": "Market is closed; replay/learning mutations paused."}
     return payload
 
 
