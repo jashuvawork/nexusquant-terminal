@@ -137,6 +137,7 @@ class AutoTraderEngine:
         capital = await self.trading_control.capital_status()
         trading_capital = float(capital.get("tradingCapital") or self.settings.trading_capital_default or 0)
         risk_halt = self._paper_risk_halt(trading_capital)
+        pre_trade_psychology = self._psychology_report([], [], risk_halt)
         candidates = payload.get("executionCandidates") or []
         snapshots = payload.get("snapshots") or {payload.get("symbol", "NIFTY"): payload}
         cached_snapshot = self._all_snapshots_cached(snapshots)
@@ -166,11 +167,14 @@ class AutoTraderEngine:
             if risk_halt["blocked"]:
                 skipped.append({"candidate": candidate.get("id"), "reason": risk_halt["reason"], "quality": quality})
                 continue
+            if pre_trade_psychology.get("tradePermission") in {"WAIT", "BLOCK_NEW_TRADES"}:
+                skipped.append({"candidate": candidate.get("id"), "reason": f"psychology gate: {pre_trade_psychology.get('tradePermission')}", "quality": quality})
+                continue
             if self.settings.paper_trading or not self.settings.enable_live_trading:
                 opened = self._open_paper_trade(candidate, quality, self._available_capital(trading_capital), trading_capital)
                 if opened:
                     signal_events.append(opened.lifecycle[-1])
-        exits = self._update_open_paper(snapshots)
+        exits = self._update_open_paper(snapshots, pre_trade_psychology)
         online_learning = await self.learner.update_from_tick(payload, exits, "live" if self.settings.enable_live_trading and not self.settings.paper_trading else "paper")
         self._learn_every_tick(payload, exits)
         profit_lock = self.profit_lock_status(capital.get("tradingCapital", 0))
@@ -562,7 +566,7 @@ class AutoTraderEngine:
         self.open_paper[trade.id] = trade
         return trade
 
-    def _update_open_paper(self, snapshots: dict[str, Any]) -> list[dict[str, Any]]:
+    def _update_open_paper(self, snapshots: dict[str, Any], psychology: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         exits = []
         price_by_id: dict[str, dict[str, Any]] = {}
         price_by_instrument: dict[str, dict[str, Any]] = {}
@@ -588,6 +592,7 @@ class AutoTraderEngine:
             stop_points = float(trade.stop_points or profile.get("stopPoints") or self.settings.paper_stop_points)
             partial_exit_at = max(1.0, target_points * float(profile.get("partialExitPct") or 0.6))
             breakeven_shift = float(trade.breakeven_shift_points or self.settings.paper_breakeven_shift_points)
+            stop_points, max_hold_seconds, psych_exit_reason = self._psychology_exit_adjustments(stop_points, psychology)
             style = str(profile.get("executionStyle") or "GENERIC")
             if style == "RUNNER_BREAKOUT":
                 target_points = max(target_points, self.settings.paper_target_points * 1.2)
@@ -604,9 +609,9 @@ class AutoTraderEngine:
             elif trade.breakeven_armed and current <= trade.entry_price:
                 reason = "breakeven protection after +8 move"
             elif current <= trade.entry_price - stop_points:
-                reason = "momentum decay or delta reversal stop"
-            elif age >= self.settings.max_paper_trade_seconds:
-                reason = "time stop"
+                reason = psych_exit_reason or "momentum decay or delta reversal stop"
+            elif age >= max_hold_seconds:
+                reason = "psychology shortened time stop" if max_hold_seconds < self.settings.max_paper_trade_seconds else "time stop"
             elif (candidate or {}).get("chopBlocked"):
                 reason = "liquidity rejection / chop filter exit"
             if reason:
@@ -715,6 +720,27 @@ class AutoTraderEngine:
             "maxConsecutiveLosses": self.settings.paper_max_consecutive_losses,
         }
 
+    def _psychology_exit_adjustments(self, stop_points: float, psychology: dict[str, Any] | None = None) -> tuple[float, int, str | None]:
+        psychology = psychology or {}
+        state = str(psychology.get("state") or "CALM_AND_SELECTIVE")
+        permission = str(psychology.get("tradePermission") or "A_PLUS_ONLY")
+        max_hold = int(self.settings.max_paper_trade_seconds)
+        adjusted_stop = float(stop_points)
+        reason = None
+        if permission == "BLOCK_NEW_TRADES" or state == "HALT_AND_REVIEW":
+            adjusted_stop = min(adjusted_stop, max(1.0, stop_points * 0.45))
+            max_hold = min(max_hold, 60)
+            reason = "psychology halt defensive stop"
+        elif permission == "WAIT" or state == "DEFENSIVE":
+            adjusted_stop = min(adjusted_stop, max(1.25, stop_points * 0.6))
+            max_hold = min(max_hold, 90)
+            reason = "psychology defensive stop"
+        elif state == "CAUTIOUS":
+            adjusted_stop = min(adjusted_stop, max(1.5, stop_points * 0.75))
+            max_hold = min(max_hold, 150)
+            reason = "psychology cautious stop"
+        return round(adjusted_stop, 2), max_hold, reason
+
     def _psychology_report(self, candidates: list[dict[str, Any]], skipped: list[dict[str, Any]], risk_halt: dict[str, Any]) -> dict[str, Any]:
         report = self.daily_report()
         closed = list(self.closed_paper)
@@ -793,6 +819,10 @@ class AutoTraderEngine:
 
         if not coach_actions:
             coach_actions.append("Stay selective. Let the bot wait for chart-aligned option-tape confirmation.")
+        adjusted_stop, adjusted_hold, exit_reason = self._psychology_exit_adjustments(float(self.settings.paper_stop_points), {
+            "state": state,
+            "tradePermission": permission,
+        })
 
         return {
             "state": state,
@@ -812,6 +842,13 @@ class AutoTraderEngine:
                 "chartConflicts": chart_conflicts,
                 "chopSkips": chop_skips,
                 "duplicateSkips": duplicate_skips,
+            },
+            "exitAdjustments": {
+                "baseStopPoints": self.settings.paper_stop_points,
+                "adjustedStopPoints": adjusted_stop,
+                "baseMaxHoldSeconds": self.settings.max_paper_trade_seconds,
+                "adjustedMaxHoldSeconds": adjusted_hold,
+                "reason": exit_reason,
             },
             "mantra": "Protect capital first. Trade only when chart, tape, and risk agree.",
         }

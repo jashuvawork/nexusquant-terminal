@@ -438,6 +438,13 @@ export interface AutoTraderState {
     behavioralFindings: string[];
     coachActions: string[];
     metrics: Record<string, number>;
+    exitAdjustments?: {
+      baseStopPoints: number;
+      adjustedStopPoints: number;
+      baseMaxHoldSeconds: number;
+      adjustedMaxHoldSeconds: number;
+      reason?: string | null;
+    };
     mantra: string;
   };
   onlineLearning: { enabled: boolean; pretrained?: boolean; priorVersion?: string; mode: string; samples: number; score?: number; learningScore?: number; paperSamples?: number; liveSamples?: number; profitFactor?: number; calibration?: Record<string, unknown>; lastUpdatedAt?: string; note: string };

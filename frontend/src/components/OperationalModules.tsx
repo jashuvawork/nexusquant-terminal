@@ -576,6 +576,13 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
             <MetricCard label="Mindset State" value={auto.psychology.state.replaceAll('_', ' ')} helper={auto.psychology.tradePermission.replaceAll('_', ' ')} tone={auto.psychology.tradePermission === 'WAIT' || auto.psychology.tradePermission === 'BLOCK_NEW_TRADES' ? 'rose' : 'emerald'} />
             <MetricCard label="Discipline Score" value={auto.psychology.disciplineScore} helper="Higher means calmer selection" tone={auto.psychology.disciplineScore >= 80 ? 'emerald' : auto.psychology.disciplineScore >= 60 ? 'amber' : 'rose'} />
             <MetricCard label="Emotional Risks" value={auto.psychology.emotionalRisks.length} helper={auto.psychology.emotionalRisks.join(', ') || 'None'} tone={auto.psychology.emotionalRisks.length ? 'amber' : 'emerald'} />
+            {auto.psychology.exitAdjustments && (
+              <>
+                <MetricCard label="Psych Stop" value={auto.psychology.exitAdjustments.adjustedStopPoints} helper={`Base ${auto.psychology.exitAdjustments.baseStopPoints}`} tone="amber" />
+                <MetricCard label="Psych Hold" value={`${auto.psychology.exitAdjustments.adjustedMaxHoldSeconds}s`} helper={`Base ${auto.psychology.exitAdjustments.baseMaxHoldSeconds}s`} tone="violet" />
+                <MetricCard label="Stop Reason" value={auto.psychology.exitAdjustments.reason ? 'ACTIVE' : 'NORMAL'} helper={auto.psychology.exitAdjustments.reason ?? 'No psychology tightening'} tone={auto.psychology.exitAdjustments.reason ? 'rose' : 'emerald'} />
+              </>
+            )}
           </div>
           <div className="mt-4 grid gap-4 lg:grid-cols-2">
             <div className="rounded-2xl border border-slate-700 bg-slate-950/60 p-4">
