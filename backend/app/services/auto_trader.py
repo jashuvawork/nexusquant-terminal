@@ -142,7 +142,7 @@ class AutoTraderEngine:
             quality = self._pre_trade_quality(candidate)
             if quality["blocked"]:
                 skipped.append({"candidate": candidate.get("id"), "reason": quality["reason"], "quality": quality})
-                if not (self.settings.paper_trading and self.settings.shadow_trade_all_signals):
+                if not (self.settings.paper_trading and self.settings.shadow_trade_all_signals and quality.get("paperEligible")):
                     continue
                 quality = {**quality, "shadowOverride": True, "reason": f"SHADOW PAPER despite rejection: {quality['reason']}"}
             if trading_control.get("autoTradingStopped") and self.settings.paper_trading_respects_stop:
@@ -307,6 +307,7 @@ class AutoTraderEngine:
             reasons.append("spread/slippage cost too high for 5-point scalp")
         return {
             "blocked": bool(reasons),
+            "paperEligible": not bool(reasons) or (candidate.get("strategyType") == "EXPLOSIVE_RUNNER" and candidate.get("tqs", 0) >= 76 and not candidate.get("chopBlocked")),
             "reason": ", ".join(reasons) if reasons else "quality accepted",
             "spreadCost": round(spread_cost, 2),
             "slippageEstimate": round(slippage, 2),

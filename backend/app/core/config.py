@@ -66,8 +66,8 @@ class Settings(BaseSettings):
     profit_target_fallback_pct: float = 11.0
     profit_target_secondary_pct: float = 22.0
     profit_target_primary_pct: float = 33.0
-    max_paper_trade_seconds: int = 600
-    paper_duplicate_signal_cooldown_seconds: int = 900
+    max_paper_trade_seconds: int = 240
+    paper_duplicate_signal_cooldown_seconds: int = 180
     paper_stop_points: float = 7.0
     paper_target_points: float = 15.0
     paper_breakeven_shift_points: float = 8.0
@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     ai_state_file: str = "/opt/nexusquant/ai_state.json"
     paper_trading: bool = True
     paper_trading_respects_stop: bool = False
-    shadow_trade_all_signals: bool = True
+    shadow_trade_all_signals: bool = False
     market_poll_seconds: float = 5.0
     websocket_heartbeat_seconds: float = 10.0
     websocket_send_interval_seconds: float = 1.0
