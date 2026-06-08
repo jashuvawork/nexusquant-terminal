@@ -676,6 +676,42 @@ async def ai_learning_train_option_runner_both(
     return {"results": results, "errors": errors}
 
 
+@router.get("/ai-learning/train-explosive-high-profit")
+async def ai_learning_train_explosive_high_profit(
+    symbol: Literal["NIFTY", "SENSEX"] = "NIFTY",
+    target_trades: int | None = 500,
+    expiry_date: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    max_contracts: int = 80,
+    trainer: HistoricalTrainer = Depends(get_historical_trainer),
+) -> dict:
+    try:
+        return await trainer.train_option_runner(symbol, target_trades, expiry_date, from_date, to_date, 1, max_contracts, high_profit_only=True)
+    except (UpstoxAuthRequired, UpstoxDataError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/ai-learning/train-explosive-high-profit-both")
+async def ai_learning_train_explosive_high_profit_both(
+    target_trades: int | None = 500,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    max_contracts: int = 80,
+    trainer: HistoricalTrainer = Depends(get_historical_trainer),
+) -> dict:
+    results = {}
+    errors = {}
+    for symbol in ["NIFTY", "SENSEX"]:
+        try:
+            results[symbol] = await trainer.train_option_runner(symbol, target_trades, None, from_date, to_date, 1, max_contracts, high_profit_only=True)
+        except (UpstoxAuthRequired, UpstoxDataError) as exc:
+            errors[symbol] = str(exc)
+    if not results:
+        raise HTTPException(status_code=503, detail=errors)
+    return {"results": results, "errors": errors}
+
+
 @router.get("/ai-learning/train-runner")
 async def ai_learning_train_runner(
     symbol: Literal["NIFTY", "SENSEX"] = "NIFTY",

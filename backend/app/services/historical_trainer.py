@@ -117,6 +117,7 @@ class HistoricalTrainer:
         to_date: str | None = None,
         interval: int = 1,
         max_contracts: int = 60,
+        high_profit_only: bool = False,
     ) -> dict[str, Any]:
         target = target_trades or self.settings.historical_training_target_trades
         underlying_key = self.settings.instrument_key_for(symbol)
@@ -141,8 +142,13 @@ class HistoricalTrainer:
             if not expiries:
                 return {"available": False, "reason": f"No Upstox option expiries returned for {symbol}", "samples": 0, "warnings": warnings}
             future_expiries = [item for item in expiries if date.fromisoformat(item) >= today]
-            expiry = future_expiries[0] if future_expiries else expiries[0]
-            contracts = [item for item in all_contracts if item.get("expiry") == expiry]
+            if high_profit_only:
+                selected_expiries = (future_expiries or expiries)[:4]
+                expiry = ",".join(selected_expiries)
+                contracts = [item for item in all_contracts if item.get("expiry") in selected_expiries]
+            else:
+                expiry = future_expiries[0] if future_expiries else expiries[0]
+                contracts = [item for item in all_contracts if item.get("expiry") == expiry]
         if not contracts:
             return {"available": False, "reason": f"No option contracts returned for {symbol} expiry {expiry}", "samples": 0, "warnings": warnings}
         selected_contracts = self._select_option_contracts(contracts, max_contracts)
@@ -160,7 +166,13 @@ class HistoricalTrainer:
                 try:
                     payload = await self.client.historical_candles(instrument_key, "minutes", interval, chunk_to, chunk_from)
                     chunk_candles = self._parse_candles(payload)
-                    chunk_samples = self._generate_option_runner_samples(symbol, contract, chunk_candles, max(0, target - len(samples)))
+                    sample_target = max(0, target - len(samples))
+                    chunk_samples = self._generate_option_runner_samples(symbol, contract, chunk_candles, sample_target * 3 if high_profit_only else sample_target)
+                    if high_profit_only:
+                        chunk_samples = [
+                            sample for sample in chunk_samples
+                            if float(sample.get("pnl") or 0) > 0 and sample.get("outcome") != "runner_failed"
+                        ]
                     contract_candles.extend(chunk_candles)
                     contract_samples.extend(chunk_samples)
                     samples.extend(chunk_samples)
@@ -183,7 +195,7 @@ class HistoricalTrainer:
         learning = await self.learner.train_from_historical_samples(samples)
         return {
             "available": bool(samples),
-            "trainingMode": "EXACT_OPTION_PREMIUM_CANDLES" if samples else "UNAVAILABLE",
+            "trainingMode": "HIGH_PROFIT_EXPLOSIVE_OPTION_RUNNER" if high_profit_only and samples else "EXACT_OPTION_PREMIUM_CANDLES" if samples else "UNAVAILABLE",
             "symbol": symbol,
             "underlyingInstrumentKey": underlying_key,
             "expiry": expiry,
@@ -195,7 +207,7 @@ class HistoricalTrainer:
             "contractsChecked": contract_results,
             "errors": errors[-20:],
             "learning": learning,
-            "note": "Uses actual Upstox historical candles for option instrument keys. If no samples are produced, Upstox option premium history is unavailable for the selected contracts/date range.",
+            "note": "High-profit mode filters exact Upstox option premium runner samples to profitable explosive outcomes before training." if high_profit_only else "Uses actual Upstox historical candles for option instrument keys. If no samples are produced, Upstox option premium history is unavailable for the selected contracts/date range.",
         }
 
     def _valid_date(self, value: str | None) -> bool:

@@ -73,7 +73,16 @@ export function useMarketStream() {
         return;
       }
 
-      const nextSnapshots = Object.fromEntries(verifiedEntries) as Partial<Record<MarketSymbol, TerminalSnapshot>>;
+      const sharedState = {
+        autoTrader: payload.autoTrader,
+        marketSnapshot: payload.marketSnapshot,
+        institutionalReadiness: payload.institutionalReadiness,
+        eventJournal: payload.eventJournal,
+      };
+      const sharedEntries = Object.fromEntries(Object.entries(sharedState).filter(([, value]) => value !== undefined));
+      const nextSnapshots = Object.fromEntries(
+        verifiedEntries.map(([symbol, item]) => [symbol, { ...item, ...sharedEntries }]),
+      ) as Partial<Record<MarketSymbol, TerminalSnapshot>>;
       const displaySymbol = payload.displaySymbol as MarketSymbol | undefined;
       setSnapshots(nextSnapshots);
       setSnapshot((displaySymbol && nextSnapshots[displaySymbol]) || nextSnapshots.NIFTY || nextSnapshots.SENSEX || verifiedEntries[0][1]);
