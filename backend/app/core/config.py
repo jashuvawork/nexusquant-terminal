@@ -70,6 +70,8 @@ class Settings(BaseSettings):
     paper_duplicate_signal_cooldown_seconds: int = 180
     paper_trade_allocation_pct: float = 50.0
     paper_min_trade_allocation_pct: float = 33.0
+    paper_max_daily_loss_pct: float = 2.0
+    paper_max_consecutive_losses: int = 3
     paper_stop_points: float = 7.0
     paper_target_points: float = 15.0
     paper_breakeven_shift_points: float = 8.0

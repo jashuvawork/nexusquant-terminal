@@ -131,6 +131,7 @@ class AutoTraderEngine:
         trading_control = await self.trading_control.status()
         capital = await self.trading_control.capital_status()
         trading_capital = float(capital.get("tradingCapital") or self.settings.trading_capital_default or 0)
+        risk_halt = self._paper_risk_halt(trading_capital)
         candidates = payload.get("executionCandidates") or []
         snapshots = payload.get("snapshots") or {payload.get("symbol", "NIFTY"): payload}
         cached_snapshot = self._all_snapshots_cached(snapshots)
@@ -156,6 +157,9 @@ class AutoTraderEngine:
                 quality = {**quality, "shadowOverride": True, "reason": f"SHADOW PAPER despite rejection: {quality['reason']}"}
             if trading_control.get("autoTradingStopped") and self.settings.paper_trading_respects_stop:
                 skipped.append({"candidate": candidate.get("id"), "reason": "manual stop active", "quality": quality})
+                continue
+            if risk_halt["blocked"]:
+                skipped.append({"candidate": candidate.get("id"), "reason": risk_halt["reason"], "quality": quality})
                 continue
             if self.settings.paper_trading or not self.settings.enable_live_trading:
                 opened = self._open_paper_trade(candidate, quality, self._available_capital(trading_capital), trading_capital)
@@ -185,6 +189,7 @@ class AutoTraderEngine:
             "slippageModel": self._slippage_summary(candidates),
             "positionSizing": self._position_sizing_summary(candidates, capital.get("tradingCapital", 0)),
             "profitLock": profit_lock,
+            "paperRiskHalt": risk_halt,
             "onlineLearning": online_learning,
             "dailyReport": self.daily_report(),
         }
@@ -199,6 +204,7 @@ class AutoTraderEngine:
             "orderLifecycle": [event.__dict__ for event in list(self.lifecycle_events)[-50:]],
             "replay": {"storedSnapshots": len(self.replay_buffer)},
             "profitLock": self.profit_lock_status(),
+            "paperRiskHalt": self._paper_risk_halt(),
             "onlineLearning": self.learner.status_from_state(),
             "dailyReport": self.daily_report(),
         }
@@ -504,6 +510,32 @@ class AutoTraderEngine:
     def _available_capital(self, trading_capital: float) -> float:
         used = sum(max(0.0, trade.entry_price) * max(0, trade.quantity) for trade in self.open_paper.values())
         return max(0.0, float(trading_capital or 0) - used)
+
+    def _paper_risk_halt(self, trading_capital: float | None = None) -> dict[str, Any]:
+        report = self.daily_report()
+        capital = float(trading_capital or self.settings.trading_capital_default or 0)
+        net = float(report.get("grossProfit") or 0) - float(report.get("grossLoss") or 0)
+        loss_pct = abs(net) / capital * 100 if capital > 0 and net < 0 else 0.0
+        consecutive_losses = 0
+        for trade in reversed(list(self.closed_paper)):
+            if trade.pnl < 0:
+                consecutive_losses += 1
+            elif trade.pnl > 0:
+                break
+        reasons = []
+        if loss_pct >= float(self.settings.paper_max_daily_loss_pct):
+            reasons.append(f"paper daily loss {loss_pct:.2f}% >= {self.settings.paper_max_daily_loss_pct:.2f}%")
+        if consecutive_losses >= int(self.settings.paper_max_consecutive_losses):
+            reasons.append(f"{consecutive_losses} consecutive paper losses")
+        return {
+            "blocked": bool(reasons),
+            "reason": "; ".join(reasons) if reasons else None,
+            "netPnl": round(net, 2),
+            "lossPct": round(loss_pct, 2),
+            "consecutiveLosses": consecutive_losses,
+            "maxDailyLossPct": self.settings.paper_max_daily_loss_pct,
+            "maxConsecutiveLosses": self.settings.paper_max_consecutive_losses,
+        }
 
     def _all_snapshots_cached(self, snapshots: dict[str, Any]) -> bool:
         if not snapshots:
