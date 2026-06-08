@@ -66,8 +66,8 @@ class Settings(BaseSettings):
     profit_target_fallback_pct: float = 11.0
     profit_target_secondary_pct: float = 22.0
     profit_target_primary_pct: float = 33.0
-    max_paper_trade_seconds: int = 600
-    paper_duplicate_signal_cooldown_seconds: int = 900
+    max_paper_trade_seconds: int = 240
+    paper_duplicate_signal_cooldown_seconds: int = 180
     paper_stop_points: float = 7.0
     paper_target_points: float = 15.0
     paper_breakeven_shift_points: float = 8.0
