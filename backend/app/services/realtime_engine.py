@@ -1042,6 +1042,9 @@ class RealTimeMarketEngine:
                 continue
             premium = as_float(signal.get("premium") or signal.get("lastPremium"))
             risk_capital = trading_capital * max(0, self.settings.max_exposure_pct) / 100 if trading_capital > 0 else 0
+            paper_allocation_cap = trading_capital * max(0.0, float(self.settings.paper_trade_allocation_pct)) / 100 if trading_capital > 0 else 0
+            if paper_allocation_cap > 0:
+                risk_capital = min(risk_capital, paper_allocation_cap)
             position = self._lot_sized_position(str(signal.get("instrumentKey") or ""), premium, risk_capital)
             quantity_estimate = int(position["quantity"])
             allocation_pct = round(((quantity_estimate * premium) / trading_capital) * 100, 2) if trading_capital > 0 and premium > 0 else 0
@@ -1545,6 +1548,9 @@ class RealTimeMarketEngine:
         action = "EXECUTION_READY" if execution_allowed else "SUGGEST_ONLY"
         confidence = "HIGH" if tqs >= 82 and spread_quality >= 75 else "MEDIUM" if tqs >= 70 else "LOW"
         risk_capital = trading_capital * max(0, self.settings.max_exposure_pct) / 100 if trading_capital > 0 else 0
+        paper_allocation_cap = trading_capital * max(0.0, float(self.settings.paper_trade_allocation_pct)) / 100 if trading_capital > 0 else 0
+        if paper_allocation_cap > 0:
+            risk_capital = min(risk_capital, paper_allocation_cap)
         position = self._lot_sized_position(instrument, premium, risk_capital)
         quantity_estimate = int(position["quantity"])
         allocation_pct = round(((quantity_estimate * premium) / trading_capital) * 100, 2) if trading_capital > 0 and premium > 0 else 0
