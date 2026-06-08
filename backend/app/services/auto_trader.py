@@ -122,6 +122,7 @@ class AutoTraderEngine:
         self.replay_buffer.append({"timestamp": now, "payload": self._compact_snapshot(payload)})
         trading_control = await self.trading_control.status()
         capital = await self.trading_control.capital_status()
+        trading_capital = float(capital.get("tradingCapital") or self.settings.trading_capital_default or 0)
         candidates = payload.get("executionCandidates") or []
         snapshots = payload.get("snapshots") or {payload.get("symbol", "NIFTY"): payload}
         cached_snapshot = self._all_snapshots_cached(snapshots)
@@ -149,7 +150,7 @@ class AutoTraderEngine:
                 skipped.append({"candidate": candidate.get("id"), "reason": "manual stop active", "quality": quality})
                 continue
             if self.settings.paper_trading or not self.settings.enable_live_trading:
-                opened = self._open_paper_trade(candidate, quality)
+                opened = self._open_paper_trade(candidate, quality, self._available_capital(trading_capital))
                 if opened:
                     signal_events.append(opened.lifecycle[-1])
         exits = self._update_open_paper(snapshots)
@@ -316,14 +317,23 @@ class AutoTraderEngine:
             "minimumRequiredMove": round(required_move, 2),
         }
 
-    def _open_paper_trade(self, candidate: dict[str, Any], quality: dict[str, Any]) -> PaperTrade | None:
+    def _open_paper_trade(self, candidate: dict[str, Any], quality: dict[str, Any], available_capital: float | None = None) -> PaperTrade | None:
         trade_id = str(candidate.get("id") or uuid4())
         if trade_id in self.open_paper:
             return None
         if self._recent_signal_active(trade_id):
             return None
-        quantity = int(candidate.get("quantityEstimate") or 1)
-        charges = self._charges_estimate(float(candidate.get("lastPremium") or 0), float(candidate.get("lastPremium") or 0), max(1, quantity))
+        premium = float(candidate.get("lastPremium") or 0)
+        lot_size = max(1, int(candidate.get("lotSize") or 1))
+        desired_quantity = int(candidate.get("quantityEstimate") or lot_size)
+        if available_capital is not None and premium > 0:
+            affordable_lots = int(max(0.0, available_capital) // (premium * lot_size))
+            quantity = min(desired_quantity, affordable_lots * lot_size)
+        else:
+            quantity = desired_quantity
+        if quantity < lot_size:
+            return None
+        charges = self._charges_estimate(premium, premium, max(1, quantity))
         trade = PaperTrade(
             id=trade_id,
             symbol=str(candidate.get("symbol")),
@@ -331,7 +341,7 @@ class AutoTraderEngine:
             strike=int(candidate.get("strike") or 0),
             expiry=str(candidate.get("expiry")),
             instrument_key=candidate.get("instrumentKey"),
-            entry_price=float(candidate.get("lastPremium") or 0),
+            entry_price=premium,
             quantity=max(1, quantity),
             entry_tqs=int(candidate.get("tqs") or 0),
             spread_cost=float(quality["spreadCost"]),
@@ -340,7 +350,7 @@ class AutoTraderEngine:
             opened_at=datetime.now(timezone.utc).isoformat(),
             mode=str(candidate.get("mode")),
             strategy_type=str(candidate.get("strategyType") or "SCALP"),
-            best_price=float(candidate.get("lastPremium") or 0),
+            best_price=premium,
         )
         trade.lifecycle.extend([
             LifecycleEvent("RISK_CHECKED", trade.opened_at, quality["reason"], quality),
@@ -351,13 +361,22 @@ class AutoTraderEngine:
 
     def _update_open_paper(self, snapshots: dict[str, Any]) -> list[dict[str, Any]]:
         exits = []
-        candidates_by_id = {}
+        price_by_id: dict[str, dict[str, Any]] = {}
+        price_by_instrument: dict[str, dict[str, Any]] = {}
         for snapshot in snapshots.values():
             for candidate in snapshot.get("suggestedTrades") or []:
-                candidates_by_id[candidate.get("id")] = candidate
+                self._index_price_payload(candidate, price_by_id, price_by_instrument)
+            for candidate in snapshot.get("explosiveRunnerWatchlist") or []:
+                self._index_price_payload(candidate, price_by_id, price_by_instrument)
+            for candidate in snapshot.get("paperPriceWatch") or []:
+                self._index_price_payload(candidate, price_by_id, price_by_instrument)
         for trade_id, trade in list(self.open_paper.items()):
-            candidate = candidates_by_id.get(trade_id)
-            current = float((candidate or {}).get("lastPremium") or trade.entry_price)
+            candidate = price_by_id.get(trade_id) or price_by_instrument.get(str(trade.instrument_key or ""))
+            if not candidate:
+                continue
+            current = float((candidate or {}).get("lastPremium") or (candidate or {}).get("premium") or 0)
+            if current <= 0:
+                continue
             trade.best_price = max(trade.best_price or trade.entry_price, current)
             age = self._age_seconds(trade.opened_at)
             reason = None
@@ -447,6 +466,23 @@ class AutoTraderEngine:
             "marketPhase": payload.get("marketPhase"),
             "executionCandidates": payload.get("executionCandidates", [])[:10],
         }
+
+    def _index_price_payload(self, payload: dict[str, Any], by_id: dict[str, dict[str, Any]], by_instrument: dict[str, dict[str, Any]]) -> None:
+        if not isinstance(payload, dict):
+            return
+        premium = float(payload.get("lastPremium") or payload.get("premium") or 0)
+        if premium <= 0:
+            return
+        item_id = payload.get("id")
+        instrument = payload.get("instrumentKey")
+        if item_id:
+            by_id[str(item_id)] = payload
+        if instrument:
+            by_instrument[str(instrument)] = payload
+
+    def _available_capital(self, trading_capital: float) -> float:
+        used = sum(max(0.0, trade.entry_price) * max(0, trade.quantity) for trade in self.open_paper.values())
+        return max(0.0, float(trading_capital or 0) - used)
 
     def _all_snapshots_cached(self, snapshots: dict[str, Any]) -> bool:
         if not snapshots:

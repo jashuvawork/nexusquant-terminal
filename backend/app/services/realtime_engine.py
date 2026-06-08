@@ -363,6 +363,7 @@ class RealTimeMarketEngine:
             "newsState": news_state,
             "explosiveRunner": runner_signal,
             "explosiveRunnerWatchlist": runner_watchlist[:10],
+            "paperPriceWatch": self._paper_price_watch(runner_watchlist),
             "productionReadiness": production_readiness,
             "dataSource": "UPSTOX_REALTIME_REST",
             "dataWarnings": data_warnings,
@@ -940,6 +941,27 @@ class RealTimeMarketEngine:
         if not in_range:
             return None
         return sorted(in_range, key=lambda item: (bool(item.get("candidate")), as_float(item.get("score")), as_float(item.get("volumeState", {}).get("effectiveVolume"))), reverse=True)[0]
+
+    def _paper_price_watch(self, runner_watchlist: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        watches: list[dict[str, Any]] = []
+        for signal in runner_watchlist:
+            premium = as_float(signal.get("premium") or signal.get("lastPremium"))
+            if premium <= 0:
+                continue
+            watches.append({
+                "id": signal.get("id"),
+                "instrumentKey": signal.get("instrumentKey"),
+                "symbol": signal.get("symbol"),
+                "side": signal.get("side"),
+                "strike": signal.get("strike"),
+                "expiry": signal.get("expiry"),
+                "lastPremium": premium,
+                "score": signal.get("score"),
+                "candidate": signal.get("candidate"),
+                "confidence": signal.get("confidence"),
+                "premiumRange": signal.get("premiumRange"),
+            })
+        return watches
 
     def _row_has_premium_in_range(self, row: dict[str, Any], premium_min: float, premium_max: float) -> bool:
         for option_key in ["call_options", "put_options"]:
