@@ -78,7 +78,7 @@ class Settings(BaseSettings):
     paper_trade_allocation_pct: float = 12.0
     paper_min_trade_allocation_pct: float = 8.0
     paper_max_daily_loss_pct: float = 2.0
-    paper_max_consecutive_losses: int = 3
+    paper_max_consecutive_losses: int = 8
     paper_daily_profit_stop_pct: float = 18.0
     paper_stop_points: float = 6.0
     paper_target_points: float = 12.0
