@@ -490,16 +490,18 @@ class AutoTraderEngine:
             reasons.append("missing premium")
         if candidate.get("chopBlocked"):
             reasons.append("chop filter blocked")
-        if candidate.get("tqs", 0) < 68:
-            reasons.append("TQS below production learning threshold")
+        min_entry_tqs = max(int(self.settings.nifty_opt_min_tqs), int(self.settings.sensex_opt_min_tqs))
+        if candidate.get("tqs", 0) < min_entry_tqs:
+            reasons.append(f"TQS below production learning threshold ({min_entry_tqs})")
         if candidate.get("effectiveVolume", 0) <= 0:
             reasons.append("missing effective volume")
         if chart_bias in {"CALL", "PUT"} and side in {"CALL", "PUT"} and side != chart_bias and not high_conviction_runner:
             reasons.append(f"chart trend conflict: {chart_bias} bias vs {side} trade")
         if chart_bias == "WAIT" and not high_conviction_runner:
             reasons.append("chart analysis says wait")
-        if candidate.get("strategyType") == "EXPLOSIVE_RUNNER" and runner_score < 75:
-            reasons.append("runner score below A+ threshold")
+        min_runner_score = float(self.settings.explosive_runner_min_score)
+        if candidate.get("strategyType") == "EXPLOSIVE_RUNNER" and runner_score < min_runner_score:
+            reasons.append(f"runner score below A+ threshold ({min_runner_score:g})")
         if required_move > self.settings.min_required_move_points * 1.4:
             reasons.append("spread/slippage cost too high for 5-point scalp")
         return {
