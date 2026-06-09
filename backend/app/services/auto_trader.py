@@ -761,7 +761,7 @@ class AutoTraderEngine:
         momentum_runner = self._is_momentum_aligned_runner(candidate, runner)
         if premium <= 0:
             reasons.append("missing premium")
-        if candidate.get("chopBlocked") and not momentum_runner:
+        if candidate.get("chopBlocked") and not tradeable_runner:
             reasons.append("chop filter blocked")
         if tradeable_runner:
             volume_state = runner.get("volumeState") or {}
@@ -1030,7 +1030,11 @@ class AutoTraderEngine:
             elif trade.pnl > 0:
                 break
         reasons = []
-        if loss_pct >= float(self.settings.paper_max_daily_loss_pct):
+        loss_amount = abs(net) if net < 0 else 0.0
+        max_loss_amount = float(self.settings.paper_max_daily_loss_amount or 0)
+        if max_loss_amount > 0 and loss_amount >= max_loss_amount:
+            reasons.append(f"paper daily loss ₹{loss_amount:,.0f} >= ₹{max_loss_amount:,.0f}")
+        elif loss_pct >= float(self.settings.paper_max_daily_loss_pct):
             reasons.append(f"paper daily loss {loss_pct:.2f}% >= {self.settings.paper_max_daily_loss_pct:.2f}%")
         if consecutive_losses >= int(self.settings.paper_max_consecutive_losses):
             reasons.append(f"{consecutive_losses} consecutive paper losses")
@@ -1039,8 +1043,10 @@ class AutoTraderEngine:
             "reason": "; ".join(reasons) if reasons else None,
             "netPnl": round(net, 2),
             "lossPct": round(loss_pct, 2),
+            "lossAmount": round(loss_amount, 2),
             "consecutiveLosses": consecutive_losses,
             "maxDailyLossPct": self.settings.paper_max_daily_loss_pct,
+            "maxDailyLossAmount": max_loss_amount,
             "maxConsecutiveLosses": self.settings.paper_max_consecutive_losses,
         }
 
