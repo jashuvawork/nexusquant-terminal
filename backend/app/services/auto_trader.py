@@ -750,6 +750,9 @@ class AutoTraderEngine:
         wins = int(report.get("wins") or 0)
         profit_factor = float(report.get("profitFactor") or 0)
         win_rate = float(report.get("winRate") or 0)
+        net_pnl = float(report.get("grossProfit") or 0) - float(report.get("grossLoss") or 0)
+        capital = float(self.settings.trading_capital_default or 0)
+        profit_pct = net_pnl / capital * 100 if capital > 0 and net_pnl > 0 else 0.0
         total_signals = int(report.get("totalSignals") or 0)
         skipped_reasons = [str(item.get("reason") or "") for item in skipped]
         chart_conflicts = sum(1 for reason in skipped_reasons if "chart trend conflict" in reason)
@@ -768,6 +771,9 @@ class AutoTraderEngine:
             emotional_risks.append("revenge_trading_risk")
             behavioral_findings.append(f"Paper risk halt active: {risk_halt.get('reason')}")
             coach_actions.append("Stop new entries. Review last 3 losses before allowing the system to resume.")
+        if profit_pct >= float(self.settings.paper_daily_profit_stop_pct):
+            behavioral_findings.append(f"Daily paper profit target achieved: {profit_pct:.2f}% >= {self.settings.paper_daily_profit_stop_pct:.2f}%")
+            coach_actions.append("Stop trading for the day. Protect the achieved profit and avoid greed trades.")
         if consecutive_losses >= 2:
             emotional_risks.append("loss_chasing")
             behavioral_findings.append(f"{consecutive_losses} consecutive losses detected.")
@@ -804,7 +810,10 @@ class AutoTraderEngine:
         discipline_score += 8 if paper_trades == 0 and total_signals > 20 else 0
         discipline_score = max(0, min(100, discipline_score))
 
-        if risk_halt.get("blocked"):
+        if profit_pct >= float(self.settings.paper_daily_profit_stop_pct):
+            state = "TARGET_ACHIEVED"
+            permission = "BLOCK_NEW_TRADES"
+        elif risk_halt.get("blocked"):
             state = "HALT_AND_REVIEW"
             permission = "BLOCK_NEW_TRADES"
         elif discipline_score >= 80 and not emotional_risks:
@@ -838,6 +847,8 @@ class AutoTraderEngine:
                 "openTrades": open_count,
                 "consecutiveLosses": consecutive_losses,
                 "lossPct": round(loss_pct, 2),
+                "profitPct": round(profit_pct, 2),
+                "dailyProfitStopPct": self.settings.paper_daily_profit_stop_pct,
                 "currentSkipped": len(skipped),
                 "chartConflicts": chart_conflicts,
                 "chopSkips": chop_skips,
