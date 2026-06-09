@@ -72,6 +72,50 @@ class PaperTrade:
     partial_exit_taken: bool = False
     lifecycle: list[LifecycleEvent] = field(default_factory=list)
 
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> PaperTrade:
+        lifecycle = [
+            LifecycleEvent(
+                state=str(event.get("state") or ""),
+                timestamp=str(event.get("timestamp") or ""),
+                reason=str(event.get("reason") or ""),
+                payload=dict(event.get("payload") or {}),
+            )
+            for event in (payload.get("lifecycle") or [])
+            if isinstance(event, dict)
+        ]
+        return cls(
+            id=str(payload.get("id") or uuid4()),
+            symbol=str(payload.get("symbol") or ""),
+            side=str(payload.get("side") or ""),
+            strike=int(payload.get("strike") or 0),
+            expiry=str(payload.get("expiry") or ""),
+            instrument_key=payload.get("instrumentKey"),
+            entry_price=float(payload.get("entryPrice") or 0),
+            quantity=int(payload.get("quantity") or 1),
+            entry_tqs=int(payload.get("entryTqs") or 0),
+            spread_cost=float(payload.get("spreadCost") or 0),
+            slippage_estimate=float(payload.get("slippageEstimate") or 0),
+            charges_estimate=float(payload.get("chargesEstimate") or 0),
+            opened_at=str(payload.get("openedAt") or datetime.now(timezone.utc).isoformat()),
+            mode=str(payload.get("mode") or "paper"),
+            strategy_type=str(payload.get("strategyType") or "SCALP"),
+            paper_session_id=str(payload.get("paperSessionId") or ""),
+            target_points=float(payload.get("targetPoints") or 0),
+            stop_points=float(payload.get("stopPoints") or 0),
+            breakeven_shift_points=float(payload.get("breakevenShiftPoints") or 0),
+            trail_points=float(payload.get("trailPoints") or 0),
+            status=str(payload.get("status") or "OPEN"),
+            exit_price=payload.get("exitPrice"),
+            exit_reason=payload.get("exitReason"),
+            exited_at=payload.get("exitedAt"),
+            pnl=float(payload.get("pnl") or 0),
+            best_price=float(payload.get("bestPrice") or payload.get("entryPrice") or 0),
+            breakeven_armed=bool(payload.get("breakevenArmed")),
+            partial_exit_taken=bool(payload.get("partialExitTaken")),
+            lifecycle=lifecycle,
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
@@ -133,6 +177,7 @@ class AutoTraderEngine:
         self.closed_paper = AutoTraderEngine._shared_closed_paper
         self.lifecycle_events = AutoTraderEngine._shared_lifecycle_events
         self._load_replay_file()
+        self._load_paper_trades_file()
 
     async def process(self, payload: dict[str, Any]) -> dict[str, Any]:
         now = datetime.now(timezone.utc).isoformat()
@@ -249,6 +294,7 @@ class AutoTraderEngine:
         self.closed_paper.clear()
         self.lifecycle_events.clear()
         AutoTraderEngine._shared_recent_signal_times.clear()
+        self._persist_paper_trades_file()
         AutoTraderEngine._shared_learning_samples = 0
         AutoTraderEngine._shared_learning_score = 50.0
         AutoTraderEngine._shared_last_learning_update = None
@@ -287,6 +333,53 @@ class AutoTraderEngine:
             lines = path.read_text(encoding="utf-8").splitlines()
             if len(lines) > limit:
                 path.write_text("\n".join(lines[-limit:]) + "\n", encoding="utf-8")
+        except Exception:
+            return
+
+    def _load_paper_trades_file(self) -> None:
+        if (self.open_paper or self.closed_paper) or not self.settings.paper_trades_file:
+            return
+        path = Path(self.settings.paper_trades_file)
+        if not path.exists():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                return
+            for item in payload.get("open") or []:
+                if not isinstance(item, dict):
+                    continue
+                trade = PaperTrade.from_dict(item)
+                if trade.status == "OPEN":
+                    self.open_paper[trade.id] = trade
+            limit = max(100, int(self.settings.paper_trades_persist_limit))
+            for item in (payload.get("closed") or [])[-limit:]:
+                if not isinstance(item, dict):
+                    continue
+                trade = PaperTrade.from_dict(item)
+                if trade.status == "EXITED":
+                    self.closed_paper.append(trade)
+        except Exception:
+            return
+
+    def _persist_paper_trades_file(self) -> None:
+        if not self.settings.paper_trades_file:
+            return
+        try:
+            limit = max(100, int(self.settings.paper_trades_persist_limit))
+            closed = [trade.to_dict() for trade in list(self.closed_paper)[-limit:]]
+            payload = {
+                "updatedAt": datetime.now(timezone.utc).isoformat(),
+                "currentSessionId": self.paper_sessions.current_id(),
+                "open": [trade.to_dict() for trade in self.open_paper.values()],
+                "closed": closed,
+            }
+            path = Path(self.settings.paper_trades_file)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temp = path.with_suffix(".tmp")
+            temp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+            temp.replace(path)
+            path.chmod(0o600)
         except Exception:
             return
 
@@ -569,7 +662,7 @@ class AutoTraderEngine:
 
     def profit_lock_status(self, capital: float | None = None, session_adj: dict[str, Any] | None = None) -> dict[str, Any]:
         session_adj = session_adj or {}
-        capital = float(capital or 0)
+        capital = float(capital or self.settings.trading_capital_default or 0)
         rotation_enabled = bool(self.settings.paper_session_rotation_enabled)
         if rotation_enabled:
             session_report = self._session_report()
@@ -604,6 +697,20 @@ class AutoTraderEngine:
         locked_profit = float(active["amount"]) * (self.settings.profit_lock_retain_pct / 100) if active else 0
         giveback = max(0, net - locked_profit) if active else 0
         block_new = bool(active and net <= locked_profit)
+        if rotation_enabled and self.settings.paper_trading:
+            block_new = False
+        if rotation_enabled and active:
+            message = (
+                f"{active['name']} profit tier reached; session saves and restarts automatically"
+                if active["name"] == "primary"
+                else f"{active['name']} profit tier reached; session rotation active"
+            )
+        elif active and active["name"] == "primary":
+            message = "Primary profit locked; only trade from giveback buffer"
+        elif active:
+            message = f"{active['name']} profit tier locked"
+        else:
+            message = "Profit target not locked yet"
         return {
             "capital": capital,
             "netPnl": round(net, 2),
@@ -612,7 +719,7 @@ class AutoTraderEngine:
             "lockedProfit": round(locked_profit, 2),
             "givebackAvailable": round(giveback, 2),
             "blockNewTrades": block_new,
-            "message": "Primary profit locked; only trade from giveback buffer" if active and active["name"] == "primary" else "Profit target not locked yet" if not active else f"{active['name']} profit tier locked",
+            "message": message,
             "sessionId": session_id,
             "sessionNumber": session_number,
             "sessionRotationEnabled": rotation_enabled,
@@ -678,6 +785,7 @@ class AutoTraderEngine:
         )
         AutoTraderEngine._shared_recent_signal_times.clear()
         self.paper_sessions.start_session(f"after_{end_reason.lower()}")
+        self._persist_paper_trades_file()
         return {
             "rotated": True,
             "endedSession": closed,
@@ -707,6 +815,8 @@ class AutoTraderEngine:
             self.closed_paper.append(trade)
             del self.open_paper[trade_id]
             flattened.append(trade.to_dict())
+        if flattened:
+            self._persist_paper_trades_file()
         return flattened
 
     def learning_status(self) -> dict[str, Any]:
@@ -955,6 +1065,7 @@ class AutoTraderEngine:
             LifecycleEvent("PAPER_OPENED", trade.opened_at, "Shadow trade opened; no broker order placed", {"entry": trade.entry_price}),
         ])
         self.open_paper[trade.id] = trade
+        self._persist_paper_trades_file()
         return trade
 
     def _update_open_paper(self, snapshots: dict[str, Any], psychology: dict[str, Any] | None = None, session_adj: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -1021,6 +1132,8 @@ class AutoTraderEngine:
                 self.lifecycle_events.extend(trade.lifecycle[-1:])
                 del self.open_paper[trade_id]
                 exits.append(trade.to_dict())
+        if exits:
+            self._persist_paper_trades_file()
         return exits
 
     def _learn_every_tick(self, payload: dict[str, Any], exits: list[dict[str, Any]]) -> None:

@@ -576,7 +576,12 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
           <MetricCard label="Signals / Tick" value={auto.signalsThisTick ?? 0} helper={`${skippedSignals.length} skipped shown`} tone="cyan" />
           <MetricCard label="Replay Buffer" value={replay.storedSnapshots} helper="Stored snapshots" tone="violet" />
           <MetricCard label="Learning Samples" value={auto.onlineLearning.samples} helper={`Score ${auto.onlineLearning.learningScore ?? auto.onlineLearning.score ?? 0}`} tone="emerald" />
-          <MetricCard label="Profit Lock" value={auto.profitLock?.activeTier ? `${auto.profitLock.activeTier.pct}%` : 'WAIT'} helper={auto.profitLock?.message ?? 'No locked tier'} tone={auto.profitLock?.blockNewTrades ? 'rose' : 'amber'} />
+          <MetricCard
+            label="Profit Lock"
+            value={auto.profitLock?.activeTier ? `${auto.profitLock.activeTier.pct}%` : 'WAIT'}
+            helper={auto.profitLock?.message ?? (paperSessions?.rotationEnabled ? 'Session rotates on profit target or 8 losses' : 'No locked tier')}
+            tone={auto.profitLock?.blockNewTrades ? 'rose' : paperSessions?.rotationEnabled && auto.profitLock?.activeTier ? 'emerald' : 'amber'}
+          />
           {paperSessions?.rotationEnabled && (
             <>
               <MetricCard label="Session" value={`#${currentSession?.sessionNumber ?? dailyReport.sessionNumber ?? 1}`} helper={currentSession?.id ? `${currentSession.id.slice(-12)}` : 'Active paper session'} tone="cyan" />
