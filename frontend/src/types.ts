@@ -459,10 +459,58 @@ export interface AutoTraderState {
     grossLoss: number;
     profitFactor: number;
     maxDrawdown: number;
+    sessionId?: string;
+    sessionNumber?: number;
+    dayAggregate?: PaperDayAggregate;
+    completedSessionsToday?: number;
     bestSession?: string;
     worstSession?: string;
     reasonForLosses: Record<string, number>;
   };
+  paperSessions?: PaperSessionsState;
+  sessionRotation?: { rotated?: boolean; dailyHalt?: boolean; reason?: string; endedSession?: Record<string, unknown>; newSession?: Record<string, unknown> } | null;
+}
+
+export interface PaperDayAggregate {
+  tradingDay: string;
+  sessionsCompleted: number;
+  sessionsIncludingCurrent: number;
+  paperTrades: number;
+  wins: number;
+  losses: number;
+  grossProfit: number;
+  grossLoss: number;
+  netPnl: number;
+  profitFactor: number;
+}
+
+export interface PaperSessionRecord {
+  id: string;
+  tradingDay: string;
+  sessionNumber: number;
+  startedAt: string;
+  endedAt?: string | null;
+  startReason?: string;
+  endReason?: string | null;
+  status: string;
+  paperTrades?: number;
+  wins?: number;
+  losses?: number;
+  winRate?: number;
+  grossProfit?: number;
+  grossLoss?: number;
+  netPnl?: number;
+  profitPct?: number;
+  profitFactor?: number;
+  consecutiveLosses?: number;
+}
+
+export interface PaperSessionsState {
+  rotationEnabled: boolean;
+  currentSession: { id?: string; sessionNumber?: number; startedAt?: string; status?: string; report?: Record<string, unknown> };
+  completedSessionsToday: PaperSessionRecord[];
+  dayAggregate: PaperDayAggregate;
+  totalCompletedSessions: number;
 }
 
 export interface TerminalSnapshot {

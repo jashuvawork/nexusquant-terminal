@@ -51,6 +51,9 @@ class ExplosiveRunnerEngine:
         market_profile: dict[str, Any],
         entry_model: dict[str, Any],
         tqs: int,
+        chart_bias: str | None = None,
+        option_direction: str | None = None,
+        momentum_premium_velocity_pct: float = 5.0,
     ) -> dict[str, Any]:
         volume = _num(selected_md.get("volume")) or _num(volume_state.get("effectiveVolume"))
         oi = _num(selected_md.get("oi"))
@@ -60,10 +63,13 @@ class ExplosiveRunnerEngine:
         gamma = abs(_num(greeks.get("gamma")))
         iv_expansion = _num(greeks.get("ivExpansion"))
         breakout = _num(orderflow.get("breakoutVelocity"))
-        delta_velocity = abs(_num(orderflow.get("deltaVelocity")))
+        delta_velocity = _num(orderflow.get("deltaVelocity"))
         volume_accel = _num(orderflow.get("volumeAcceleration"))
+        premium_velocity = _num(orderflow.get("premiumVelocity"))
+        price_velocity = _num(orderflow.get("priceVelocity"))
         gamma_walls = [cell for cell in heatmap if _num(cell.get("gammaWall")) >= 70]
-        near_profile_edge = premium > 0 and (market_profile.get("vah") != market_profile.get("val"))
+        chart_bias = str(chart_bias or "WAIT").upper()
+        option_direction = str(option_direction or "NEUTRAL").upper()
 
         score = 0.0
         reasons: list[str] = []
@@ -72,6 +78,9 @@ class ExplosiveRunnerEngine:
         if spread_quality >= 85:
             score += 12
             reasons.append("spread tradable")
+        elif spread_quality >= 70:
+            score += 6
+            reasons.append("spread acceptable for momentum")
         if volume_accel >= 70 or volume > 0:
             score += 12
             reasons.append("volume/participation available")
@@ -81,6 +90,9 @@ class ExplosiveRunnerEngine:
         if delta_velocity >= 60:
             score += 15
             reasons.append("delta velocity strong")
+        elif delta_velocity >= 35:
+            score += 8
+            reasons.append("delta velocity building")
         if delta >= 0.45:
             score += 10
             reasons.append("delta responsive")
@@ -100,22 +112,68 @@ class ExplosiveRunnerEngine:
             score += 2
             reasons.append("retest confirmed")
 
+        momentum_surge = (
+            premium_velocity >= momentum_premium_velocity_pct
+            or (breakout >= 70 and volume_accel >= 45)
+            or (premium_velocity >= 3.0 and breakout >= 65 and delta_velocity >= 35)
+        )
+        if premium_velocity >= momentum_premium_velocity_pct:
+            score += min(22, 10 + premium_velocity * 1.2)
+            reasons.append(f"premium surge {premium_velocity:.1f}%")
+        if price_velocity >= 0.08 and side == "CALL":
+            score += 6
+            reasons.append("underlying bullish impulse")
+        elif price_velocity <= -0.08 and side == "PUT":
+            score += 6
+            reasons.append("underlying bearish impulse")
+
+        bullish_chart = chart_bias in {"CALL", "BULLISH", "BULLISH_TREND"}
+        bearish_chart = chart_bias in {"PUT", "BEARISH", "BEARISH_TREND"}
+        bullish_option = option_direction == "BULLISH"
+        bearish_option = option_direction == "BEARISH"
+
+        if side == "CALL" and (bullish_chart or bullish_option or delta_velocity > 25):
+            directional_bias = "BULLISH"
+            momentum_aligned = bullish_chart or bullish_option or (momentum_surge and delta_velocity > 20)
+            if momentum_aligned:
+                score += 10
+                reasons.append("bullish momentum alignment")
+        elif side == "PUT" and (bearish_chart or bearish_option or delta_velocity < -25):
+            directional_bias = "BEARISH"
+            momentum_aligned = bearish_chart or bearish_option or (momentum_surge and delta_velocity < -20)
+            if momentum_aligned:
+                score += 10
+                reasons.append("bearish momentum alignment")
+        else:
+            directional_bias = "NEUTRAL"
+            momentum_aligned = False
+
         missing_ideal = [item for item in self.IDEAL_DATA if not (item == "historical option premium candles" and self.option_premium_history_available)]
         ideal_available = ["historical option premium candles"] if self.option_premium_history_available else []
-        option_tape_override = spread_quality >= 85 and volume_accel >= 70 and (breakout >= 65 or delta_velocity >= 60)
+        option_tape_override = spread_quality >= 70 and (volume_accel >= 45 or momentum_surge) and (breakout >= 60 or abs(delta_velocity) >= 35)
         confidence = "LOW"
-        if score >= 85 and option_tape_override and breakout >= 75 and delta_velocity >= 60:
+        if score >= 85 and option_tape_override and breakout >= 75 and abs(delta_velocity) >= 60:
             confidence = "HIGH"
             reasons.append("option tape override: explosive premium momentum despite lower global TQS")
-        elif score >= 75 and tqs >= 70:
+        elif score >= 75 and (tqs >= 70 or momentum_surge):
             confidence = "HIGH"
         elif score >= 70 and option_tape_override:
             confidence = "MEDIUM"
             reasons.append("option tape override: runner watch despite lower global TQS")
-        elif score >= 55 and tqs >= 60:
+        elif score >= 55 and (tqs >= 60 or momentum_surge):
             confidence = "MEDIUM"
+        elif momentum_surge and momentum_aligned and score >= 68:
+            confidence = "MEDIUM"
+            reasons.append("momentum surge with directional alignment")
 
-        candidate = confidence in {"MEDIUM", "HIGH"} and premium > 0 and spread_quality >= 75
+        spread_floor = 70 if momentum_surge and momentum_aligned else 75
+        candidate = confidence in {"MEDIUM", "HIGH"} and premium > 0 and spread_quality >= spread_floor
+        if momentum_surge and momentum_aligned and premium > 0 and spread_quality >= 65 and score >= 68:
+            candidate = True
+            if confidence == "LOW":
+                confidence = "MEDIUM"
+                reasons.append("momentum runner auto-candidate")
+
         target_pct = 33 if confidence == "HIGH" else 22 if confidence == "MEDIUM" else 11
         hard_stop_pct = 12 if confidence == "HIGH" else 8
         trail_pct = 18 if confidence == "HIGH" else 12
@@ -137,6 +195,9 @@ class ExplosiveRunnerEngine:
             "trailPct": trail_pct,
             "partialExitPct": partial_pct,
             "runnerPct": round(1 - partial_pct, 2),
+            "momentumSurge": momentum_surge,
+            "directionalBias": directional_bias,
+            "momentumAligned": momentum_aligned,
             "reasons": reasons,
             "dataStatus": {
                 "requiredAvailable": self.REQUIRED_DATA,
@@ -155,6 +216,8 @@ class ExplosiveRunnerEngine:
                 "breakoutVelocity": breakout,
                 "deltaVelocity": delta_velocity,
                 "volumeAcceleration": volume_accel,
+                "premiumVelocity": round(premium_velocity, 2),
+                "priceVelocity": round(price_velocity, 3),
                 "spreadQuality": spread_quality,
             },
         }

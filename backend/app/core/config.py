@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     explosive_runner_enabled: bool = True
     explosive_runner_scan_strikes: int = 16
     explosive_runner_min_score: float = 85.0
+    explosive_runner_momentum_min_score: float = 72.0
+    explosive_runner_momentum_premium_velocity_pct: float = 5.0
     explosive_runner_premium_min: float = 25.0
     explosive_runner_premium_max: float = 250.0
     background_market_monitor_enabled: bool = True
@@ -75,8 +77,9 @@ class Settings(BaseSettings):
     paper_duplicate_signal_cooldown_seconds: int = 300
     paper_trade_allocation_pct: float = 12.0
     paper_min_trade_allocation_pct: float = 8.0
-    paper_max_daily_loss_pct: float = 2.0
-    paper_max_consecutive_losses: int = 3
+    paper_max_daily_loss_pct: float = 6.0
+    paper_max_daily_loss_amount: float = 30000.0
+    paper_max_consecutive_losses: int = 8
     paper_daily_profit_stop_pct: float = 18.0
     paper_stop_points: float = 6.0
     paper_target_points: float = 12.0
@@ -91,9 +94,12 @@ class Settings(BaseSettings):
     ai_state_file: str = "/opt/nexusquant/ai_state.json"
     paper_replay_file: str = "/opt/nexusquant/paper_replay.jsonl"
     paper_replay_persist_limit: int = 20000
+    paper_sessions_file: str = "/opt/nexusquant/paper_sessions.jsonl"
+    paper_sessions_persist_limit: int = 2000
+    paper_session_rotation_enabled: bool = True
     paper_trading: bool = True
     paper_session_adjustments_enabled: bool = True
-    paper_always_trade_explosive_runners: bool = False
+    paper_always_trade_explosive_runners: bool = True
     paper_min_hold_before_chop_exit_seconds: int = 45
     paper_trading_respects_stop: bool = False
     shadow_trade_all_signals: bool = False

@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import os
 
-from typing import Literal
+from datetime import date
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -727,6 +728,74 @@ async def ai_learning_train_replay_missed(
     return await auto_engine.train_replay_opportunities(target_trades, horizon_ticks, min_profit_points, include_losses)
 
 
+@router.get("/ai-learning/backtest-missed-today")
+async def ai_learning_backtest_missed_today(
+    target_trades: int = 500,
+    horizon_ticks: int = 60,
+    min_profit_points: float = 8.0,
+    include_losses: bool = True,
+    auto_engine: AutoTraderEngine = Depends(get_auto_trader),
+) -> dict:
+    return await auto_engine.backtest_missed_trades(
+        horizon_ticks=horizon_ticks,
+        min_profit_points=min_profit_points,
+        include_losses=include_losses,
+        target_trades=target_trades,
+    )
+
+
+@router.post("/ai-learning/backtest-missed-today")
+async def ai_learning_backtest_missed_today_post(
+    target_trades: int = 500,
+    horizon_ticks: int = 60,
+    min_profit_points: float = 8.0,
+    include_losses: bool = True,
+    auto_engine: AutoTraderEngine = Depends(get_auto_trader),
+) -> dict:
+    return await ai_learning_backtest_missed_today(target_trades, horizon_ticks, min_profit_points, include_losses, auto_engine)
+
+
+@router.get("/ai-learning/backtest-and-train-missed-today")
+async def ai_learning_backtest_and_train_missed_today(
+    target_trades: int = 500,
+    horizon_ticks: int = 60,
+    min_profit_points: float = 8.0,
+    include_losses: bool = True,
+    auto_engine: AutoTraderEngine = Depends(get_auto_trader),
+    trainer: HistoricalTrainer = Depends(get_historical_trainer),
+) -> dict:
+    replay_result = await auto_engine.backtest_and_train_missed_today(target_trades, horizon_ticks, min_profit_points, include_losses)
+    historical: dict[str, Any] = {"results": {}, "errors": {}}
+    today = date.today().isoformat()
+    for symbol in ["NIFTY", "SENSEX"]:
+        try:
+            historical["results"][symbol] = await trainer.train_option_runner(
+                symbol,
+                min(300, target_trades),
+                None,
+                today,
+                today,
+                1,
+                40,
+                high_profit_only=True,
+            )
+        except Exception as exc:
+            historical["errors"][symbol] = str(exc)
+    return {**replay_result, "historicalOptionTraining": historical}
+
+
+@router.post("/ai-learning/backtest-and-train-missed-today")
+async def ai_learning_backtest_and_train_missed_today_post(
+    target_trades: int = 500,
+    horizon_ticks: int = 60,
+    min_profit_points: float = 8.0,
+    include_losses: bool = True,
+    auto_engine: AutoTraderEngine = Depends(get_auto_trader),
+    trainer: HistoricalTrainer = Depends(get_historical_trainer),
+) -> dict:
+    return await ai_learning_backtest_and_train_missed_today(target_trades, horizon_ticks, min_profit_points, include_losses, auto_engine, trainer)
+
+
 @router.get("/ai-learning/train-runner")
 async def ai_learning_train_runner(
     symbol: Literal["NIFTY", "SENSEX"] = "NIFTY",
@@ -835,6 +904,11 @@ async def auto_trader_reset_get(engine: AutoTraderEngine = Depends(get_auto_trad
 @router.get("/auto-trader/daily-report")
 async def auto_trader_daily_report(engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
     return engine.daily_report()
+
+
+@router.get("/auto-trader/paper-sessions")
+async def auto_trader_paper_sessions(limit: int = 50, engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
+    return engine.paper_sessions_history(limit)
 
 
 @router.get("/risk/profiles")

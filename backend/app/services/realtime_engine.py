@@ -258,6 +258,8 @@ class RealTimeMarketEngine:
             market_profile=market_profile,
             entry_model=entry_model,
             tqs=tqs,
+            chart_analysis=chart_analysis,
+            option_bias=option_bias,
         )
         runner_signal = runner_watchlist[0] if runner_watchlist else self._explosive_runner_disabled(selected_symbol, expiry)
         plan_signal = self._best_in_range_runner_signal(runner_watchlist)
@@ -1004,6 +1006,8 @@ class RealTimeMarketEngine:
             "sweepDetection": round(clamp(100 - self._single_spread_quality(md))),
             "volumeAcceleration": round(clamp(volume_delta / 1000)),
             "breakoutVelocity": round(clamp(abs(directional_velocity) * 25 + abs(premium_velocity) * 20)),
+            "premiumVelocity": round(premium_velocity, 2),
+            "priceVelocity": round(price_velocity, 3),
         }
 
     def _single_option_greeks(self, greeks: dict[str, Any]) -> dict[str, Any]:
@@ -1029,6 +1033,8 @@ class RealTimeMarketEngine:
         market_profile: dict[str, Any],
         entry_model: dict[str, Any],
         tqs: int,
+        chart_analysis: dict[str, Any] | None = None,
+        option_bias: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         if not self.settings.explosive_runner_enabled:
             return []
@@ -1071,6 +1077,9 @@ class RealTimeMarketEngine:
                     market_profile=market_profile,
                     entry_model=entry_model,
                     tqs=tqs,
+                    chart_bias=(chart_analysis or {}).get("bias"),
+                    option_direction=(option_bias or {}).get("direction"),
+                    momentum_premium_velocity_pct=float(self.settings.explosive_runner_momentum_premium_velocity_pct),
                 )
                 signal["id"] = f"{symbol}-{expiry}-{strike}-{side}-RUNNER"
                 signal["lastPremium"] = premium
@@ -1081,7 +1090,11 @@ class RealTimeMarketEngine:
                 signal["monitoringCadenceSeconds"] = self.settings.market_poll_seconds
                 signal["watchMode"] = "ALWAYS_ON_OPEN_EXPLOSIVE_SCAN"
                 watchlist.append(signal)
-        return sorted(watchlist, key=lambda item: (bool(item.get("candidate")), as_float(item.get("score"))), reverse=True)
+        return sorted(
+            watchlist,
+            key=lambda item: (bool(item.get("candidate")), bool(item.get("momentumSurge")), bool(item.get("momentumAligned")), as_float(item.get("score"))),
+            reverse=True,
+        )
 
     def _best_in_range_runner_signal(self, runner_watchlist: list[dict[str, Any]]) -> dict[str, Any] | None:
         in_range = [
@@ -1189,7 +1202,9 @@ class RealTimeMarketEngine:
         for signal in runner_watchlist:
             if len(trades) >= limit:
                 break
-            if not signal.get("candidate") or as_float(signal.get("score")) < self.settings.explosive_runner_min_score:
+            momentum_surge = bool(signal.get("momentumSurge")) and bool(signal.get("momentumAligned"))
+            min_score = float(self.settings.explosive_runner_momentum_min_score if momentum_surge else self.settings.explosive_runner_min_score)
+            if (not signal.get("candidate") and not momentum_surge) or as_float(signal.get("score")) < min_score:
                 continue
             premium = as_float(signal.get("premium") or signal.get("lastPremium"))
             risk_capital = trading_capital * max(0, self.settings.max_exposure_pct) / 100 if trading_capital > 0 else 0
@@ -1229,6 +1244,9 @@ class RealTimeMarketEngine:
                     "runnerSignal": signal,
                     "tqs": max(68, round(as_float(signal.get("score")))),
                     "confidence": signal.get("confidence"),
+                    "momentumSurge": signal.get("momentumSurge"),
+                    "momentumAligned": signal.get("momentumAligned"),
+                    "directionalBias": signal.get("directionalBias"),
                     "chartBias": (chart_analysis or {}).get("bias"),
                     "chartTrend": (chart_analysis or {}).get("trend"),
                     "chartStrength": (chart_analysis or {}).get("strength"),

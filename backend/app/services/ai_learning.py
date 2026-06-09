@@ -63,6 +63,9 @@ def _initial_state() -> dict[str, Any]:
             "spreadPenalty": 0.0,
             "chopPenalty": 0.0,
             "volumeReward": 0.0,
+            "runnerScoreBias": 0.0,
+            "momentumReward": 0.0,
+            "chartAlignmentReward": 0.0,
             "sessionAdjustments": {},
         },
         "lastFeatures": {},
@@ -209,7 +212,10 @@ class ContinuousAILearner:
         chop_losses = sum(1 for sample in losses if sample.get("regime") in {"RANGE_ABSORPTION", "REVERSAL_RISK"})
         trend_wins = sum(1 for sample in wins if sample.get("regime") == "TREND_EXPANSION")
         chart_aligned = sum(1 for sample in samples if sample.get("chartAligned"))
-        runner_samples = sum(1 for sample in samples if sample.get("strategyType") == "EXPLOSIVE_RUNNER")
+        runner_samples = sum(1 for sample in samples if "RUNNER" in str(sample.get("strategyType") or ""))
+        missed_winners = sum(1 for sample in wins if sample.get("outcome") in {"missed_profitable_move", "missed_momentum_runner"})
+        momentum_wins = sum(1 for sample in wins if sample.get("momentumSurge") or sample.get("momentumAligned"))
+        win_rate = len(wins) / len(samples) if samples else 0.0
 
         state["samples"] += len(samples)
         state["paperSamples"] += len(samples)
@@ -221,10 +227,23 @@ class ContinuousAILearner:
         state["profitFactor"] = round(float(state["grossProfit"]) / total_loss, 3) if total_loss else round(float(state["grossProfit"]), 3)
         calibration = state["calibration"]
         calibration["tqsBias"] = round(max(-10, min(10, float(calibration.get("tqsBias", 0)) + (avg_tqs - 70) * 0.002)), 4)
-        calibration["chopPenalty"] = round(max(0, min(10, float(calibration.get("chopPenalty", 0)) + chop_losses * 0.01)), 4)
-        calibration["volumeReward"] = round(max(0, min(10, float(calibration.get("volumeReward", 0)) + trend_wins * 0.005)), 4)
-        state["learningScore"] = round(max(0, min(100, float(state["learningScore"]) * 0.9 + avg_tqs * 0.1 + (len(wins) - len(losses)) * 0.01)), 3)
-        state["lastFeatures"] = {"historicalSamples": len(samples), "avgTqs": round(avg_tqs, 2), "wins": len(wins), "losses": len(losses), "chartAligned": chart_aligned, "runnerSamples": runner_samples}
+        calibration["chopPenalty"] = round(max(0, min(10, float(calibration.get("chopPenalty", 0)) + chop_losses * 0.01 - missed_winners * 0.008)), 4)
+        calibration["volumeReward"] = round(max(0, min(10, float(calibration.get("volumeReward", 0)) + trend_wins * 0.005 + momentum_wins * 0.01)), 4)
+        calibration["runnerScoreBias"] = round(max(0, min(12, float(calibration.get("runnerScoreBias", 0)) + missed_winners * 0.15 + momentum_wins * 0.08)), 4)
+        calibration["momentumReward"] = round(max(0, min(8, float(calibration.get("momentumReward", 0)) + momentum_wins * 0.12 + missed_winners * 0.05)), 4)
+        calibration["chartAlignmentReward"] = round(max(0, min(8, float(calibration.get("chartAlignmentReward", 0)) + chart_aligned * 0.01)), 4)
+        state["learningScore"] = round(max(0, min(100, float(state["learningScore"]) * 0.88 + avg_tqs * 0.1 + win_rate * 12 + (len(wins) - len(losses)) * 0.02)), 3)
+        state["lastFeatures"] = {
+            "historicalSamples": len(samples),
+            "avgTqs": round(avg_tqs, 2),
+            "wins": len(wins),
+            "losses": len(losses),
+            "winRatePct": round(win_rate * 100, 2),
+            "chartAligned": chart_aligned,
+            "runnerSamples": runner_samples,
+            "missedWinners": missed_winners,
+            "momentumWins": momentum_wins,
+        }
         state["lastOutcome"] = "historical_training"
         state["lastUpdatedAt"] = datetime.now(timezone.utc).isoformat()
         ContinuousAILearner._state = state
