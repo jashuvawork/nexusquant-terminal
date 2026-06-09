@@ -11,6 +11,8 @@ from uuid import uuid4
 
 from app.core.config import Settings
 from app.services.ai_learning import ContinuousAILearner
+from app.services.risk_profiles import paper_session_adjustments
+from app.services.session import MarketPhase
 from app.services.trading_control import TradingControl
 
 
@@ -137,10 +139,12 @@ class AutoTraderEngine:
         capital = await self.trading_control.capital_status()
         trading_capital = float(capital.get("tradingCapital") or self.settings.trading_capital_default or 0)
         risk_halt = self._paper_risk_halt(trading_capital)
+        session_adj = self._paper_session_settings(payload)
         pre_trade_psychology = self._psychology_report([], [], risk_halt)
         candidates = payload.get("executionCandidates") or []
         snapshots = payload.get("snapshots") or {payload.get("symbol", "NIFTY"): payload}
         cached_snapshot = self._all_snapshots_cached(snapshots)
+        signal_cooldown_seconds = int(session_adj.get("duplicateCooldownSeconds") or self.settings.paper_duplicate_signal_cooldown_seconds)
 
         signal_events = []
         skipped = []
@@ -152,10 +156,13 @@ class AutoTraderEngine:
             if cached_snapshot:
                 skipped.append({"candidate": signal_id, "reason": "cached snapshot; paper open skipped to avoid duplicate training sample"})
                 continue
-            if self._recent_signal_active(signal_id):
+            if self._recent_signal_active(signal_id, signal_cooldown_seconds):
                 skipped.append({"candidate": signal_id, "reason": "duplicate signal cooldown active"})
                 continue
-            quality = self._pre_trade_quality(candidate)
+            if session_adj.get("blockNewPaperTrades") and not self._session_entry_allowed(candidate, session_adj):
+                skipped.append({"candidate": candidate.get("id"), "reason": session_adj.get("blockReason") or "session gate blocked"})
+                continue
+            quality = self._pre_trade_quality(candidate, session_adj)
             if quality["blocked"]:
                 skipped.append({"candidate": candidate.get("id"), "reason": quality["reason"], "quality": quality})
                 if not (self.settings.paper_trading and self.settings.shadow_trade_all_signals and quality.get("paperEligible")):
@@ -171,10 +178,10 @@ class AutoTraderEngine:
                 skipped.append({"candidate": candidate.get("id"), "reason": f"psychology gate: {pre_trade_psychology.get('tradePermission')}", "quality": quality})
                 continue
             if self.settings.paper_trading or not self.settings.enable_live_trading:
-                opened = self._open_paper_trade(candidate, quality, self._available_capital(trading_capital), trading_capital)
+                opened = self._open_paper_trade(candidate, quality, self._available_capital(trading_capital), trading_capital, session_adj)
                 if opened:
                     signal_events.append(opened.lifecycle[-1])
-        exits = self._update_open_paper(snapshots, pre_trade_psychology)
+        exits = self._update_open_paper(snapshots, pre_trade_psychology, session_adj)
         online_learning = await self.learner.update_from_tick(payload, exits, "live" if self.settings.enable_live_trading and not self.settings.paper_trading else "paper")
         self._learn_every_tick(payload, exits)
         profit_lock = self.profit_lock_status(capital.get("tradingCapital", 0))
@@ -198,6 +205,7 @@ class AutoTraderEngine:
             },
             "slippageModel": self._slippage_summary(candidates),
             "positionSizing": self._position_sizing_summary(candidates, capital.get("tradingCapital", 0)),
+            "sessionAdjustments": session_adj,
             "profitLock": profit_lock,
             "paperRiskHalt": risk_halt,
             "psychology": psychology,
@@ -463,7 +471,58 @@ class AutoTraderEngine:
             },
         )
 
-    def _pre_trade_quality(self, candidate: dict[str, Any]) -> dict[str, Any]:
+    def _paper_session_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not self.settings.paper_session_adjustments_enabled:
+            return {
+                "sessionBucket": "DISABLED",
+                "sessionNote": "Session auto-adjustments disabled.",
+                "blockNewPaperTrades": False,
+                "blockReason": None,
+                "middayRunnerBypassScore": 90.0,
+                "minEntryTqs": max(int(self.settings.nifty_opt_min_tqs), int(self.settings.sensex_opt_min_tqs)),
+                "minRunnerScore": float(self.settings.explosive_runner_min_score),
+                "allocationPctMultiplier": 1.0,
+                "effectiveAllocationPct": float(self.settings.paper_trade_allocation_pct),
+                "duplicateCooldownSeconds": int(self.settings.paper_duplicate_signal_cooldown_seconds),
+                "targetPointsMultiplier": 1.0,
+                "stopPointsMultiplier": 1.0,
+                "maxHoldSeconds": int(self.settings.max_paper_trade_seconds),
+                "adjustments": [],
+            }
+        phase_raw = str(payload.get("marketPhase") or MarketPhase.LIVE_MARKET.value)
+        try:
+            phase = MarketPhase(phase_raw)
+        except ValueError:
+            phase = MarketPhase.LIVE_MARKET
+        regime = str(payload.get("regime") or payload.get("strategy", {}).get("router") or "NORMAL")
+        return paper_session_adjustments(
+            self.settings.aggression_profile,
+            phase,
+            regime,
+            base_min_tqs=max(int(self.settings.nifty_opt_min_tqs), int(self.settings.sensex_opt_min_tqs)),
+            base_runner_score=float(self.settings.explosive_runner_min_score),
+            base_allocation_pct=float(self.settings.paper_trade_allocation_pct),
+            base_duplicate_cooldown=int(self.settings.paper_duplicate_signal_cooldown_seconds),
+            base_target_points=float(self.settings.paper_target_points),
+            base_stop_points=float(self.settings.paper_stop_points),
+            base_max_hold_seconds=int(self.settings.max_paper_trade_seconds),
+        )
+
+    def _session_entry_allowed(self, candidate: dict[str, Any], session_adj: dict[str, Any]) -> bool:
+        if not session_adj.get("blockNewPaperTrades"):
+            return True
+        if session_adj.get("sessionBucket") != "MIDDAY_CHOP":
+            return False
+        runner = candidate.get("runnerSignal") or {}
+        score = float(runner.get("score") or 0)
+        if score < float(session_adj.get("middayRunnerBypassScore") or 90):
+            return False
+        chart_bias = str(candidate.get("chartBias") or "")
+        side = str(candidate.get("side") or "")
+        return chart_bias in {"CALL", "PUT"} and side == chart_bias
+
+    def _pre_trade_quality(self, candidate: dict[str, Any], session_adj: dict[str, Any] | None = None) -> dict[str, Any]:
+        session_adj = session_adj or self._paper_session_settings({})
         premium = float(candidate.get("lastPremium") or 0)
         quantity = int(candidate.get("quantityEstimate") or candidate.get("lotSize") or 1)
         spread_cost = max(0.0, premium * 0.004)
@@ -490,18 +549,18 @@ class AutoTraderEngine:
             reasons.append("missing premium")
         if candidate.get("chopBlocked"):
             reasons.append("chop filter blocked")
-        min_entry_tqs = max(int(self.settings.nifty_opt_min_tqs), int(self.settings.sensex_opt_min_tqs))
+        min_entry_tqs = int(session_adj.get("minEntryTqs") or max(int(self.settings.nifty_opt_min_tqs), int(self.settings.sensex_opt_min_tqs)))
         if candidate.get("tqs", 0) < min_entry_tqs:
-            reasons.append(f"TQS below production learning threshold ({min_entry_tqs})")
+            reasons.append(f"TQS below session threshold ({min_entry_tqs})")
         if candidate.get("effectiveVolume", 0) <= 0:
             reasons.append("missing effective volume")
         if chart_bias in {"CALL", "PUT"} and side in {"CALL", "PUT"} and side != chart_bias and not high_conviction_runner:
             reasons.append(f"chart trend conflict: {chart_bias} bias vs {side} trade")
         if chart_bias == "WAIT" and not high_conviction_runner:
             reasons.append("chart analysis says wait")
-        min_runner_score = float(self.settings.explosive_runner_min_score)
+        min_runner_score = float(session_adj.get("minRunnerScore") or self.settings.explosive_runner_min_score)
         if candidate.get("strategyType") == "EXPLOSIVE_RUNNER" and runner_score < min_runner_score:
-            reasons.append(f"runner score below A+ threshold ({min_runner_score:g})")
+            reasons.append(f"runner score below session threshold ({min_runner_score:g})")
         if required_move > self.settings.min_required_move_points * 1.4:
             reasons.append("spread/slippage cost too high for 5-point scalp")
         return {
@@ -515,7 +574,15 @@ class AutoTraderEngine:
             "minimumRequiredMove": round(required_move, 2),
         }
 
-    def _open_paper_trade(self, candidate: dict[str, Any], quality: dict[str, Any], available_capital: float | None = None, trading_capital: float | None = None) -> PaperTrade | None:
+    def _open_paper_trade(
+        self,
+        candidate: dict[str, Any],
+        quality: dict[str, Any],
+        available_capital: float | None = None,
+        trading_capital: float | None = None,
+        session_adj: dict[str, Any] | None = None,
+    ) -> PaperTrade | None:
+        session_adj = session_adj or {}
         trade_id = str(candidate.get("id") or uuid4())
         if trade_id in self.open_paper:
             return None
@@ -526,7 +593,8 @@ class AutoTraderEngine:
         desired_quantity = int(candidate.get("quantityEstimate") or lot_size)
         if available_capital is not None and premium > 0:
             capital = max(0.0, float(trading_capital or 0))
-            target_allocation = capital * max(0.0, float(self.settings.paper_trade_allocation_pct)) / 100 if capital > 0 else max(0.0, available_capital)
+            allocation_pct = float(self.settings.paper_trade_allocation_pct) * float(session_adj.get("allocationPctMultiplier") or 1.0)
+            target_allocation = capital * max(0.0, allocation_pct) / 100 if capital > 0 else max(0.0, available_capital)
             min_allocation = capital * max(0.0, float(self.settings.paper_min_trade_allocation_pct)) / 100 if capital > 0 else 0.0
             usable_capital = min(max(0.0, available_capital), target_allocation)
             affordable_lots = int(usable_capital // (premium * lot_size))
@@ -537,7 +605,7 @@ class AutoTraderEngine:
             quantity = desired_quantity
         if quantity < lot_size:
             return None
-        risk_plan = self._paper_risk_plan(candidate, quality, premium)
+        risk_plan = self._paper_risk_plan(candidate, quality, premium, session_adj)
         charges = self._charges_estimate(premium, premium, max(1, quantity))
         trade = PaperTrade(
             id=trade_id,
@@ -568,7 +636,9 @@ class AutoTraderEngine:
         self.open_paper[trade.id] = trade
         return trade
 
-    def _update_open_paper(self, snapshots: dict[str, Any], psychology: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    def _update_open_paper(self, snapshots: dict[str, Any], psychology: dict[str, Any] | None = None, session_adj: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        session_adj = session_adj or {}
+        session_max_hold = int(session_adj.get("maxHoldSeconds") or self.settings.max_paper_trade_seconds)
         exits = []
         price_by_id: dict[str, dict[str, Any]] = {}
         price_by_instrument: dict[str, dict[str, Any]] = {}
@@ -594,7 +664,7 @@ class AutoTraderEngine:
             stop_points = float(trade.stop_points or profile.get("stopPoints") or self.settings.paper_stop_points)
             partial_exit_at = max(1.0, target_points * float(profile.get("partialExitPct") or 0.6))
             breakeven_shift = float(trade.breakeven_shift_points or self.settings.paper_breakeven_shift_points)
-            stop_points, max_hold_seconds, psych_exit_reason = self._psychology_exit_adjustments(stop_points, psychology)
+            stop_points, max_hold_seconds, psych_exit_reason = self._psychology_exit_adjustments(stop_points, psychology, session_max_hold)
             style = str(profile.get("executionStyle") or "GENERIC")
             if style == "RUNNER_BREAKOUT":
                 target_points = max(target_points, self.settings.paper_target_points * 1.2)
@@ -722,11 +792,11 @@ class AutoTraderEngine:
             "maxConsecutiveLosses": self.settings.paper_max_consecutive_losses,
         }
 
-    def _psychology_exit_adjustments(self, stop_points: float, psychology: dict[str, Any] | None = None) -> tuple[float, int, str | None]:
+    def _psychology_exit_adjustments(self, stop_points: float, psychology: dict[str, Any] | None = None, session_max_hold: int | None = None) -> tuple[float, int, str | None]:
         psychology = psychology or {}
         state = str(psychology.get("state") or "CALM_AND_SELECTIVE")
         permission = str(psychology.get("tradePermission") or "A_PLUS_ONLY")
-        max_hold = int(self.settings.max_paper_trade_seconds)
+        max_hold = int(session_max_hold or self.settings.max_paper_trade_seconds)
         adjusted_stop = float(stop_points)
         reason = None
         if permission == "BLOCK_NEW_TRADES" or state == "HALT_AND_REVIEW":
@@ -872,14 +942,15 @@ class AutoTraderEngine:
         statuses = [(snapshot.get("cacheStatus") or {}).get("source") for snapshot in snapshots.values() if isinstance(snapshot, dict)]
         return bool(statuses) and all(status == "engine_snapshot_cache" for status in statuses)
 
-    def _recent_signal_active(self, signal_id: str) -> bool:
+    def _recent_signal_active(self, signal_id: str, cooldown_seconds: int | None = None) -> bool:
         if not signal_id:
             return False
         last_seen = AutoTraderEngine._shared_recent_signal_times.get(signal_id)
         if last_seen is None:
             return False
         age = monotonic() - last_seen
-        if age > max(0, self.settings.paper_duplicate_signal_cooldown_seconds):
+        cooldown = max(0, int(cooldown_seconds if cooldown_seconds is not None else self.settings.paper_duplicate_signal_cooldown_seconds))
+        if age > cooldown:
             AutoTraderEngine._shared_recent_signal_times.pop(signal_id, None)
             return False
         return True
@@ -905,12 +976,15 @@ class AutoTraderEngine:
         gst = (brokerage + exchange_txn + sebi) * float(self.settings.option_gst_pct) / 100
         return round(brokerage + stt + exchange_txn + sebi + stamp + gst, 2)
 
-    def _paper_risk_plan(self, candidate: dict[str, Any], quality: dict[str, Any], premium: float) -> dict[str, float]:
+    def _paper_risk_plan(self, candidate: dict[str, Any], quality: dict[str, Any], premium: float, session_adj: dict[str, Any] | None = None) -> dict[str, float]:
+        session_adj = session_adj or {}
         profile = candidate.get("optimizedProfile") or {}
         runner = candidate.get("runnerSignal") or {}
         metrics = runner.get("metrics") or {}
-        target = float(profile.get("targetPoints") or self.settings.paper_target_points)
-        base_stop = float(profile.get("stopPoints") or self.settings.paper_stop_points)
+        target_multiplier = float(session_adj.get("targetPointsMultiplier") or 1.0)
+        stop_multiplier = float(session_adj.get("stopPointsMultiplier") or 1.0)
+        target = float(profile.get("targetPoints") or self.settings.paper_target_points) * target_multiplier
+        base_stop = float(profile.get("stopPoints") or self.settings.paper_stop_points) * stop_multiplier
         breakeven = float(self.settings.paper_breakeven_shift_points)
         runner_score = float(runner.get("score") or 0)
         breakout = float(metrics.get("breakoutVelocity") or 0)
