@@ -145,6 +145,7 @@ class AutoTraderEngine:
         snapshots = payload.get("snapshots") or {payload.get("symbol", "NIFTY"): payload}
         cached_snapshot = self._all_snapshots_cached(snapshots)
         signal_cooldown_seconds = int(session_adj.get("duplicateCooldownSeconds") or self.settings.paper_duplicate_signal_cooldown_seconds)
+        market_phase = str(payload.get("marketPhase") or MarketPhase.LIVE_MARKET.value)
 
         signal_events = []
         skipped = []
@@ -159,10 +160,10 @@ class AutoTraderEngine:
             if self._recent_signal_active(signal_id, signal_cooldown_seconds):
                 skipped.append({"candidate": signal_id, "reason": "duplicate signal cooldown active"})
                 continue
-            if session_adj.get("blockNewPaperTrades") and not self._session_entry_allowed(candidate, session_adj):
+            if session_adj.get("blockNewPaperTrades") and not self._session_entry_allowed(candidate, session_adj, market_phase):
                 skipped.append({"candidate": candidate.get("id"), "reason": session_adj.get("blockReason") or "session gate blocked"})
                 continue
-            quality = self._pre_trade_quality(candidate, session_adj)
+            quality = self._pre_trade_quality(candidate, session_adj, market_phase)
             if quality["blocked"]:
                 skipped.append({"candidate": candidate.get("id"), "reason": quality["reason"], "quality": quality})
                 if not (self.settings.paper_trading and self.settings.shadow_trade_all_signals and quality.get("paperEligible")):
@@ -174,11 +175,11 @@ class AutoTraderEngine:
             if risk_halt["blocked"]:
                 skipped.append({"candidate": candidate.get("id"), "reason": risk_halt["reason"], "quality": quality})
                 continue
-            if pre_trade_psychology.get("tradePermission") in {"WAIT", "BLOCK_NEW_TRADES"}:
+            if pre_trade_psychology.get("tradePermission") in {"WAIT", "BLOCK_NEW_TRADES"} and not self._is_tradeable_explosive_runner(candidate, market_phase):
                 skipped.append({"candidate": candidate.get("id"), "reason": f"psychology gate: {pre_trade_psychology.get('tradePermission')}", "quality": quality})
                 continue
             if self.settings.paper_trading or not self.settings.enable_live_trading:
-                opened = self._open_paper_trade(candidate, quality, self._available_capital(trading_capital), trading_capital, session_adj)
+                opened = self._open_paper_trade(candidate, quality, self._available_capital(trading_capital), trading_capital, session_adj, market_phase)
                 if opened:
                     signal_events.append(opened.lifecycle[-1])
         exits = self._update_open_paper(snapshots, pre_trade_psychology, session_adj)
@@ -523,20 +524,35 @@ class AutoTraderEngine:
             open_drive_allocation_boost=float(self.settings.open_drive_allocation_multiplier),
         )
 
-    def _session_entry_allowed(self, candidate: dict[str, Any], session_adj: dict[str, Any]) -> bool:
-        if not session_adj.get("blockNewPaperTrades"):
-            return True
-        if session_adj.get("sessionBucket") != "MIDDAY_CHOP":
+    def _is_tradeable_explosive_runner(self, candidate: dict[str, Any], market_phase: str | None = None) -> bool:
+        if not self.settings.paper_always_trade_explosive_runners or not self.settings.explosive_runner_enabled:
+            return False
+        phase = str(market_phase or MarketPhase.LIVE_MARKET.value)
+        if phase != MarketPhase.LIVE_MARKET.value:
+            return False
+        if candidate.get("strategyType") != "EXPLOSIVE_RUNNER":
             return False
         runner = candidate.get("runnerSignal") or {}
-        score = float(runner.get("score") or 0)
-        if score < float(session_adj.get("middayRunnerBypassScore") or 90):
+        if runner.get("candidate") is False:
             return False
-        chart_bias = str(candidate.get("chartBias") or "")
-        side = str(candidate.get("side") or "")
-        return chart_bias in {"CALL", "PUT"} and side == chart_bias
+        score = float(runner.get("score") or candidate.get("tqs") or 0)
+        if score < float(self.settings.explosive_runner_min_score):
+            return False
+        premium = float(candidate.get("lastPremium") or runner.get("premium") or runner.get("lastPremium") or 0)
+        if premium <= 0:
+            return False
+        premium_min = float(self.settings.explosive_runner_premium_min)
+        premium_max = float(self.settings.explosive_runner_premium_max)
+        return premium_min <= premium <= premium_max
 
-    def _pre_trade_quality(self, candidate: dict[str, Any], session_adj: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _session_entry_allowed(self, candidate: dict[str, Any], session_adj: dict[str, Any], market_phase: str | None = None) -> bool:
+        if self._is_tradeable_explosive_runner(candidate, market_phase):
+            return True
+        if not session_adj.get("blockNewPaperTrades"):
+            return True
+        return False
+
+    def _pre_trade_quality(self, candidate: dict[str, Any], session_adj: dict[str, Any] | None = None, market_phase: str | None = None) -> dict[str, Any]:
         session_adj = session_adj or self._paper_session_settings({})
         premium = float(candidate.get("lastPremium") or 0)
         quantity = int(candidate.get("quantityEstimate") or candidate.get("lotSize") or 1)
@@ -547,40 +563,36 @@ class AutoTraderEngine:
         required_move = spread_cost + slippage + charges_per_unit + self.settings.min_required_move_points
         reasons = []
         runner = candidate.get("runnerSignal") or {}
-        metrics = runner.get("metrics") or {}
         runner_score = float(runner.get("score") or 0)
-        breakout = float(metrics.get("breakoutVelocity") or 0)
-        delta_velocity = abs(float(metrics.get("deltaVelocity") or 0))
         chart_bias = str(candidate.get("chartBias") or "")
         side = str(candidate.get("side") or "")
-        high_conviction_runner = (
-            candidate.get("strategyType") == "EXPLOSIVE_RUNNER"
-            and runner.get("confidence") == "HIGH"
-            and runner_score >= 90
-            and breakout >= 75
-            and delta_velocity >= 60
-        )
+        tradeable_runner = self._is_tradeable_explosive_runner(candidate, market_phase)
         if premium <= 0:
             reasons.append("missing premium")
-        if candidate.get("chopBlocked"):
-            reasons.append("chop filter blocked")
-        min_entry_tqs = int(session_adj.get("minEntryTqs") or max(int(self.settings.nifty_opt_min_tqs), int(self.settings.sensex_opt_min_tqs)))
-        if candidate.get("tqs", 0) < min_entry_tqs:
-            reasons.append(f"TQS below session threshold ({min_entry_tqs})")
-        if candidate.get("effectiveVolume", 0) <= 0:
-            reasons.append("missing effective volume")
-        if chart_bias in {"CALL", "PUT"} and side in {"CALL", "PUT"} and side != chart_bias and not high_conviction_runner:
-            reasons.append(f"chart trend conflict: {chart_bias} bias vs {side} trade")
-        if chart_bias == "WAIT" and not high_conviction_runner:
-            reasons.append("chart analysis says wait")
-        min_runner_score = float(session_adj.get("minRunnerScore") or self.settings.explosive_runner_min_score)
-        if candidate.get("strategyType") == "EXPLOSIVE_RUNNER" and runner_score < min_runner_score:
-            reasons.append(f"runner score below session threshold ({min_runner_score:g})")
-        if required_move > self.settings.min_required_move_points * 1.4:
-            reasons.append("spread/slippage cost too high for 5-point scalp")
+        if tradeable_runner:
+            volume_state = runner.get("volumeState") or {}
+            if candidate.get("effectiveVolume", 0) <= 0 and not volume_state.get("volumeAvailable"):
+                reasons.append("missing effective volume")
+        else:
+            if candidate.get("chopBlocked"):
+                reasons.append("chop filter blocked")
+            min_entry_tqs = int(session_adj.get("minEntryTqs") or max(int(self.settings.nifty_opt_min_tqs), int(self.settings.sensex_opt_min_tqs)))
+            if candidate.get("tqs", 0) < min_entry_tqs:
+                reasons.append(f"TQS below session threshold ({min_entry_tqs})")
+            if candidate.get("effectiveVolume", 0) <= 0:
+                reasons.append("missing effective volume")
+            if chart_bias in {"CALL", "PUT"} and side in {"CALL", "PUT"} and side != chart_bias:
+                reasons.append(f"chart trend conflict: {chart_bias} bias vs {side} trade")
+            if chart_bias == "WAIT":
+                reasons.append("chart analysis says wait")
+            min_runner_score = float(session_adj.get("minRunnerScore") or self.settings.explosive_runner_min_score)
+            if candidate.get("strategyType") == "EXPLOSIVE_RUNNER" and runner_score < min_runner_score:
+                reasons.append(f"runner score below session threshold ({min_runner_score:g})")
+            if required_move > self.settings.min_required_move_points * 1.4:
+                reasons.append("spread/slippage cost too high for 5-point scalp")
         return {
             "blocked": bool(reasons),
-            "paperEligible": not bool(reasons) or high_conviction_runner,
+            "paperEligible": not bool(reasons) or tradeable_runner,
             "reason": ", ".join(reasons) if reasons else "quality accepted",
             "spreadCost": round(spread_cost, 2),
             "slippageEstimate": round(slippage, 2),
@@ -596,8 +608,10 @@ class AutoTraderEngine:
         available_capital: float | None = None,
         trading_capital: float | None = None,
         session_adj: dict[str, Any] | None = None,
+        market_phase: str | None = None,
     ) -> PaperTrade | None:
         session_adj = session_adj or {}
+        tradeable_runner = self._is_tradeable_explosive_runner(candidate, market_phase)
         trade_id = str(candidate.get("id") or uuid4())
         if trade_id in self.open_paper:
             return None
@@ -609,8 +623,13 @@ class AutoTraderEngine:
         if available_capital is not None and premium > 0:
             capital = max(0.0, float(trading_capital or 0))
             allocation_pct = float(self.settings.paper_trade_allocation_pct) * float(session_adj.get("allocationPctMultiplier") or 1.0)
+            if tradeable_runner:
+                allocation_pct = max(allocation_pct, float(self.settings.paper_trade_allocation_pct))
             target_allocation = capital * max(0.0, allocation_pct) / 100 if capital > 0 else max(0.0, available_capital)
-            min_allocation = capital * max(0.0, float(self.settings.paper_min_trade_allocation_pct)) / 100 if capital > 0 else 0.0
+            min_allocation_pct = float(self.settings.paper_min_trade_allocation_pct)
+            if tradeable_runner:
+                min_allocation_pct = min(min_allocation_pct, float(self.settings.paper_min_trade_allocation_pct))
+            min_allocation = capital * max(0.0, min_allocation_pct) / 100 if capital > 0 else 0.0
             usable_capital = min(max(0.0, available_capital), target_allocation)
             affordable_lots = int(usable_capital // (premium * lot_size))
             quantity = min(desired_quantity, affordable_lots * lot_size)
