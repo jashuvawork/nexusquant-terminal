@@ -906,6 +906,11 @@ async def auto_trader_daily_report(engine: AutoTraderEngine = Depends(get_auto_t
     return engine.daily_report()
 
 
+@router.get("/auto-trader/paper-sessions")
+async def auto_trader_paper_sessions(limit: int = 50, engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
+    return engine.paper_sessions_history(limit)
+
+
 @router.get("/risk/profiles")
 async def risk_profiles(settings: Settings = Depends(get_settings)) -> dict:
     return {"activeProfile": settings.aggression_profile, "profiles": profile_list()}

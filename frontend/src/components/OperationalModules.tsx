@@ -558,6 +558,10 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
   const orderLifecycle = auto.orderLifecycle ?? [];
   const replay = auto.replay ?? { storedSnapshots: 0 };
   const dailyReport = auto.dailyReport ?? { paperTrades: 0, openTrades: 0, wins: 0, losses: 0, winRate: 0, grossProfit: 0, grossLoss: 0, profitFactor: 0, maxDrawdown: 0, reasonForLosses: {}, totalSignals: 0 };
+  const paperSessions = auto.paperSessions;
+  const dayAggregate = paperSessions?.dayAggregate ?? dailyReport.dayAggregate;
+  const currentSession = paperSessions?.currentSession;
+  const completedSessions = paperSessions?.completedSessionsToday ?? [];
   const openPnl = openPaperTrades.reduce((sum, trade) => sum + (trade.pnl ?? 0), 0);
   const closedPnl = closedPaperTrades.reduce((sum, trade) => sum + (trade.pnl ?? 0), 0);
 
@@ -573,11 +577,42 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
           <MetricCard label="Replay Buffer" value={replay.storedSnapshots} helper="Stored snapshots" tone="violet" />
           <MetricCard label="Learning Samples" value={auto.onlineLearning.samples} helper={`Score ${auto.onlineLearning.learningScore ?? auto.onlineLearning.score ?? 0}`} tone="emerald" />
           <MetricCard label="Profit Lock" value={auto.profitLock?.activeTier ? `${auto.profitLock.activeTier.pct}%` : 'WAIT'} helper={auto.profitLock?.message ?? 'No locked tier'} tone={auto.profitLock?.blockNewTrades ? 'rose' : 'amber'} />
+          {paperSessions?.rotationEnabled && (
+            <>
+              <MetricCard label="Session" value={`#${currentSession?.sessionNumber ?? dailyReport.sessionNumber ?? 1}`} helper={currentSession?.id ? `${currentSession.id.slice(-12)}` : 'Active paper session'} tone="cyan" />
+              <MetricCard label="Sessions Today" value={dayAggregate?.sessionsIncludingCurrent ?? 1} helper={`${completedSessions.length} completed`} tone="violet" />
+              <MetricCard label="Day Net PnL" value={formatCurrency(dayAggregate?.netPnl ?? 0)} helper={`${dayAggregate?.paperTrades ?? 0} trades across sessions`} tone={(dayAggregate?.netPnl ?? 0) >= 0 ? 'emerald' : 'rose'} />
+            </>
+          )}
         </div>
+        {auto.sessionRotation?.rotated && (
+          <div className="mt-4 rounded-2xl border border-amber-300/30 bg-amber-300/10 p-4 text-sm text-amber-100">
+            Session rotated: {auto.sessionRotation.reason ?? 'limits reached'} → new session #{String((auto.sessionRotation.newSession as { sessionNumber?: number } | undefined)?.sessionNumber ?? '?')}
+          </div>
+        )}
         <div className="mt-4 rounded-2xl border border-slate-700 bg-slate-950/60 p-4 text-sm text-slate-300">
           Reset endpoint: <span className="font-mono text-cyan-200">/api/auto-trader/reset</span> | Status endpoint: <span className="font-mono text-cyan-200">/api/auto-trader/status</span>
+          {paperSessions?.rotationEnabled && <> | Sessions: <span className="font-mono text-cyan-200">/api/auto-trader/paper-sessions</span></>}
         </div>
       </Card>
+
+      {paperSessions?.rotationEnabled && completedSessions.length > 0 && (
+        <Card title="Completed Paper Sessions Today" eyebrow="Saved when 8 losses or profit target hits — fresh session starts immediately">
+          <div className="space-y-3">
+            {completedSessions.slice().reverse().map((session) => (
+              <div key={session.id} className="rounded-2xl border border-slate-700/70 bg-slate-950/50 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-bold text-white">Session #{session.sessionNumber}</span>
+                  <span className={((session.netPnl ?? 0) >= 0 ? 'text-emerald-300' : 'text-rose-300')}>{formatCurrency(session.netPnl ?? 0)}</span>
+                </div>
+                <p className="mt-1 text-xs text-slate-400">
+                  {session.endReason?.replaceAll('_', ' ') ?? 'ENDED'} | {session.paperTrades ?? 0} trades | {session.wins ?? 0}W / {session.losses ?? 0}L | PF {session.profitFactor ?? '-'}
+                </p>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       {auto.psychology && (
         <Card title="Psychology Manager" eyebrow="Discipline, patience, revenge-risk and execution mindset">

@@ -94,6 +94,9 @@ class Settings(BaseSettings):
     ai_state_file: str = "/opt/nexusquant/ai_state.json"
     paper_replay_file: str = "/opt/nexusquant/paper_replay.jsonl"
     paper_replay_persist_limit: int = 20000
+    paper_sessions_file: str = "/opt/nexusquant/paper_sessions.jsonl"
+    paper_sessions_persist_limit: int = 2000
+    paper_session_rotation_enabled: bool = True
     paper_trading: bool = True
     paper_session_adjustments_enabled: bool = True
     paper_always_trade_explosive_runners: bool = True
