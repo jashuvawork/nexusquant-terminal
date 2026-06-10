@@ -655,6 +655,13 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
             <MetricCard label="Mindset State" value={auto.psychology.state.replaceAll('_', ' ')} helper={auto.psychology.tradePermission.replaceAll('_', ' ')} tone={auto.psychology.tradePermission === 'WAIT' || auto.psychology.tradePermission === 'BLOCK_NEW_TRADES' ? 'rose' : 'emerald'} />
             <MetricCard label="Discipline Score" value={auto.psychology.disciplineScore} helper="Higher means calmer selection" tone={auto.psychology.disciplineScore >= 80 ? 'emerald' : auto.psychology.disciplineScore >= 60 ? 'amber' : 'rose'} />
             <MetricCard label="Emotional Risks" value={auto.psychology.emotionalRisks.length} helper={auto.psychology.emotionalRisks.join(', ') || 'None'} tone={auto.psychology.emotionalRisks.length ? 'amber' : 'emerald'} />
+            {auto.psychology.aiCoach && (
+              <>
+                <MetricCard label="AI Coach Mode" value={auto.psychology.aiCoach.mode.replaceAll('_', ' ')} helper={`Urgency ${auto.psychology.aiCoach.urgency}`} tone={auto.psychology.aiCoach.urgency === 'HIGH' ? 'rose' : auto.psychology.aiCoach.urgency === 'MEDIUM' ? 'amber' : 'emerald'} />
+                <MetricCard label="Coach Confidence" value={auto.psychology.aiCoach.confidenceScore} helper={`Cooldown ${auto.psychology.aiCoach.cooldownMinutes}m`} tone={auto.psychology.aiCoach.confidenceScore >= 70 ? 'emerald' : auto.psychology.aiCoach.confidenceScore >= 45 ? 'amber' : 'rose'} />
+                <MetricCard label="Best Mindset Edge" value={`${auto.psychology.aiCoach.profileGuidance.bestSymbol ?? 'n/a'} ${auto.psychology.aiCoach.profileGuidance.bestSide ?? ''}`} helper={auto.psychology.aiCoach.profileGuidance.bestBucket ?? 'Waiting for data'} tone="cyan" />
+              </>
+            )}
             {auto.psychology.exitAdjustments && (
               <>
                 <MetricCard label="Psych Stop" value={auto.psychology.exitAdjustments.adjustedStopPoints} helper={`Base ${auto.psychology.exitAdjustments.baseStopPoints}`} tone="amber" />
@@ -677,6 +684,45 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
               </ul>
             </div>
           </div>
+          {auto.psychology.aiCoach && (
+            <div className="mt-4 rounded-2xl border border-violet-300/20 bg-violet-300/10 p-4">
+              <p className="text-xs font-bold uppercase tracking-[0.22em] text-violet-200">AI Psychological Coach</p>
+              <p className="mt-2 text-sm font-semibold text-white">{auto.psychology.aiCoach.nextAction}</p>
+              <div className="mt-4 grid gap-4 lg:grid-cols-3">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.18em] text-cyan-200">Diagnosis</p>
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-slate-300">
+                    {auto.psychology.aiCoach.diagnosis.map((item) => <li key={item}>{item}</li>)}
+                  </ul>
+                </div>
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.18em] text-amber-200">Intervention Script</p>
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-slate-300">
+                    {auto.psychology.aiCoach.interventionScript.map((item) => <li key={item}>{item}</li>)}
+                  </ul>
+                </div>
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.18em] text-rose-200">Anti-Revenge Rules</p>
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-slate-300">
+                    {auto.psychology.aiCoach.antiRevengeRules.map((item) => <li key={item}>{item}</li>)}
+                  </ul>
+                </div>
+              </div>
+              <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                <div className="rounded-xl border border-slate-700 bg-slate-950/60 p-3 text-xs text-slate-300">
+                  <p className="font-bold text-cyan-200">Pre-trade checklist</p>
+                  <ul className="mt-2 list-disc space-y-1 pl-5">
+                    {auto.psychology.aiCoach.preTradeChecklist.map((item) => <li key={item}>{item}</li>)}
+                  </ul>
+                </div>
+                <div className="rounded-xl border border-slate-700 bg-slate-950/60 p-3 text-xs text-slate-300">
+                  <p><span className="font-bold text-emerald-200">Breathing:</span> {auto.psychology.aiCoach.breathingProtocol}</p>
+                  <p className="mt-2"><span className="font-bold text-violet-200">Journal:</span> {auto.psychology.aiCoach.journalPrompt}</p>
+                  <p className="mt-2 text-emerald-200">{auto.psychology.aiCoach.positiveReinforcement}</p>
+                </div>
+              </div>
+            </div>
+          )}
           <p className="mt-4 rounded-2xl bg-slate-950/60 p-3 text-sm text-slate-300">{auto.psychology.mantra}</p>
         </Card>
       )}

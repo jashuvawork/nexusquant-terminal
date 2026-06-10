@@ -1544,6 +1544,110 @@ class AutoTraderEngine:
             reason = "psychology cautious stop"
         return round(adjusted_stop, 2), max_hold, reason
 
+    def _ai_psychological_coach(
+        self,
+        *,
+        state: str,
+        permission: str,
+        risk_halt: dict[str, Any],
+        session_adj: dict[str, Any],
+        emotional_risks: list[str],
+        behavioral_findings: list[str],
+        day_summary: dict[str, Any],
+        recent_losses: list[PaperTrade],
+        recent_wins: list[PaperTrade],
+    ) -> dict[str, Any]:
+        performance = self.performance_analysis()
+        best = performance.get("bestObserved") or {}
+        target = performance.get("target") or {}
+        session_bucket = str(session_adj.get("sessionBucket") or "UNKNOWN")
+        net_pnl = float(day_summary.get("netPnl") or 0)
+        profit_factor = float(day_summary.get("profitFactor") or 0)
+        win_rate = float(day_summary.get("winRate") or 0)
+        risks = sorted(set(emotional_risks))
+
+        if risk_halt.get("blocked"):
+            mode = "HALT_COACH"
+            urgency = "HIGH"
+            next_action = "No new paper entries. Review losses and wait for the next trading day or manual reset."
+            cooldown_minutes = 60
+        elif permission == "WAIT":
+            mode = "RESET_FOCUS"
+            urgency = "MEDIUM"
+            next_action = "Wait for a clean A+ setup; do not increase size to recover."
+            cooldown_minutes = 20
+        elif profit_factor < 1 and int(day_summary.get("paperTrades") or 0) >= 10:
+            mode = "SELECTIVITY_COACH"
+            urgency = "MEDIUM"
+            next_action = "Trade only the best observed bucket/side until profit factor recovers above 1."
+            cooldown_minutes = 15
+        else:
+            mode = "EXECUTION_COACH"
+            urgency = "LOW"
+            next_action = "Stay process-focused and take only checklist-passing setups."
+            cooldown_minutes = 5
+
+        best_bucket = best.get("bucket") or "not proven yet"
+        best_symbol = best.get("symbol") or "not proven yet"
+        best_side = best.get("side") or "not proven yet"
+        diagnosis = [
+            f"Current psychology state is {state}; trade permission is {permission}.",
+            f"Today's paper PF is {profit_factor:.2f}, win rate is {win_rate:.2f}%, net PnL is INR {net_pnl:,.0f}.",
+            f"Best observed paper edge today: {best_bucket} / {best_symbol} / {best_side}.",
+        ]
+        if risks:
+            diagnosis.append(f"Detected behavioral risks: {', '.join(risks)}.")
+        if target:
+            diagnosis.append(
+                f"Daily target is INR {float(target.get('dailyProfitAmount') or 0):,.0f}; remaining is INR {float(target.get('remainingToTarget') or 0):,.0f}."
+            )
+
+        intervention = [
+            "Pause for 90 seconds before every new paper entry.",
+            "Say the trade thesis out loud: direction, trigger, invalidation, and exit.",
+            "If the setup is not in the best observed bucket/side, reduce aggression or skip.",
+            "After any loss, wait for a fresh candle/snapshot confirmation before the next entry.",
+        ]
+        if recent_losses and not recent_wins:
+            intervention.insert(0, "Loss streak detected: do not take the next signal unless it passes every checklist item.")
+        if "overtrading" in risks:
+            intervention.append("Cap the next session to one open instrument at a time.")
+
+        return {
+            "mode": mode,
+            "urgency": urgency,
+            "sessionBucket": session_bucket,
+            "nextAction": next_action,
+            "cooldownMinutes": cooldown_minutes,
+            "diagnosis": diagnosis[:6],
+            "interventionScript": intervention[:8],
+            "preTradeChecklist": [
+                "Is this in the best observed window/side, or is there a clear reason to override?",
+                "Is chart bias aligned with option direction?",
+                "Is runner score/TQS above the current time-window threshold?",
+                "Is there no active daily loss/profit halt?",
+                "Is this not a duplicate instrument already traded in cooldown?",
+                "Can I accept the stop without revenge trading?",
+            ],
+            "breathingProtocol": "4-2-6 breathing for three cycles: inhale 4, hold 2, exhale 6 before pressing the trade.",
+            "journalPrompt": "Why this trade now? What condition proves me wrong? Did I follow the system or chase emotion?",
+            "antiRevengeRules": [
+                "No size increase after a loss.",
+                "No CALL trades when today's CALL bucket remains negative unless chart and tape both flip.",
+                "No trade outside the recommended time-window profile after risk halt.",
+            ],
+            "positiveReinforcement": "Your job is not to trade more; it is to protect 5L capital until the highest-quality paper edge appears.",
+            "profileGuidance": {
+                "baseProfile": (performance.get("institutionalAggressionProfiles") or {}).get("recommendedBaseProfile"),
+                "bestBucket": best_bucket,
+                "bestSymbol": best_symbol,
+                "bestSide": best_side,
+            },
+            "confidenceScore": max(0, min(100, int(100 - len(risks) * 15 - max(0, 1 - profit_factor) * 25))),
+            "source": "paper_performance_psychology_rules_v1",
+            "findingsUsed": behavioral_findings[:5],
+        }
+
     def _psychology_report(
         self,
         candidates: list[dict[str, Any]],
@@ -1651,6 +1755,18 @@ class AutoTraderEngine:
             "state": state,
             "tradePermission": permission,
         })
+        day_summary = self._summarize_trades(self._today_closed_trades())
+        ai_coach = self._ai_psychological_coach(
+            state=state,
+            permission=permission,
+            risk_halt=risk_halt,
+            session_adj=session_adj,
+            emotional_risks=emotional_risks,
+            behavioral_findings=behavioral_findings,
+            day_summary=day_summary,
+            recent_losses=recent_losses,
+            recent_wins=recent_wins,
+        )
 
         return {
             "state": state,
@@ -1681,6 +1797,7 @@ class AutoTraderEngine:
                 "adjustedMaxHoldSeconds": adjusted_hold,
                 "reason": exit_reason,
             },
+            "aiCoach": ai_coach,
             "mantra": "Protect capital first. Trade only when chart, tape, and risk agree.",
         }
 

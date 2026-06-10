@@ -445,6 +445,29 @@ export interface AutoTraderState {
       adjustedMaxHoldSeconds: number;
       reason?: string | null;
     };
+    aiCoach?: {
+      mode: string;
+      urgency: string;
+      sessionBucket: string;
+      nextAction: string;
+      cooldownMinutes: number;
+      diagnosis: string[];
+      interventionScript: string[];
+      preTradeChecklist: string[];
+      breathingProtocol: string;
+      journalPrompt: string;
+      antiRevengeRules: string[];
+      positiveReinforcement: string;
+      profileGuidance: {
+        baseProfile?: string | null;
+        bestBucket?: string | null;
+        bestSymbol?: string | null;
+        bestSide?: string | null;
+      };
+      confidenceScore: number;
+      source: string;
+      findingsUsed: string[];
+    };
     mantra: string;
   };
   onlineLearning: { enabled: boolean; pretrained?: boolean; priorVersion?: string; mode: string; samples: number; score?: number; learningScore?: number; paperSamples?: number; liveSamples?: number; profitFactor?: number; calibration?: Record<string, unknown>; lastUpdatedAt?: string; note: string };
