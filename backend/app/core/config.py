@@ -96,9 +96,15 @@ class Settings(BaseSettings):
     paper_replay_persist_limit: int = 20000
     paper_sessions_file: str = "/opt/nexusquant/paper_sessions.jsonl"
     paper_sessions_persist_limit: int = 2000
+    paper_trades_file: str = "/opt/nexusquant/paper_trades.json"
+    paper_trades_persist_limit: int = 2000
     paper_session_rotation_enabled: bool = True
     paper_trading: bool = True
     paper_session_adjustments_enabled: bool = True
+    paper_high_confidence_only: bool = True
+    paper_min_premium_ltp: float = 150.0
+    paper_high_confidence_min_runner_score: float = 85.0
+    paper_high_confidence_min_tqs: int = 82
     paper_always_trade_explosive_runners: bool = True
     paper_min_hold_before_chop_exit_seconds: int = 45
     paper_trading_respects_stop: bool = False

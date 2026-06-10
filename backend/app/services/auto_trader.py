@@ -72,6 +72,50 @@ class PaperTrade:
     partial_exit_taken: bool = False
     lifecycle: list[LifecycleEvent] = field(default_factory=list)
 
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> PaperTrade:
+        lifecycle = [
+            LifecycleEvent(
+                state=str(event.get("state") or ""),
+                timestamp=str(event.get("timestamp") or ""),
+                reason=str(event.get("reason") or ""),
+                payload=dict(event.get("payload") or {}),
+            )
+            for event in (payload.get("lifecycle") or [])
+            if isinstance(event, dict)
+        ]
+        return cls(
+            id=str(payload.get("id") or uuid4()),
+            symbol=str(payload.get("symbol") or ""),
+            side=str(payload.get("side") or ""),
+            strike=int(payload.get("strike") or 0),
+            expiry=str(payload.get("expiry") or ""),
+            instrument_key=payload.get("instrumentKey"),
+            entry_price=float(payload.get("entryPrice") or 0),
+            quantity=int(payload.get("quantity") or 1),
+            entry_tqs=int(payload.get("entryTqs") or 0),
+            spread_cost=float(payload.get("spreadCost") or 0),
+            slippage_estimate=float(payload.get("slippageEstimate") or 0),
+            charges_estimate=float(payload.get("chargesEstimate") or 0),
+            opened_at=str(payload.get("openedAt") or datetime.now(timezone.utc).isoformat()),
+            mode=str(payload.get("mode") or "paper"),
+            strategy_type=str(payload.get("strategyType") or "SCALP"),
+            paper_session_id=str(payload.get("paperSessionId") or ""),
+            target_points=float(payload.get("targetPoints") or 0),
+            stop_points=float(payload.get("stopPoints") or 0),
+            breakeven_shift_points=float(payload.get("breakevenShiftPoints") or 0),
+            trail_points=float(payload.get("trailPoints") or 0),
+            status=str(payload.get("status") or "OPEN"),
+            exit_price=payload.get("exitPrice"),
+            exit_reason=payload.get("exitReason"),
+            exited_at=payload.get("exitedAt"),
+            pnl=float(payload.get("pnl") or 0),
+            best_price=float(payload.get("bestPrice") or payload.get("entryPrice") or 0),
+            breakeven_armed=bool(payload.get("breakevenArmed")),
+            partial_exit_taken=bool(payload.get("partialExitTaken")),
+            lifecycle=lifecycle,
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
@@ -133,6 +177,7 @@ class AutoTraderEngine:
         self.closed_paper = AutoTraderEngine._shared_closed_paper
         self.lifecycle_events = AutoTraderEngine._shared_lifecycle_events
         self._load_replay_file()
+        self._load_paper_trades_file()
 
     async def process(self, payload: dict[str, Any]) -> dict[str, Any]:
         now = datetime.now(timezone.utc).isoformat()
@@ -249,6 +294,7 @@ class AutoTraderEngine:
         self.closed_paper.clear()
         self.lifecycle_events.clear()
         AutoTraderEngine._shared_recent_signal_times.clear()
+        self._persist_paper_trades_file()
         AutoTraderEngine._shared_learning_samples = 0
         AutoTraderEngine._shared_learning_score = 50.0
         AutoTraderEngine._shared_last_learning_update = None
@@ -287,6 +333,53 @@ class AutoTraderEngine:
             lines = path.read_text(encoding="utf-8").splitlines()
             if len(lines) > limit:
                 path.write_text("\n".join(lines[-limit:]) + "\n", encoding="utf-8")
+        except Exception:
+            return
+
+    def _load_paper_trades_file(self) -> None:
+        if (self.open_paper or self.closed_paper) or not self.settings.paper_trades_file:
+            return
+        path = Path(self.settings.paper_trades_file)
+        if not path.exists():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                return
+            for item in payload.get("open") or []:
+                if not isinstance(item, dict):
+                    continue
+                trade = PaperTrade.from_dict(item)
+                if trade.status == "OPEN":
+                    self.open_paper[trade.id] = trade
+            limit = max(100, int(self.settings.paper_trades_persist_limit))
+            for item in (payload.get("closed") or [])[-limit:]:
+                if not isinstance(item, dict):
+                    continue
+                trade = PaperTrade.from_dict(item)
+                if trade.status == "EXITED":
+                    self.closed_paper.append(trade)
+        except Exception:
+            return
+
+    def _persist_paper_trades_file(self) -> None:
+        if not self.settings.paper_trades_file:
+            return
+        try:
+            limit = max(100, int(self.settings.paper_trades_persist_limit))
+            closed = [trade.to_dict() for trade in list(self.closed_paper)[-limit:]]
+            payload = {
+                "updatedAt": datetime.now(timezone.utc).isoformat(),
+                "currentSessionId": self.paper_sessions.current_id(),
+                "open": [trade.to_dict() for trade in self.open_paper.values()],
+                "closed": closed,
+            }
+            path = Path(self.settings.paper_trades_file)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temp = path.with_suffix(".tmp")
+            temp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+            temp.replace(path)
+            path.chmod(0o600)
         except Exception:
             return
 
@@ -569,7 +662,7 @@ class AutoTraderEngine:
 
     def profit_lock_status(self, capital: float | None = None, session_adj: dict[str, Any] | None = None) -> dict[str, Any]:
         session_adj = session_adj or {}
-        capital = float(capital or 0)
+        capital = float(capital or self.settings.trading_capital_default or 0)
         rotation_enabled = bool(self.settings.paper_session_rotation_enabled)
         if rotation_enabled:
             session_report = self._session_report()
@@ -604,6 +697,20 @@ class AutoTraderEngine:
         locked_profit = float(active["amount"]) * (self.settings.profit_lock_retain_pct / 100) if active else 0
         giveback = max(0, net - locked_profit) if active else 0
         block_new = bool(active and net <= locked_profit)
+        if rotation_enabled and self.settings.paper_trading:
+            block_new = False
+        if rotation_enabled and active:
+            message = (
+                f"{active['name']} profit tier reached; session saves and restarts automatically"
+                if active["name"] == "primary"
+                else f"{active['name']} profit tier reached; session rotation active"
+            )
+        elif active and active["name"] == "primary":
+            message = "Primary profit locked; only trade from giveback buffer"
+        elif active:
+            message = f"{active['name']} profit tier locked"
+        else:
+            message = "Profit target not locked yet"
         return {
             "capital": capital,
             "netPnl": round(net, 2),
@@ -612,7 +719,7 @@ class AutoTraderEngine:
             "lockedProfit": round(locked_profit, 2),
             "givebackAvailable": round(giveback, 2),
             "blockNewTrades": block_new,
-            "message": "Primary profit locked; only trade from giveback buffer" if active and active["name"] == "primary" else "Profit target not locked yet" if not active else f"{active['name']} profit tier locked",
+            "message": message,
             "sessionId": session_id,
             "sessionNumber": session_number,
             "sessionRotationEnabled": rotation_enabled,
@@ -678,6 +785,7 @@ class AutoTraderEngine:
         )
         AutoTraderEngine._shared_recent_signal_times.clear()
         self.paper_sessions.start_session(f"after_{end_reason.lower()}")
+        self._persist_paper_trades_file()
         return {
             "rotated": True,
             "endedSession": closed,
@@ -707,6 +815,8 @@ class AutoTraderEngine:
             self.closed_paper.append(trade)
             del self.open_paper[trade_id]
             flattened.append(trade.to_dict())
+        if flattened:
+            self._persist_paper_trades_file()
         return flattened
 
     def learning_status(self) -> dict[str, Any]:
@@ -775,6 +885,37 @@ class AutoTraderEngine:
             open_drive_allocation_boost=float(self.settings.open_drive_allocation_multiplier),
         )
 
+    def _passes_high_confidence_gate(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> tuple[bool, str]:
+        if not self.settings.paper_high_confidence_only:
+            return True, ""
+        runner = runner or candidate.get("runnerSignal") or {}
+        premium = float(candidate.get("lastPremium") or runner.get("premium") or runner.get("lastPremium") or 0)
+        min_ltp = float(self.settings.paper_min_premium_ltp or 0)
+        if min_ltp > 0 and premium < min_ltp:
+            return False, f"LTP ₹{premium:.0f} below high-confidence minimum ₹{min_ltp:.0f}"
+        if candidate.get("strategyType") == "EXPLOSIVE_RUNNER":
+            confidence = str(runner.get("confidence") or "").upper()
+            if confidence != "HIGH":
+                return False, f"runner confidence {confidence or 'LOW'}; HIGH confidence only"
+            score = float(runner.get("score") or candidate.get("tqs") or 0)
+            min_score = float(self.settings.paper_high_confidence_min_runner_score)
+            if score < min_score:
+                return False, f"runner score {score:.0f} below high-confidence minimum {min_score:.0f}"
+            if not runner.get("momentumAligned"):
+                return False, "high-confidence runners require momentum alignment"
+            return True, ""
+        min_tqs = int(self.settings.paper_high_confidence_min_tqs)
+        tqs = int(candidate.get("tqs") or 0)
+        if tqs < min_tqs:
+            return False, f"TQS {tqs} below high-confidence minimum {min_tqs}"
+        chart_bias = str(candidate.get("chartBias") or "")
+        side = str(candidate.get("side") or "")
+        if chart_bias in {"CALL", "PUT"} and side in {"CALL", "PUT"} and side != chart_bias:
+            return False, f"chart trend conflict: {chart_bias} bias vs {side} trade"
+        if chart_bias == "WAIT":
+            return False, "chart analysis says wait"
+        return True, ""
+
     def _is_momentum_aligned_runner(self, candidate: dict[str, Any], runner: dict[str, Any]) -> bool:
         side = str(candidate.get("side") or runner.get("side") or "").upper()
         bias = str(runner.get("directionalBias") or candidate.get("directionalBias") or "").upper()
@@ -823,9 +964,12 @@ class AutoTraderEngine:
         premium = float(candidate.get("lastPremium") or runner.get("premium") or runner.get("lastPremium") or 0)
         if premium <= 0:
             return False
-        premium_min = float(self.settings.explosive_runner_premium_min)
+        premium_min = float(self.settings.paper_min_premium_ltp if self.settings.paper_high_confidence_only else self.settings.explosive_runner_premium_min)
         premium_max = float(self.settings.explosive_runner_premium_max)
-        return premium_min <= premium <= premium_max
+        if not (premium_min <= premium <= premium_max):
+            return False
+        ok, _ = self._passes_high_confidence_gate(candidate, runner)
+        return ok
 
     def _session_entry_allowed(self, candidate: dict[str, Any], session_adj: dict[str, Any], market_phase: str | None = None) -> bool:
         if self._is_tradeable_explosive_runner(candidate, market_phase):
@@ -854,6 +998,9 @@ class AutoTraderEngine:
             reasons.append("missing premium")
         if candidate.get("chopBlocked") and not tradeable_runner:
             reasons.append("chop filter blocked")
+        high_conf_ok, high_conf_reason = self._passes_high_confidence_gate(candidate, runner)
+        if not high_conf_ok:
+            reasons.append(high_conf_reason)
         if tradeable_runner:
             volume_state = runner.get("volumeState") or {}
             if candidate.get("effectiveVolume", 0) <= 0 and not volume_state.get("volumeAvailable"):
@@ -955,6 +1102,7 @@ class AutoTraderEngine:
             LifecycleEvent("PAPER_OPENED", trade.opened_at, "Shadow trade opened; no broker order placed", {"entry": trade.entry_price}),
         ])
         self.open_paper[trade.id] = trade
+        self._persist_paper_trades_file()
         return trade
 
     def _update_open_paper(self, snapshots: dict[str, Any], psychology: dict[str, Any] | None = None, session_adj: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -1021,6 +1169,8 @@ class AutoTraderEngine:
                 self.lifecycle_events.extend(trade.lifecycle[-1:])
                 del self.open_paper[trade_id]
                 exits.append(trade.to_dict())
+        if exits:
+            self._persist_paper_trades_file()
         return exits
 
     def _learn_every_tick(self, payload: dict[str, Any], exits: list[dict[str, Any]]) -> None:
@@ -1118,16 +1268,25 @@ class AutoTraderEngine:
         session_net = float(session_report.get("netPnl") or 0)
         day_net = float(day_aggregate.get("netPnl") or 0)
         consecutive_losses = int(session_report.get("consecutiveLosses") or 0)
-        loss_pct = abs(day_net) / capital * 100 if capital > 0 and day_net < 0 else 0.0
+        day_loss_pct = abs(day_net) / capital * 100 if capital > 0 and day_net < 0 else 0.0
         session_loss_pct = abs(session_net) / capital * 100 if capital > 0 and session_net < 0 else 0.0
-        reasons = []
         day_loss_amount = abs(day_net) if day_net < 0 else 0.0
+        session_loss_amount = abs(session_net) if session_net < 0 else 0.0
+        reasons = []
         max_loss_amount = float(self.settings.paper_max_daily_loss_amount or 0)
+        max_loss_pct = float(self.settings.paper_max_daily_loss_pct)
         rotation_enabled = bool(self.settings.paper_session_rotation_enabled)
+        active_loss_amount = session_loss_amount if rotation_enabled else day_loss_amount
+        active_loss_pct = session_loss_pct if rotation_enabled else day_loss_pct
         if max_loss_amount > 0 and day_loss_amount >= max_loss_amount:
             reasons.append(f"paper daily loss ₹{day_loss_amount:,.0f} >= ₹{max_loss_amount:,.0f}")
-        elif loss_pct >= float(self.settings.paper_max_daily_loss_pct):
-            reasons.append(f"paper daily loss {loss_pct:.2f}% >= {self.settings.paper_max_daily_loss_pct:.2f}%")
+        elif day_loss_pct >= max_loss_pct:
+            reasons.append(f"paper daily loss {day_loss_pct:.2f}% >= {max_loss_pct:.2f}%")
+        if rotation_enabled:
+            if max_loss_amount > 0 and session_loss_amount >= max_loss_amount:
+                reasons.append(f"paper session loss ₹{session_loss_amount:,.0f} >= ₹{max_loss_amount:,.0f}")
+            elif session_loss_pct >= max_loss_pct:
+                reasons.append(f"paper session loss {session_loss_pct:.2f}% >= {max_loss_pct:.2f}%")
         if not rotation_enabled and consecutive_losses >= int(self.settings.paper_max_consecutive_losses):
             reasons.append(f"{consecutive_losses} consecutive paper losses")
         profit_target_pct = float(session_adj.get("sessionProfitStopPct") or self.settings.paper_daily_profit_stop_pct)
@@ -1139,16 +1298,20 @@ class AutoTraderEngine:
             "reason": "; ".join(reasons) if reasons else None,
             "netPnl": round(session_net, 2),
             "dayNetPnl": round(day_net, 2),
-            "lossPct": round(loss_pct, 2),
+            "lossPct": round(active_loss_pct, 2),
+            "dayLossPct": round(day_loss_pct, 2),
             "sessionLossPct": round(session_loss_pct, 2),
-            "lossAmount": round(day_loss_amount, 2),
+            "lossAmount": round(active_loss_amount, 2),
+            "dayLossAmount": round(day_loss_amount, 2),
+            "sessionLossAmount": round(session_loss_amount, 2),
             "consecutiveLosses": consecutive_losses,
             "sessionProfitPct": round(session_profit_pct, 2),
             "profitTargetPct": profit_target_pct,
-            "maxDailyLossPct": self.settings.paper_max_daily_loss_pct,
+            "maxDailyLossPct": max_loss_pct,
             "maxDailyLossAmount": max_loss_amount,
             "maxConsecutiveLosses": self.settings.paper_max_consecutive_losses,
             "sessionRotationEnabled": rotation_enabled,
+            "riskScope": "session" if rotation_enabled else "day",
         }
 
     def _psychology_exit_adjustments(self, stop_points: float, psychology: dict[str, Any] | None = None, session_max_hold: int | None = None) -> tuple[float, int, str | None]:
@@ -1199,7 +1362,7 @@ class AutoTraderEngine:
         chop_skips = sum(1 for reason in skipped_reasons if "chop" in reason.lower())
         duplicate_skips = sum(1 for reason in skipped_reasons if "duplicate" in reason.lower() or "cached" in reason.lower())
         consecutive_losses = int(risk_halt.get("consecutiveLosses") or 0)
-        loss_pct = float(risk_halt.get("lossPct") or 0)
+        loss_pct = float(risk_halt.get("sessionLossPct") if rotation_enabled else risk_halt.get("lossPct") or 0)
         recent_losses = [trade for trade in closed[-5:] if trade.pnl < 0]
         recent_wins = [trade for trade in closed[-5:] if trade.pnl > 0]
 

@@ -17,6 +17,7 @@ from app.services.ai_learning import ContinuousAILearner
 from app.services.auto_trader import AutoTraderEngine
 from app.services.historical_trainer import HistoricalTrainer
 from app.services.trading_control import TradingControl
+from app.services.upstox_auth import UpstoxAuthService
 from app.services.upstox_client import UpstoxClient
 
 
@@ -24,7 +25,15 @@ async def main() -> int:
     settings = get_settings()
     learner = ContinuousAILearner(settings.redis_url, settings.ai_learning_enabled, settings.ai_state_file)
     await learner.load()
-    auto = AutoTraderEngine(settings, TradingControl(settings), learner)
+    auth_service = UpstoxAuthService(
+        api_key=settings.upstox_api_key,
+        api_secret=settings.upstox_api_secret,
+        redirect_uri=settings.upstox_redirect_uri,
+        redis_url=settings.redis_url,
+        access_token=settings.upstox_access_token,
+        token_file=settings.upstox_token_file,
+    )
+    auto = AutoTraderEngine(settings, TradingControl(settings.redis_url), learner)
     result = await auto.backtest_and_train_missed_today(
         target_trades=500,
         horizon_ticks=60,
@@ -33,7 +42,7 @@ async def main() -> int:
     )
     historical = {"results": {}, "errors": {}}
     if settings.upstox_access_token or settings.upstox_api_key:
-        trainer = HistoricalTrainer(settings, UpstoxClient(settings), learner)
+        trainer = HistoricalTrainer(settings, UpstoxClient(settings.upstox_api_key, settings.upstox_api_secret, auth_service), learner)
         today = __import__("datetime").date.today().isoformat()
         for symbol in ["NIFTY", "SENSEX"]:
             try:
