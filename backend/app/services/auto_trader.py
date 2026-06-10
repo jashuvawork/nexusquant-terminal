@@ -885,6 +885,37 @@ class AutoTraderEngine:
             open_drive_allocation_boost=float(self.settings.open_drive_allocation_multiplier),
         )
 
+    def _passes_high_confidence_gate(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> tuple[bool, str]:
+        if not self.settings.paper_high_confidence_only:
+            return True, ""
+        runner = runner or candidate.get("runnerSignal") or {}
+        premium = float(candidate.get("lastPremium") or runner.get("premium") or runner.get("lastPremium") or 0)
+        min_ltp = float(self.settings.paper_min_premium_ltp or 0)
+        if min_ltp > 0 and premium < min_ltp:
+            return False, f"LTP ₹{premium:.0f} below high-confidence minimum ₹{min_ltp:.0f}"
+        if candidate.get("strategyType") == "EXPLOSIVE_RUNNER":
+            confidence = str(runner.get("confidence") or "").upper()
+            if confidence != "HIGH":
+                return False, f"runner confidence {confidence or 'LOW'}; HIGH confidence only"
+            score = float(runner.get("score") or candidate.get("tqs") or 0)
+            min_score = float(self.settings.paper_high_confidence_min_runner_score)
+            if score < min_score:
+                return False, f"runner score {score:.0f} below high-confidence minimum {min_score:.0f}"
+            if not runner.get("momentumAligned"):
+                return False, "high-confidence runners require momentum alignment"
+            return True, ""
+        min_tqs = int(self.settings.paper_high_confidence_min_tqs)
+        tqs = int(candidate.get("tqs") or 0)
+        if tqs < min_tqs:
+            return False, f"TQS {tqs} below high-confidence minimum {min_tqs}"
+        chart_bias = str(candidate.get("chartBias") or "")
+        side = str(candidate.get("side") or "")
+        if chart_bias in {"CALL", "PUT"} and side in {"CALL", "PUT"} and side != chart_bias:
+            return False, f"chart trend conflict: {chart_bias} bias vs {side} trade"
+        if chart_bias == "WAIT":
+            return False, "chart analysis says wait"
+        return True, ""
+
     def _is_momentum_aligned_runner(self, candidate: dict[str, Any], runner: dict[str, Any]) -> bool:
         side = str(candidate.get("side") or runner.get("side") or "").upper()
         bias = str(runner.get("directionalBias") or candidate.get("directionalBias") or "").upper()
@@ -933,9 +964,12 @@ class AutoTraderEngine:
         premium = float(candidate.get("lastPremium") or runner.get("premium") or runner.get("lastPremium") or 0)
         if premium <= 0:
             return False
-        premium_min = float(self.settings.explosive_runner_premium_min)
+        premium_min = float(self.settings.paper_min_premium_ltp if self.settings.paper_high_confidence_only else self.settings.explosive_runner_premium_min)
         premium_max = float(self.settings.explosive_runner_premium_max)
-        return premium_min <= premium <= premium_max
+        if not (premium_min <= premium <= premium_max):
+            return False
+        ok, _ = self._passes_high_confidence_gate(candidate, runner)
+        return ok
 
     def _session_entry_allowed(self, candidate: dict[str, Any], session_adj: dict[str, Any], market_phase: str | None = None) -> bool:
         if self._is_tradeable_explosive_runner(candidate, market_phase):
@@ -964,6 +998,9 @@ class AutoTraderEngine:
             reasons.append("missing premium")
         if candidate.get("chopBlocked") and not tradeable_runner:
             reasons.append("chop filter blocked")
+        high_conf_ok, high_conf_reason = self._passes_high_confidence_gate(candidate, runner)
+        if not high_conf_ok:
+            reasons.append(high_conf_reason)
         if tradeable_runner:
             volume_state = runner.get("volumeState") or {}
             if candidate.get("effectiveVolume", 0) <= 0 and not volume_state.get("volumeAvailable"):

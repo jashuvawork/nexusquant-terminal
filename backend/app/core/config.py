@@ -101,7 +101,11 @@ class Settings(BaseSettings):
     paper_session_rotation_enabled: bool = True
     paper_trading: bool = True
     paper_session_adjustments_enabled: bool = True
-    paper_always_trade_explosive_runners: bool = True
+    paper_high_confidence_only: bool = True
+    paper_min_premium_ltp: float = 100.0
+    paper_high_confidence_min_runner_score: float = 85.0
+    paper_high_confidence_min_tqs: int = 82
+    paper_always_trade_explosive_runners: bool = False
     paper_min_hold_before_chop_exit_seconds: int = 45
     paper_trading_respects_stop: bool = False
     shadow_trade_all_signals: bool = False
