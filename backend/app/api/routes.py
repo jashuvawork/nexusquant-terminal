@@ -184,6 +184,7 @@ async def deployment_status(
             "/api/institutional/readiness/NIFTY",
             "/api/market/news/NIFTY",
             "/api/auto-trader/status",
+            "/api/auto-trader/performance-analysis",
             "/api/auto-trader/reset",
             "/api/ai-learning/status",
             "/api/ai-learning/export",
@@ -909,6 +910,11 @@ async def auto_trader_daily_report(engine: AutoTraderEngine = Depends(get_auto_t
 @router.get("/auto-trader/paper-sessions")
 async def auto_trader_paper_sessions(limit: int = 50, engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
     return engine.paper_sessions_history(limit)
+
+
+@router.get("/auto-trader/performance-analysis")
+async def auto_trader_performance_analysis(engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
+    return engine.performance_analysis()
 
 
 @router.get("/risk/profiles")

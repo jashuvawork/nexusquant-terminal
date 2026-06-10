@@ -43,6 +43,32 @@ class PaperSessionManager:
     def current(self) -> dict[str, Any]:
         return dict(self._current or {})
 
+    def restore_current_session(self, session_id: str | None, *, started_at: str | None = None, reason: str = "restored_paper_trades") -> dict[str, Any]:
+        if not session_id:
+            return self.current()
+        if str((self._current or {}).get("id") or "") == session_id:
+            return self.current()
+        parts = session_id.split("-")
+        trading_day = _utc_day()
+        session_number = len(self.completed_today()) + 1
+        if len(parts) >= 7 and parts[0] == "paper" and parts[1] == "session":
+            trading_day = "-".join(parts[2:5])
+            try:
+                session_number = int(parts[5])
+            except ValueError:
+                session_number = len(self.completed_today()) + 1
+        self._current = {
+            "id": session_id,
+            "tradingDay": trading_day,
+            "sessionNumber": session_number,
+            "startedAt": started_at or _utc_now_iso(),
+            "startReason": reason,
+            "endedAt": None,
+            "endReason": None,
+            "status": "ACTIVE",
+        }
+        return dict(self._current)
+
     def _dedupe_sessions(self, sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen: set[str] = set()
         unique: list[dict[str, Any]] = []

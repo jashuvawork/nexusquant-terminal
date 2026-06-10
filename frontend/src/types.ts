@@ -468,7 +468,21 @@ export interface AutoTraderState {
     reasonForLosses: Record<string, number>;
   };
   paperSessions?: PaperSessionsState;
+  performanceAnalysis?: PaperPerformanceAnalysis;
   sessionRotation?: { rotated?: boolean; dailyHalt?: boolean; reason?: string; endedSession?: Record<string, unknown>; newSession?: Record<string, unknown> } | null;
+}
+
+export interface PaperPerformanceSummary {
+  paperTrades: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  grossProfit: number;
+  grossLoss: number;
+  netPnl: number;
+  profitFactor: number;
+  avgPnl: number;
+  maxDrawdown: number;
 }
 
 export interface PaperDayAggregate {
@@ -511,6 +525,42 @@ export interface PaperSessionsState {
   completedSessionsToday: PaperSessionRecord[];
   dayAggregate: PaperDayAggregate;
   totalCompletedSessions: number;
+}
+
+export interface PaperPerformanceAnalysis {
+  tradingDay: string;
+  target: {
+    capital: number;
+    dailyProfitAmount: number;
+    dailyProfitPct: number;
+    currentNetPnl: number;
+    remainingToTarget: number;
+  };
+  summary: PaperPerformanceSummary;
+  byBucket: Record<string, PaperPerformanceSummary>;
+  bySymbol: Record<string, PaperPerformanceSummary>;
+  bySide: Record<string, PaperPerformanceSummary>;
+  bestObserved: {
+    bucket?: string | null;
+    symbol?: string | null;
+    side?: string | null;
+  };
+  institutionalAggressionProfiles: {
+    recommendedBaseProfile: string;
+    why: string[];
+    bestObservedBucket?: string | null;
+    bestObservedSymbol?: string | null;
+    bestObservedSide?: string | null;
+    timeWindowSettings: Record<string, {
+      profile: string;
+      allocationPctMultiplier: number;
+      minEntryTqs: number;
+      minRunnerScore: number;
+      maxHoldSeconds: number;
+      note: string;
+    }>;
+  };
+  rulesApplied: string[];
 }
 
 export interface TerminalSnapshot {

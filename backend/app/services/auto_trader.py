@@ -13,7 +13,7 @@ from app.core.config import Settings
 from app.services.ai_learning import ContinuousAILearner
 from app.services.paper_session_manager import PaperSessionManager
 from app.services.risk_profiles import paper_session_adjustments
-from app.services.session import MarketPhase
+from app.services.session import IST, MarketPhase
 from app.services.trading_control import TradingControl
 
 
@@ -264,8 +264,9 @@ class AutoTraderEngine:
             "psychology": psychology,
             "onlineLearning": online_learning,
             "dailyReport": self.daily_report(),
-            "paperSessions": self.paper_sessions.status_payload(self._session_report()),
+            "paperSessions": self._paper_sessions_status(),
             "sessionRotation": rotation_event,
+            "performanceAnalysis": self.performance_analysis(),
         }
 
     def status(self) -> dict[str, Any]:
@@ -282,11 +283,50 @@ class AutoTraderEngine:
             "psychology": self._psychology_report([], [], self._paper_risk_halt()),
             "onlineLearning": self.learner.status_from_state(),
             "dailyReport": self.daily_report(),
-            "paperSessions": self.paper_sessions.status_payload(self._session_report()),
+            "paperSessions": self._paper_sessions_status(),
+            "performanceAnalysis": self.performance_analysis(),
         }
 
     def paper_sessions_history(self, limit: int = 50) -> dict[str, Any]:
         return self.paper_sessions.list_sessions(limit)
+
+    def performance_analysis(self) -> dict[str, Any]:
+        trades = self._today_closed_trades()
+        by_bucket = self._group_trade_summary(trades, lambda trade: self._trade_bucket(trade))
+        by_symbol = self._group_trade_summary(trades, lambda trade: trade.symbol or "UNKNOWN")
+        by_side = self._group_trade_summary(trades, lambda trade: trade.side or "UNKNOWN")
+        by_session = self._group_trade_summary(trades, lambda trade: trade.paper_session_id or "UNKNOWN")
+        best_bucket = self._best_summary_key(by_bucket)
+        best_symbol = self._best_summary_key(by_symbol)
+        best_side = self._best_summary_key(by_side)
+        day_summary = self._summarize_trades(trades)
+        target_amount = float(self.settings.paper_daily_profit_target_amount or 50000.0)
+        return {
+            "tradingDay": datetime.now(IST).date().isoformat(),
+            "target": {
+                "capital": float(self.settings.trading_capital_default or 0),
+                "dailyProfitAmount": target_amount,
+                "dailyProfitPct": round(target_amount / float(self.settings.trading_capital_default or 1) * 100, 2),
+                "currentNetPnl": day_summary["netPnl"],
+                "remainingToTarget": round(target_amount - float(day_summary["netPnl"] or 0), 2),
+            },
+            "summary": day_summary,
+            "byBucket": by_bucket,
+            "bySymbol": by_symbol,
+            "bySide": by_side,
+            "bySession": by_session,
+            "bestObserved": {
+                "bucket": best_bucket,
+                "symbol": best_symbol,
+                "side": best_side,
+            },
+            "institutionalAggressionProfiles": self._institutional_profile_recommendations(by_bucket, by_symbol, by_side),
+            "rulesApplied": [
+                "Use day-level paper PnL for profit factor; current-session report is separate.",
+                "Do not open duplicate paper trades on the same instrument key during cooldown.",
+                "Stop new paper entries after the configured daily profit target or daily loss guard is hit.",
+            ],
+        }
 
     def reset(self) -> dict[str, Any]:
         self.replay_buffer.clear()
@@ -346,12 +386,16 @@ class AutoTraderEngine:
             payload = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(payload, dict):
                 return
+            restored_session_id = str(payload.get("currentSessionId") or "")
+            restored_started_at: str | None = None
             for item in payload.get("open") or []:
                 if not isinstance(item, dict):
                     continue
                 trade = PaperTrade.from_dict(item)
                 if trade.status == "OPEN":
                     self.open_paper[trade.id] = trade
+                    if trade.paper_session_id == restored_session_id:
+                        restored_started_at = restored_started_at or trade.opened_at
             limit = max(100, int(self.settings.paper_trades_persist_limit))
             for item in (payload.get("closed") or [])[-limit:]:
                 if not isinstance(item, dict):
@@ -359,6 +403,10 @@ class AutoTraderEngine:
                 trade = PaperTrade.from_dict(item)
                 if trade.status == "EXITED":
                     self.closed_paper.append(trade)
+                    if trade.paper_session_id == restored_session_id:
+                        restored_started_at = restored_started_at or trade.opened_at
+            if restored_session_id:
+                self.paper_sessions.restore_current_session(restored_session_id, started_at=restored_started_at)
         except Exception:
             return
 
@@ -732,26 +780,174 @@ class AutoTraderEngine:
     def _session_report(self) -> dict[str, Any]:
         return self.paper_sessions.build_report(self._session_closed_trades())
 
+    def _trade_timestamp(self, trade: PaperTrade) -> datetime | None:
+        raw = trade.opened_at or trade.exited_at
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    def _today_closed_trades(self) -> list[PaperTrade]:
+        today = datetime.now(IST).date()
+        trades: list[PaperTrade] = []
+        for trade in self.closed_paper:
+            timestamp = self._trade_timestamp(trade)
+            if timestamp and timestamp.astimezone(IST).date() == today:
+                trades.append(trade)
+        return trades
+
+    def _trade_bucket(self, trade: PaperTrade) -> str:
+        timestamp = self._trade_timestamp(trade)
+        if not timestamp:
+            return "UNKNOWN"
+        local_time = timestamp.astimezone(IST).time()
+        if local_time.hour == 9 and local_time.minute >= 15 or local_time.hour == 10 and local_time.minute <= 30:
+            return "OPEN_DRIVE"
+        if (local_time.hour == 11 and local_time.minute >= 30) or local_time.hour == 12 or (local_time.hour == 13 and local_time.minute <= 30):
+            return "MIDDAY_CHOP"
+        if (local_time.hour == 14 and local_time.minute >= 30) or (local_time.hour == 15 and local_time.minute <= 15):
+            return "CLOSING_MOMENTUM"
+        if (local_time.hour > 9 or (local_time.hour == 9 and local_time.minute >= 15)) and (local_time.hour < 15 or (local_time.hour == 15 and local_time.minute <= 30)):
+            return "NORMAL"
+        return "OUTSIDE_LIVE"
+
+    def _summarize_trades(self, trades: list[PaperTrade]) -> dict[str, Any]:
+        wins = [trade for trade in trades if trade.pnl > 0]
+        losses = [trade for trade in trades if trade.pnl < 0]
+        gross_profit = sum(float(trade.pnl) for trade in wins)
+        gross_loss = abs(sum(float(trade.pnl) for trade in losses))
+        net = gross_profit - gross_loss
+        return {
+            "paperTrades": len(trades),
+            "wins": len(wins),
+            "losses": len(losses),
+            "winRate": round((len(wins) / len(trades)) * 100, 2) if trades else 0.0,
+            "grossProfit": round(gross_profit, 2),
+            "grossLoss": round(gross_loss, 2),
+            "netPnl": round(net, 2),
+            "profitFactor": round(gross_profit / gross_loss, 3) if gross_loss else round(gross_profit, 3),
+            "avgPnl": round(net / len(trades), 2) if trades else 0.0,
+            "maxDrawdown": round(self._max_drawdown([trade.pnl for trade in trades]), 2),
+        }
+
+    def _group_trade_summary(self, trades: list[PaperTrade], key_fn) -> dict[str, dict[str, Any]]:
+        groups: dict[str, list[PaperTrade]] = {}
+        for trade in trades:
+            groups.setdefault(str(key_fn(trade)), []).append(trade)
+        return {key: self._summarize_trades(items) for key, items in sorted(groups.items())}
+
+    def _best_summary_key(self, summaries: dict[str, dict[str, Any]]) -> str | None:
+        eligible = [
+            (key, value)
+            for key, value in summaries.items()
+            if int(value.get("paperTrades") or 0) >= 3
+        ]
+        if not eligible:
+            eligible = list(summaries.items())
+        if not eligible:
+            return None
+        return max(eligible, key=lambda item: (float(item[1].get("profitFactor") or 0), float(item[1].get("netPnl") or 0)))[0]
+
+    def _institutional_profile_recommendations(
+        self,
+        by_bucket: dict[str, dict[str, Any]],
+        by_symbol: dict[str, dict[str, Any]],
+        by_side: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        best_bucket = self._best_summary_key(by_bucket)
+        best_symbol = self._best_summary_key(by_symbol)
+        best_side = self._best_summary_key(by_side)
+        return {
+            "recommendedBaseProfile": "realistic_aggressive",
+            "why": [
+                "The target is 10% on 5L capital, so the system needs aggressive paper allocation only during proven windows.",
+                "Today only the strongest directional runner window produced target-sized profits; broad CALL scalping was negative.",
+                "Use safe gates in weak windows and size only when session/bias evidence agrees.",
+            ],
+            "bestObservedBucket": best_bucket,
+            "bestObservedSymbol": best_symbol,
+            "bestObservedSide": best_side,
+            "timeWindowSettings": {
+                "OPEN_DRIVE": {
+                    "profile": "safe_beginner",
+                    "allocationPctMultiplier": 0.45,
+                    "minEntryTqs": 88,
+                    "minRunnerScore": 92,
+                    "maxHoldSeconds": 90,
+                    "note": "Today open-drive overtraded and lost heavily; trade only A+ direction-aligned runners.",
+                },
+                "MIDDAY_CHOP": {
+                    "profile": "safe_beginner",
+                    "allocationPctMultiplier": 0.0,
+                    "minEntryTqs": 90,
+                    "minRunnerScore": 94,
+                    "maxHoldSeconds": 60,
+                    "note": "Pause normal entries; allow only exceptional runners if future code enables bypass.",
+                },
+                "NORMAL": {
+                    "profile": "balanced_pro",
+                    "allocationPctMultiplier": 0.6,
+                    "minEntryTqs": 84,
+                    "minRunnerScore": 90,
+                    "maxHoldSeconds": 120,
+                    "note": "Normal window was below breakeven today; reduce frequency and wait for side confirmation.",
+                },
+                "CLOSING_MOMENTUM": {
+                    "profile": "realistic_aggressive",
+                    "allocationPctMultiplier": 1.0,
+                    "minEntryTqs": 82,
+                    "minRunnerScore": 86,
+                    "maxHoldSeconds": 240,
+                    "note": "Best observed window today; allow aggressive paper runners only while daily risk/target guard is clear.",
+                },
+            },
+        }
+
+    def _day_aggregate_from_trades(self) -> dict[str, Any]:
+        trades = self._today_closed_trades()
+        summary = self._summarize_trades(trades)
+        session_ids = {trade.paper_session_id for trade in trades if trade.paper_session_id}
+        return {
+            "tradingDay": datetime.now(IST).date().isoformat(),
+            "sessionsCompleted": len(self.paper_sessions.completed_today()),
+            "sessionsIncludingCurrent": max(1, len(session_ids) + (0 if self.paper_sessions.current_id() in session_ids else 1)),
+            "paperTrades": summary["paperTrades"],
+            "wins": summary["wins"],
+            "losses": summary["losses"],
+            "grossProfit": summary["grossProfit"],
+            "grossLoss": summary["grossLoss"],
+            "netPnl": summary["netPnl"],
+            "profitFactor": summary["profitFactor"],
+        }
+
+    def _paper_sessions_status(self) -> dict[str, Any]:
+        payload = self.paper_sessions.status_payload(self._session_report())
+        payload["dayAggregate"] = self._day_aggregate_from_trades()
+        return payload
+
     def daily_report(self) -> dict[str, Any]:
         session_report = self._session_report()
-        day_aggregate = self.paper_sessions.day_aggregate()
-        trades = self._session_closed_trades()
+        day_aggregate = self._day_aggregate_from_trades()
+        trades = self._today_closed_trades()
+        day_report = self._summarize_trades(trades)
         losses = [trade for trade in trades if trade.pnl < 0]
-        max_drawdown = self._max_drawdown([trade.pnl for trade in trades])
         return {
             "totalSignals": len(self.lifecycle_events),
-            "paperTrades": session_report.get("paperTrades", 0),
+            "paperTrades": day_report["paperTrades"],
             "openTrades": len(self.open_paper),
-            "wins": session_report.get("wins", 0),
-            "losses": session_report.get("losses", 0),
-            "winRate": session_report.get("winRate", 0),
-            "grossProfit": session_report.get("grossProfit", 0),
-            "grossLoss": session_report.get("grossLoss", 0),
-            "profitFactor": session_report.get("profitFactor", 0),
-            "netPnl": session_report.get("netPnl", 0),
-            "maxDrawdown": round(max_drawdown, 2),
+            "wins": day_report["wins"],
+            "losses": day_report["losses"],
+            "winRate": day_report["winRate"],
+            "grossProfit": day_report["grossProfit"],
+            "grossLoss": day_report["grossLoss"],
+            "profitFactor": day_report["profitFactor"],
+            "netPnl": day_report["netPnl"],
+            "maxDrawdown": day_report["maxDrawdown"],
             "sessionId": session_report.get("sessionId"),
             "sessionNumber": session_report.get("sessionNumber"),
+            "currentSession": session_report,
             "dayAggregate": day_aggregate,
             "completedSessionsToday": len(self.paper_sessions.completed_today()),
             "reasonForLosses": self._loss_reasons(losses),
@@ -1050,6 +1246,12 @@ class AutoTraderEngine:
             return None
         if self._recent_signal_active(trade_id):
             return None
+        instrument_key = str(candidate.get("instrumentKey") or "")
+        instrument_signal_id = f"instrument:{instrument_key}" if instrument_key else ""
+        if instrument_key and any(str(trade.instrument_key or "") == instrument_key for trade in self.open_paper.values()):
+            return None
+        if instrument_signal_id and self._recent_signal_active(instrument_signal_id):
+            return None
         premium = float(candidate.get("lastPremium") or 0)
         lot_size = max(1, int(candidate.get("lotSize") or 1))
         desired_quantity = int(candidate.get("quantityEstimate") or lot_size)
@@ -1080,7 +1282,7 @@ class AutoTraderEngine:
             side=str(candidate.get("side")),
             strike=int(candidate.get("strike") or 0),
             expiry=str(candidate.get("expiry")),
-            instrument_key=candidate.get("instrumentKey"),
+            instrument_key=instrument_key or candidate.get("instrumentKey"),
             entry_price=premium,
             quantity=max(1, quantity),
             entry_tqs=int(candidate.get("tqs") or 0),
@@ -1166,6 +1368,8 @@ class AutoTraderEngine:
                 trade.lifecycle.append(LifecycleEvent("EXITED", trade.exited_at, reason, {"exit": current, "pnl": trade.pnl, "charges": charges}))
                 self.closed_paper.append(trade)
                 AutoTraderEngine._shared_recent_signal_times[trade_id] = monotonic()
+                if trade.instrument_key:
+                    AutoTraderEngine._shared_recent_signal_times[f"instrument:{trade.instrument_key}"] = monotonic()
                 self.lifecycle_events.extend(trade.lifecycle[-1:])
                 del self.open_paper[trade_id]
                 exits.append(trade.to_dict())
@@ -1264,7 +1468,7 @@ class AutoTraderEngine:
         session_adj = session_adj or {}
         capital = float(trading_capital or self.settings.trading_capital_default or 0)
         session_report = self._session_report()
-        day_aggregate = self.paper_sessions.day_aggregate()
+        day_aggregate = self._day_aggregate_from_trades()
         session_net = float(session_report.get("netPnl") or 0)
         day_net = float(day_aggregate.get("netPnl") or 0)
         consecutive_losses = int(session_report.get("consecutiveLosses") or 0)
@@ -1289,6 +1493,9 @@ class AutoTraderEngine:
                 reasons.append(f"paper session loss {session_loss_pct:.2f}% >= {max_loss_pct:.2f}%")
         if not rotation_enabled and consecutive_losses >= int(self.settings.paper_max_consecutive_losses):
             reasons.append(f"{consecutive_losses} consecutive paper losses")
+        daily_profit_target_amount = float(self.settings.paper_daily_profit_target_amount or 0)
+        if daily_profit_target_amount > 0 and day_net >= daily_profit_target_amount:
+            reasons.append(f"paper daily profit target INR {daily_profit_target_amount:,.0f} reached")
         profit_target_pct = float(session_adj.get("sessionProfitStopPct") or self.settings.paper_daily_profit_stop_pct)
         session_profit_pct = float(session_report.get("profitPct") or 0)
         if not rotation_enabled and session_profit_pct >= profit_target_pct:
@@ -1307,6 +1514,7 @@ class AutoTraderEngine:
             "consecutiveLosses": consecutive_losses,
             "sessionProfitPct": round(session_profit_pct, 2),
             "profitTargetPct": profit_target_pct,
+            "dailyProfitTargetAmount": daily_profit_target_amount,
             "maxDailyLossPct": max_loss_pct,
             "maxDailyLossAmount": max_loss_amount,
             "maxConsecutiveLosses": self.settings.paper_max_consecutive_losses,

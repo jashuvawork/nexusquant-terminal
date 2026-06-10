@@ -559,6 +559,8 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
   const replay = auto.replay ?? { storedSnapshots: 0 };
   const dailyReport = auto.dailyReport ?? { paperTrades: 0, openTrades: 0, wins: 0, losses: 0, winRate: 0, grossProfit: 0, grossLoss: 0, profitFactor: 0, maxDrawdown: 0, reasonForLosses: {}, totalSignals: 0 };
   const paperSessions = auto.paperSessions;
+  const performance = auto.performanceAnalysis;
+  const profilePlan = performance?.institutionalAggressionProfiles;
   const dayAggregate = paperSessions?.dayAggregate ?? dailyReport.dayAggregate;
   const currentSession = paperSessions?.currentSession;
   const completedSessions = paperSessions?.completedSessionsToday ?? [];
@@ -593,8 +595,41 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
         <div className="mt-4 rounded-2xl border border-slate-700 bg-slate-950/60 p-4 text-sm text-slate-300">
           Reset endpoint: <span className="font-mono text-cyan-200">/api/auto-trader/reset</span> | Status endpoint: <span className="font-mono text-cyan-200">/api/auto-trader/status</span>
           {paperSessions?.rotationEnabled && <> | Sessions: <span className="font-mono text-cyan-200">/api/auto-trader/paper-sessions</span></>}
+          {performance && <> | Analysis: <span className="font-mono text-cyan-200">/api/auto-trader/performance-analysis</span></>}
         </div>
       </Card>
+
+      {performance && profilePlan && (
+        <Card title="Paper Performance Optimizer" eyebrow="Best observed bucket, side, symbol and time-based aggression schedule">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            <MetricCard label="Daily Target" value={formatCurrency(performance.target.dailyProfitAmount)} helper={`${performance.target.dailyProfitPct}% of capital`} tone="emerald" />
+            <MetricCard label="Current Day Net" value={formatCurrency(performance.target.currentNetPnl)} helper={`Remaining ${formatCurrency(performance.target.remainingToTarget)}`} tone={performance.target.currentNetPnl >= 0 ? 'emerald' : 'rose'} />
+            <MetricCard label="Best Window" value={performance.bestObserved.bucket ?? 'n/a'} helper={`PF ${performance.bestObserved.bucket ? performance.byBucket[performance.bestObserved.bucket]?.profitFactor ?? 0 : 0}`} tone="cyan" />
+            <MetricCard label="Best Symbol / Side" value={`${performance.bestObserved.symbol ?? 'n/a'} ${performance.bestObserved.side ?? ''}`} helper="From today's paper trades" tone="violet" />
+            <MetricCard label="Base Profile" value={profilePlan.recommendedBaseProfile.replaceAll('_', ' ')} helper="Dynamic by time window" tone="amber" />
+          </div>
+          <div className="mt-4 grid gap-3 lg:grid-cols-2">
+            {Object.entries(profilePlan.timeWindowSettings).map(([bucket, plan]) => (
+              <div key={bucket} className="rounded-2xl border border-slate-700/70 bg-slate-950/50 p-4 text-sm text-slate-300">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-bold text-white">{bucket.replaceAll('_', ' ')}</span>
+                  <span className="text-cyan-200">{plan.profile.replaceAll('_', ' ')}</span>
+                </div>
+                <div className="mt-2 grid gap-2 text-xs sm:grid-cols-4">
+                  <span>Alloc x{plan.allocationPctMultiplier}</span>
+                  <span>TQS {plan.minEntryTqs}</span>
+                  <span>Runner {plan.minRunnerScore}</span>
+                  <span>Hold {plan.maxHoldSeconds}s</span>
+                </div>
+                <p className="mt-2 text-xs text-slate-400">{plan.note}</p>
+              </div>
+            ))}
+          </div>
+          <ul className="mt-4 list-disc space-y-1 pl-5 text-xs text-slate-300">
+            {profilePlan.why.map((item) => <li key={item}>{item}</li>)}
+          </ul>
+        </Card>
+      )}
 
       {paperSessions?.rotationEnabled && completedSessions.length > 0 && (
         <Card title="Completed Paper Sessions Today" eyebrow="Saved when 8 losses or profit target hits — fresh session starts immediately">
