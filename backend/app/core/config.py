@@ -77,10 +77,13 @@ class Settings(BaseSettings):
     paper_duplicate_signal_cooldown_seconds: int = 300
     paper_trade_allocation_pct: float = 12.0
     paper_min_trade_allocation_pct: float = 8.0
-    paper_max_daily_loss_pct: float = 2.0
-    paper_max_daily_loss_amount: float = 30000.0
+    paper_max_daily_loss_pct: float = 5.0
+    paper_max_daily_loss_amount: float = 25000.0
     paper_max_consecutive_losses: int = 3
     paper_daily_profit_target_amount: float = 50000.0
+    paper_daily_profit_target_worst_pct: float = 5.0
+    paper_daily_profit_target_medium_pct: float = 8.0
+    paper_daily_profit_target_good_pct: float = 10.0
     paper_daily_profit_stop_pct: float = 18.0
     paper_stop_points: float = 6.0
     paper_target_points: float = 12.0
@@ -106,8 +109,8 @@ class Settings(BaseSettings):
     paper_session_adjustments_enabled: bool = True
     paper_high_confidence_only: bool = True
     paper_min_premium_ltp: float = 150.0
-    paper_high_confidence_min_runner_score: float = 85.0
-    paper_high_confidence_min_tqs: int = 82
+    paper_high_confidence_min_runner_score: float = 90.0
+    paper_high_confidence_min_tqs: int = 86
     paper_always_trade_explosive_runners: bool = True
     paper_min_hold_before_chop_exit_seconds: int = 45
     paper_trading_respects_stop: bool = False

@@ -306,13 +306,17 @@ class AutoTraderEngine:
         best_symbol = self._best_summary_key(by_symbol)
         best_side = self._best_summary_key(by_side)
         day_summary = self._summarize_trades(trades)
-        target_amount = float(self.settings.paper_daily_profit_target_amount or 50000.0)
+        target_info = self._daily_profit_target()
+        target_amount = float(target_info.get("targetAmount") or self.settings.paper_daily_profit_target_amount or 50000.0)
         return {
             "tradingDay": datetime.now(IST).date().isoformat(),
             "target": {
                 "capital": float(self.settings.trading_capital_default or 0),
                 "dailyProfitAmount": target_amount,
-                "dailyProfitPct": round(target_amount / float(self.settings.trading_capital_default or 1) * 100, 2),
+                "dailyProfitPct": target_info.get("targetPct") or round(target_amount / float(self.settings.trading_capital_default or 1) * 100, 2),
+                "dayQuality": target_info.get("quality"),
+                "qualityReason": target_info.get("reason"),
+                "tiers": target_info.get("tiers"),
                 "currentNetPnl": day_summary["netPnl"],
                 "remainingToTarget": round(target_amount - float(day_summary["netPnl"] or 0), 2),
             },
@@ -751,7 +755,8 @@ class AutoTraderEngine:
         locked_profit = float(active["amount"]) * (self.settings.profit_lock_retain_pct / 100) if active else 0
         giveback = max(0, net - locked_profit) if active else 0
         block_new = bool(active and net <= locked_profit)
-        daily_target_amount = float(self.settings.paper_daily_profit_target_amount or 0)
+        daily_target = self._daily_profit_target()
+        daily_target_amount = float(daily_target.get("targetAmount") or self.settings.paper_daily_profit_target_amount or 0)
         daily_target_locked = bool(self.settings.paper_daily_target_lock_enabled and daily_target_amount > 0 and net >= daily_target_amount)
         if daily_target_locked:
             active = {"name": "daily_target", "pct": round(daily_target_amount / capital * 100, 2) if capital else 0, "amount": round(daily_target_amount, 2)}
@@ -787,6 +792,8 @@ class AutoTraderEngine:
             "sessionNumber": session_number,
             "sessionRotationEnabled": rotation_enabled,
             "dailyTargetAmount": daily_target_amount,
+            "dailyTargetPct": daily_target.get("targetPct"),
+            "dayQuality": daily_target.get("quality"),
             "dailyTargetLocked": daily_target_locked,
         }
 
@@ -999,8 +1006,88 @@ class AutoTraderEngine:
             total += pnl
         return round(total, 2), marks
 
+    def _paper_day_quality(self, snapshots: dict[str, Any] | None = None) -> dict[str, Any]:
+        day_summary = self._summarize_trades(self._today_closed_trades())
+        trades = int(day_summary.get("paperTrades") or 0)
+        net = float(day_summary.get("netPnl") or 0)
+        profit_factor = float(day_summary.get("profitFactor") or 0)
+        win_rate = float(day_summary.get("winRate") or 0)
+        scores: list[float] = []
+        runner_scores: list[float] = []
+        for snapshot in (snapshots or {}).values():
+            for candidate in (snapshot.get("suggestedTrades") or []) + (snapshot.get("explosiveRunnerWatchlist") or []) + (snapshot.get("paperPriceWatch") or []):
+                score = float(candidate.get("tqs") or candidate.get("score") or 0)
+                if score > 0:
+                    scores.append(score)
+                runner = candidate.get("runnerSignal") or candidate
+                runner_score = float(runner.get("score") or 0)
+                if runner_score > 0:
+                    runner_scores.append(runner_score)
+        avg_score = sum(scores) / len(scores) if scores else 0.0
+        best_score = max(scores or [0.0])
+        best_runner_score = max(runner_scores or [0.0])
+
+        quality = "WORST"
+        reason = "No proven edge yet; use 5% lock and only perfect setups."
+        if trades >= 5:
+            if net > 0 and profit_factor >= 1.5 and win_rate >= 40:
+                quality = "GOOD"
+                reason = "Positive paper day with profit factor above 1.5; try 10% target."
+            elif (net >= 0 and profit_factor >= 1.0) or win_rate >= 45:
+                quality = "MEDIUM"
+                reason = "Mixed but workable paper day; use 8% target."
+            else:
+                quality = "WORST"
+                reason = "Weak paper day or drawdown active; lock quickly at 5% if recovered."
+        elif best_runner_score >= 92 and avg_score >= 82:
+            quality = "GOOD"
+            reason = "Live signal quality is strong: runner score >= 92 and average score >= 82."
+        elif best_runner_score >= 88 or best_score >= 86:
+            quality = "MEDIUM"
+            reason = "Live signal quality is moderate; use 8% target."
+
+        return {
+            "quality": quality,
+            "reason": reason,
+            "metrics": {
+                "paperTrades": trades,
+                "netPnl": round(net, 2),
+                "profitFactor": profit_factor,
+                "winRate": win_rate,
+                "avgSignalScore": round(avg_score, 2),
+                "bestSignalScore": round(best_score, 2),
+                "bestRunnerScore": round(best_runner_score, 2),
+            },
+        }
+
+    def _daily_profit_target(self, snapshots: dict[str, Any] | None = None) -> dict[str, Any]:
+        quality = self._paper_day_quality(snapshots)
+        capital = float(self.settings.trading_capital_default or 0)
+        quality_key = str(quality.get("quality") or "WORST")
+        pct_by_quality = {
+            "GOOD": float(self.settings.paper_daily_profit_target_good_pct),
+            "MEDIUM": float(self.settings.paper_daily_profit_target_medium_pct),
+            "WORST": float(self.settings.paper_daily_profit_target_worst_pct),
+        }
+        pct = pct_by_quality.get(quality_key, float(self.settings.paper_daily_profit_target_worst_pct))
+        amount = capital * pct / 100 if capital > 0 else float(self.settings.paper_daily_profit_target_amount or 0)
+        return {
+            "quality": quality_key,
+            "reason": quality.get("reason"),
+            "targetPct": round(pct, 2),
+            "targetAmount": round(amount, 2),
+            "capital": capital,
+            "metrics": quality.get("metrics") or {},
+            "tiers": {
+                "worstPct": float(self.settings.paper_daily_profit_target_worst_pct),
+                "mediumPct": float(self.settings.paper_daily_profit_target_medium_pct),
+                "goodPct": float(self.settings.paper_daily_profit_target_good_pct),
+            },
+        }
+
     def _target_lock_status(self, snapshots: dict[str, Any] | None = None) -> dict[str, Any]:
-        target = float(self.settings.paper_daily_profit_target_amount or 0)
+        target_info = self._daily_profit_target(snapshots)
+        target = float(target_info.get("targetAmount") or 0)
         day_net = float(self._day_aggregate_from_trades().get("netPnl") or 0)
         open_marked_pnl, marks = self._open_marked_pnl(snapshots or {}) if snapshots else (0.0, {})
         projected = day_net + open_marked_pnl
@@ -1008,6 +1095,11 @@ class AutoTraderEngine:
         return {
             "enabled": enabled,
             "targetAmount": target,
+            "targetPct": target_info.get("targetPct"),
+            "dayQuality": target_info.get("quality"),
+            "qualityReason": target_info.get("reason"),
+            "qualityMetrics": target_info.get("metrics"),
+            "targetTiers": target_info.get("tiers"),
             "closedNetPnl": round(day_net, 2),
             "openMarkedPnl": round(open_marked_pnl, 2),
             "projectedNetPnl": round(projected, 2),
@@ -1196,6 +1288,12 @@ class AutoTraderEngine:
                 return False, f"runner score {score:.0f} below high-confidence minimum {min_score:.0f}"
             if not runner.get("momentumAligned"):
                 return False, "high-confidence runners require momentum alignment"
+            chart_bias = str(candidate.get("chartBias") or "")
+            side = str(candidate.get("side") or "")
+            if chart_bias in {"CALL", "PUT"} and side in {"CALL", "PUT"} and side != chart_bias:
+                return False, f"runner chart trend conflict: {chart_bias} bias vs {side} trade"
+            if chart_bias == "WAIT":
+                return False, "runner chart analysis says wait"
             return True, ""
         min_tqs = int(self.settings.paper_high_confidence_min_tqs)
         tqs = int(candidate.get("tqs") or 0)
@@ -1271,6 +1369,24 @@ class AutoTraderEngine:
             return True
         return False
 
+    def _side_performance_gate(self, candidate: dict[str, Any]) -> str | None:
+        trades = self._today_closed_trades()
+        if len(trades) < 10:
+            return None
+        by_side = self._group_trade_summary(trades, lambda trade: trade.side or "UNKNOWN")
+        side = str(candidate.get("side") or "")
+        side_summary = by_side.get(side)
+        best_side = self._best_summary_key(by_side)
+        best_summary = by_side.get(best_side or "")
+        if not side_summary or not best_summary or side == best_side:
+            return None
+        side_pf = float(side_summary.get("profitFactor") or 0)
+        side_net = float(side_summary.get("netPnl") or 0)
+        best_pf = float(best_summary.get("profitFactor") or 0)
+        if side_net < 0 and side_pf < 1 and best_pf >= 1.5:
+            return f"{side} side underperforming today; best observed side is {best_side} with PF {best_pf:.2f}"
+        return None
+
     def _pre_trade_quality(self, candidate: dict[str, Any], session_adj: dict[str, Any] | None = None, market_phase: str | None = None) -> dict[str, Any]:
         session_adj = session_adj or self._paper_session_settings({})
         premium = float(candidate.get("lastPremium") or 0)
@@ -1291,6 +1407,9 @@ class AutoTraderEngine:
             reasons.append("missing premium")
         if candidate.get("chopBlocked") and not tradeable_runner:
             reasons.append("chop filter blocked")
+        side_gate = self._side_performance_gate(candidate)
+        if side_gate:
+            reasons.append(side_gate)
         high_conf_ok, high_conf_reason = self._passes_high_confidence_gate(candidate, runner)
         if not high_conf_ok:
             reasons.append(high_conf_reason)
@@ -1590,7 +1709,8 @@ class AutoTraderEngine:
                 reasons.append(f"paper session loss {session_loss_pct:.2f}% >= {max_loss_pct:.2f}%")
         if not rotation_enabled and consecutive_losses >= int(self.settings.paper_max_consecutive_losses):
             reasons.append(f"{consecutive_losses} consecutive paper losses")
-        daily_profit_target_amount = float(self.settings.paper_daily_profit_target_amount or 0)
+        daily_target = self._daily_profit_target()
+        daily_profit_target_amount = float(daily_target.get("targetAmount") or self.settings.paper_daily_profit_target_amount or 0)
         if daily_profit_target_amount > 0 and day_net >= daily_profit_target_amount:
             reasons.append(f"paper daily profit target INR {daily_profit_target_amount:,.0f} reached")
         profit_target_pct = float(session_adj.get("sessionProfitStopPct") or self.settings.paper_daily_profit_stop_pct)
@@ -1612,6 +1732,8 @@ class AutoTraderEngine:
             "sessionProfitPct": round(session_profit_pct, 2),
             "profitTargetPct": profit_target_pct,
             "dailyProfitTargetAmount": daily_profit_target_amount,
+            "dailyProfitTargetPct": daily_target.get("targetPct"),
+            "dayQuality": daily_target.get("quality"),
             "maxDailyLossPct": max_loss_pct,
             "maxDailyLossAmount": max_loss_amount,
             "maxConsecutiveLosses": self.settings.paper_max_consecutive_losses,

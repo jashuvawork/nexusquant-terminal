@@ -495,6 +495,10 @@ export interface AutoTraderState {
   targetLock?: {
     enabled: boolean;
     targetAmount: number;
+    targetPct?: number;
+    dayQuality?: string;
+    qualityReason?: string;
+    qualityMetrics?: Record<string, number>;
     closedNetPnl: number;
     openMarkedPnl: number;
     projectedNetPnl: number;
@@ -571,6 +575,9 @@ export interface PaperPerformanceAnalysis {
     capital: number;
     dailyProfitAmount: number;
     dailyProfitPct: number;
+    dayQuality?: string;
+    qualityReason?: string;
+    tiers?: Record<string, number>;
     currentNetPnl: number;
     remainingToTarget: number;
   };
