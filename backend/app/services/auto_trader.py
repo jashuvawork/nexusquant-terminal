@@ -196,6 +196,9 @@ class AutoTraderEngine:
 
         pre_trade_psychology = self._psychology_report([], [], self._paper_risk_halt(trading_capital), session_adj)
         exits = self._update_open_paper(snapshots, pre_trade_psychology, session_adj)
+        target_lock = self._maybe_lock_daily_profit_target(snapshots)
+        if target_lock.get("lockedTrades"):
+            exits.extend(target_lock["lockedTrades"])
         rotation_event = self._maybe_rotate_paper_session(snapshots, session_adj, trading_capital)
         risk_halt = self._paper_risk_halt(trading_capital, session_adj)
         pre_trade_psychology = self._psychology_report([], [], risk_halt, session_adj)
@@ -266,6 +269,7 @@ class AutoTraderEngine:
             "dailyReport": self.daily_report(),
             "paperSessions": self._paper_sessions_status(),
             "sessionRotation": rotation_event,
+            "targetLock": target_lock,
             "performanceAnalysis": self.performance_analysis(),
         }
 
@@ -285,6 +289,7 @@ class AutoTraderEngine:
             "onlineLearning": self.learner.status_from_state(),
             "dailyReport": self.daily_report(),
             "paperSessions": self._paper_sessions_status(),
+            "targetLock": self._target_lock_status(),
             "performanceAnalysis": self.performance_analysis(),
         }
 
@@ -746,9 +751,18 @@ class AutoTraderEngine:
         locked_profit = float(active["amount"]) * (self.settings.profit_lock_retain_pct / 100) if active else 0
         giveback = max(0, net - locked_profit) if active else 0
         block_new = bool(active and net <= locked_profit)
-        if rotation_enabled and self.settings.paper_trading:
+        daily_target_amount = float(self.settings.paper_daily_profit_target_amount or 0)
+        daily_target_locked = bool(self.settings.paper_daily_target_lock_enabled and daily_target_amount > 0 and net >= daily_target_amount)
+        if daily_target_locked:
+            active = {"name": "daily_target", "pct": round(daily_target_amount / capital * 100, 2) if capital else 0, "amount": round(daily_target_amount, 2)}
+            locked_profit = max(locked_profit, daily_target_amount)
+            giveback = max(0, net - locked_profit)
+            block_new = True
+        if rotation_enabled and self.settings.paper_trading and not daily_target_locked:
             block_new = False
-        if rotation_enabled and active:
+        if daily_target_locked:
+            message = f"Daily INR {daily_target_amount:,.0f} paper target locked; no more paper entries today"
+        elif rotation_enabled and active:
             message = (
                 f"{active['name']} profit tier reached; session saves and restarts automatically"
                 if active["name"] == "primary"
@@ -772,6 +786,8 @@ class AutoTraderEngine:
             "sessionId": session_id,
             "sessionNumber": session_number,
             "sessionRotationEnabled": rotation_enabled,
+            "dailyTargetAmount": daily_target_amount,
+            "dailyTargetLocked": daily_target_locked,
         }
 
     def _session_closed_trades(self) -> list[PaperTrade]:
@@ -926,6 +942,8 @@ class AutoTraderEngine:
     def _paper_sessions_status(self) -> dict[str, Any]:
         payload = self.paper_sessions.status_payload(self._session_report())
         payload["dayAggregate"] = self._day_aggregate_from_trades()
+        payload["singleDailySession"] = self.settings.paper_single_daily_session
+        payload["targetLockEnabled"] = self.settings.paper_daily_target_lock_enabled
         return payload
 
     def daily_report(self) -> dict[str, Any]:
@@ -954,8 +972,86 @@ class AutoTraderEngine:
             "reasonForLosses": self._loss_reasons(losses),
         }
 
+    def _price_maps_from_snapshots(self, snapshots: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+        price_by_id: dict[str, dict[str, Any]] = {}
+        price_by_instrument: dict[str, dict[str, Any]] = {}
+        for snapshot in snapshots.values():
+            for candidate in snapshot.get("suggestedTrades") or []:
+                self._index_price_payload(candidate, price_by_id, price_by_instrument)
+            for candidate in snapshot.get("explosiveRunnerWatchlist") or []:
+                self._index_price_payload(candidate, price_by_id, price_by_instrument)
+            for candidate in snapshot.get("paperPriceWatch") or []:
+                self._index_price_payload(candidate, price_by_id, price_by_instrument)
+        return price_by_id, price_by_instrument
+
+    def _open_marked_pnl(self, snapshots: dict[str, Any]) -> tuple[float, dict[str, float]]:
+        price_by_id, price_by_instrument = self._price_maps_from_snapshots(snapshots)
+        marks: dict[str, float] = {}
+        total = 0.0
+        for trade_id, trade in self.open_paper.items():
+            candidate = price_by_id.get(trade_id) or price_by_instrument.get(str(trade.instrument_key or ""))
+            current = float((candidate or {}).get("lastPremium") or (candidate or {}).get("premium") or trade.entry_price or 0)
+            if current <= 0:
+                current = trade.entry_price
+            charges = self._charges_estimate(trade.entry_price, current, trade.quantity)
+            pnl = ((current - trade.entry_price - trade.spread_cost - trade.slippage_estimate) * trade.quantity) - charges
+            marks[trade_id] = round(pnl, 2)
+            total += pnl
+        return round(total, 2), marks
+
+    def _target_lock_status(self, snapshots: dict[str, Any] | None = None) -> dict[str, Any]:
+        target = float(self.settings.paper_daily_profit_target_amount or 0)
+        day_net = float(self._day_aggregate_from_trades().get("netPnl") or 0)
+        open_marked_pnl, marks = self._open_marked_pnl(snapshots or {}) if snapshots else (0.0, {})
+        projected = day_net + open_marked_pnl
+        enabled = bool(self.settings.paper_daily_target_lock_enabled and target > 0)
+        return {
+            "enabled": enabled,
+            "targetAmount": target,
+            "closedNetPnl": round(day_net, 2),
+            "openMarkedPnl": round(open_marked_pnl, 2),
+            "projectedNetPnl": round(projected, 2),
+            "remainingToTarget": round(target - projected, 2),
+            "locked": bool(enabled and day_net >= target),
+            "projectedLocked": bool(enabled and projected >= target),
+            "openMarks": marks,
+            "mode": "single_daily_session_target_lock" if self.settings.paper_single_daily_session else "session_rotation",
+        }
+
+    def _maybe_lock_daily_profit_target(self, snapshots: dict[str, Any]) -> dict[str, Any]:
+        status = self._target_lock_status(snapshots)
+        if not status.get("enabled") or not status.get("projectedLocked") or not self.open_paper:
+            return {**status, "lockedTrades": []}
+        price_by_id, price_by_instrument = self._price_maps_from_snapshots(snapshots)
+        locked: list[dict[str, Any]] = []
+        reason = f"daily paper target lock INR {float(status.get('targetAmount') or 0):,.0f}"
+        for trade_id, trade in list(self.open_paper.items()):
+            candidate = price_by_id.get(trade_id) or price_by_instrument.get(str(trade.instrument_key or ""))
+            current = float((candidate or {}).get("lastPremium") or (candidate or {}).get("premium") or trade.entry_price or 0)
+            if current <= 0:
+                current = trade.entry_price
+            trade.status = "EXITED"
+            trade.exit_price = current
+            trade.exit_reason = reason
+            trade.exited_at = datetime.now(timezone.utc).isoformat()
+            charges = self._charges_estimate(trade.entry_price, current, trade.quantity)
+            trade.charges_estimate = charges
+            trade.pnl = ((current - trade.entry_price - trade.spread_cost - trade.slippage_estimate) * trade.quantity) - charges
+            trade.lifecycle.append(LifecycleEvent("EXITED", trade.exited_at, reason, {"exit": current, "pnl": trade.pnl, "charges": charges, "targetLock": True}))
+            self.closed_paper.append(trade)
+            AutoTraderEngine._shared_recent_signal_times[trade_id] = monotonic()
+            if trade.instrument_key:
+                AutoTraderEngine._shared_recent_signal_times[f"instrument:{trade.instrument_key}"] = monotonic()
+            self.lifecycle_events.extend(trade.lifecycle[-1:])
+            del self.open_paper[trade_id]
+            locked.append(trade.to_dict())
+        if locked:
+            self._persist_paper_trades_file()
+        refreshed = self._target_lock_status(snapshots)
+        return {**refreshed, "lockedTrades": locked, "reason": reason}
+
     def _maybe_rotate_paper_session(self, snapshots: dict[str, Any], session_adj: dict[str, Any], trading_capital: float) -> dict[str, Any] | None:
-        if not self.settings.paper_session_rotation_enabled:
+        if self.settings.paper_single_daily_session or not self.settings.paper_session_rotation_enabled:
             return None
         session_report = self._session_report()
         decision = self.paper_sessions.evaluate_rotation(session_report, session_adj)

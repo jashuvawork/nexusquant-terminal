@@ -99,7 +99,9 @@ class Settings(BaseSettings):
     paper_sessions_persist_limit: int = 2000
     paper_trades_file: str = "/opt/nexusquant/paper_trades.json"
     paper_trades_persist_limit: int = 2000
-    paper_session_rotation_enabled: bool = True
+    paper_session_rotation_enabled: bool = False
+    paper_single_daily_session: bool = True
+    paper_daily_target_lock_enabled: bool = True
     paper_trading: bool = True
     paper_session_adjustments_enabled: bool = True
     paper_high_confidence_only: bool = True

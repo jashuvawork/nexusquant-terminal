@@ -492,6 +492,19 @@ export interface AutoTraderState {
   };
   paperSessions?: PaperSessionsState;
   performanceAnalysis?: PaperPerformanceAnalysis;
+  targetLock?: {
+    enabled: boolean;
+    targetAmount: number;
+    closedNetPnl: number;
+    openMarkedPnl: number;
+    projectedNetPnl: number;
+    remainingToTarget: number;
+    locked: boolean;
+    projectedLocked: boolean;
+    mode: string;
+    reason?: string;
+    lockedTrades?: PaperTrade[];
+  };
   sessionRotation?: { rotated?: boolean; dailyHalt?: boolean; reason?: string; endedSession?: Record<string, unknown>; newSession?: Record<string, unknown> } | null;
 }
 
@@ -544,6 +557,8 @@ export interface PaperSessionRecord {
 
 export interface PaperSessionsState {
   rotationEnabled: boolean;
+  singleDailySession?: boolean;
+  targetLockEnabled?: boolean;
   currentSession: { id?: string; sessionNumber?: number; startedAt?: string; status?: string; report?: Record<string, unknown> };
   completedSessionsToday: PaperSessionRecord[];
   dayAggregate: PaperDayAggregate;

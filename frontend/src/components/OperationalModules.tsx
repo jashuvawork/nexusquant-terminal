@@ -561,6 +561,7 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
   const paperSessions = auto.paperSessions;
   const performance = auto.performanceAnalysis;
   const profilePlan = performance?.institutionalAggressionProfiles;
+  const targetLock = auto.targetLock;
   const dayAggregate = paperSessions?.dayAggregate ?? dailyReport.dayAggregate;
   const currentSession = paperSessions?.currentSession;
   const completedSessions = paperSessions?.completedSessionsToday ?? [];
@@ -579,6 +580,9 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
           <MetricCard label="Replay Buffer" value={replay.storedSnapshots} helper="Stored snapshots" tone="violet" />
           <MetricCard label="Learning Samples" value={auto.onlineLearning.samples} helper={`Score ${auto.onlineLearning.learningScore ?? auto.onlineLearning.score ?? 0}`} tone="emerald" />
           <MetricCard label="Profit Lock" value={auto.profitLock?.activeTier ? `${auto.profitLock.activeTier.pct}%` : 'WAIT'} helper={auto.profitLock?.message ?? 'No locked tier'} tone={auto.profitLock?.blockNewTrades ? 'rose' : 'amber'} />
+          {targetLock?.enabled && (
+            <MetricCard label="50K Daily Lock" value={targetLock.locked || targetLock.projectedLocked ? 'LOCKED' : formatCurrency(targetLock.remainingToTarget)} helper={`Projected ${formatCurrency(targetLock.projectedNetPnl)} | ${targetLock.mode.replaceAll('_', ' ')}`} tone={targetLock.locked || targetLock.projectedLocked ? 'emerald' : 'amber'} />
+          )}
           {paperSessions?.rotationEnabled && (
             <>
               <MetricCard label="Session" value={`#${currentSession?.sessionNumber ?? dailyReport.sessionNumber ?? 1}`} helper={currentSession?.id ? `${currentSession.id.slice(-12)}` : 'Active paper session'} tone="cyan" />
