@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -85,6 +86,7 @@ async def health() -> dict[str, str | bool]:
         "status": "ok",
         "service": settings.app_name,
         "environment": settings.environment,
+        "backendCommit": os.getenv("NEXUSQUANT_BACKEND_COMMIT", "unknown"),
         "upstoxConfigured": token_status["configured"],
         "upstoxTokenPresent": token_status["hasToken"],
     }

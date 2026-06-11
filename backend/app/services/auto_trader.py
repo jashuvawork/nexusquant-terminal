@@ -310,6 +310,8 @@ class AutoTraderEngine:
         day_summary = self._summarize_trades(trades)
         target_info = self._daily_profit_target()
         target_amount = float(target_info.get("targetAmount") or self.settings.paper_daily_profit_target_amount or 50000.0)
+        rolling_proof = self._rolling_proof()
+        recent_postmortems = [self._trade_postmortem(trade) for trade in trades[-10:]]
         return {
             "tradingDay": datetime.now(IST).date().isoformat(),
             "target": {
@@ -332,6 +334,10 @@ class AutoTraderEngine:
                 "symbol": best_symbol,
                 "side": best_side,
             },
+            "rollingProof": rolling_proof,
+            "liveReadiness": self._live_readiness(rolling_proof),
+            "recentPostmortems": recent_postmortems,
+            "breadthReadiness": self._breadth_readiness(),
             "institutionalAggressionProfiles": self._institutional_profile_recommendations(by_bucket, by_symbol, by_side),
             "rulesApplied": [
                 "Use day-level paper PnL for profit factor; current-session report is separate.",
@@ -875,6 +881,112 @@ class AutoTraderEngine:
         if not eligible:
             return None
         return max(eligible, key=lambda item: (float(item[1].get("profitFactor") or 0), float(item[1].get("netPnl") or 0)))[0]
+
+    def _rolling_proof(self, limit: int | None = None) -> dict[str, Any]:
+        limit = int(limit or self.settings.paper_live_readiness_min_trades)
+        trades = list(self.closed_paper)[-limit:]
+        summary = self._summarize_trades(trades)
+        capital = float(self.settings.trading_capital_default or 0)
+        max_drawdown_pct = (float(summary.get("maxDrawdown") or 0) / capital * 100) if capital > 0 else 0.0
+        avg_win = (float(summary.get("grossProfit") or 0) / int(summary.get("wins") or 1)) if int(summary.get("wins") or 0) else 0.0
+        avg_loss = (float(summary.get("grossLoss") or 0) / int(summary.get("losses") or 1)) if int(summary.get("losses") or 0) else 0.0
+        return {
+            **summary,
+            "windowTrades": limit,
+            "sampleComplete": len(trades) >= limit,
+            "maxDrawdownPct": round(max_drawdown_pct, 2),
+            "avgWin": round(avg_win, 2),
+            "avgLoss": round(avg_loss, 2),
+            "expectancy": round((float(summary.get("netPnl") or 0) / len(trades)), 2) if trades else 0.0,
+        }
+
+    def _live_readiness(self, rolling: dict[str, Any]) -> dict[str, Any]:
+        checks = [
+            {
+                "name": "Sample size",
+                "passed": bool(rolling.get("sampleComplete")),
+                "value": rolling.get("paperTrades"),
+                "required": self.settings.paper_live_readiness_min_trades,
+            },
+            {
+                "name": "Profit factor",
+                "passed": float(rolling.get("profitFactor") or 0) >= float(self.settings.paper_live_readiness_min_profit_factor),
+                "value": rolling.get("profitFactor"),
+                "required": self.settings.paper_live_readiness_min_profit_factor,
+            },
+            {
+                "name": "Win rate",
+                "passed": float(rolling.get("winRate") or 0) >= float(self.settings.paper_live_readiness_min_win_rate_pct),
+                "value": rolling.get("winRate"),
+                "required": self.settings.paper_live_readiness_min_win_rate_pct,
+            },
+            {
+                "name": "Max drawdown",
+                "passed": float(rolling.get("maxDrawdownPct") or 100) <= float(self.settings.paper_live_readiness_max_drawdown_pct),
+                "value": rolling.get("maxDrawdownPct"),
+                "required": f"<= {self.settings.paper_live_readiness_max_drawdown_pct}",
+            },
+            {
+                "name": "Average win/loss",
+                "passed": float(rolling.get("avgWin") or 0) > float(rolling.get("avgLoss") or 0),
+                "value": {"avgWin": rolling.get("avgWin"), "avgLoss": rolling.get("avgLoss")},
+                "required": "avgWin > avgLoss",
+            },
+        ]
+        passed = all(bool(check["passed"]) for check in checks)
+        return {
+            "ready": passed,
+            "mode": "PAPER_ONLY" if not passed else "SMALL_SIZE_REVIEW_REQUIRED",
+            "checks": checks,
+            "message": "Not live ready. Keep live trading disabled until all rolling proof gates pass." if not passed else "Paper proof passed; only then consider tiny live pilot with manual approval.",
+        }
+
+    def _trade_postmortem(self, trade: PaperTrade) -> dict[str, Any]:
+        bucket = self._trade_bucket(trade)
+        pnl = float(trade.pnl or 0)
+        reason = trade.exit_reason or "unknown"
+        quality = "GOOD_WIN" if pnl > 0 else "CONTROLLED_LOSS" if abs(pnl) <= float(self.settings.paper_max_trade_loss_amount or 5000) else "OVERSIZED_LOSS"
+        findings: list[str] = []
+        actions: list[str] = []
+        if pnl < 0 and "momentum decay" in reason:
+            findings.append("Momentum failed after entry.")
+            actions.append("Require stronger breadth and premium velocity before next similar entry.")
+        if pnl < 0 and abs(pnl) > float(self.settings.paper_max_trade_loss_amount or 5000):
+            findings.append("Loss exceeded intended per-trade cap.")
+            actions.append("Reduce lots using stop-risk sizing before the next paper session.")
+        if bucket == "MIDDAY_CHOP":
+            findings.append("Trade occurred in chop-prone time window.")
+            actions.append("Keep midday normal trades blocked.")
+        if trade.side == "CALL":
+            findings.append("CALL side has recently underperformed in paper data.")
+            actions.append("Require bullish breadth and chart alignment for any CALL.")
+        if pnl > 0:
+            findings.append("Trade contributed positively to paper proof.")
+            actions.append("Preserve the same entry discipline; do not increase size after one win.")
+        return {
+            "id": trade.id,
+            "symbol": trade.symbol,
+            "side": trade.side,
+            "bucket": bucket,
+            "pnl": round(pnl, 2),
+            "exitReason": reason,
+            "quality": quality,
+            "findings": findings or ["No special issue detected."],
+            "nextActions": actions or ["Continue monitoring under current rules."],
+        }
+
+    def _breadth_readiness(self) -> dict[str, Any]:
+        snapshot = self._latest_market_snapshot or {}
+        count = int(snapshot.get("count") or 0)
+        required = int(self.settings.market_breadth_recommended_count)
+        return {
+            "available": bool(snapshot.get("available")),
+            "count": count,
+            "recommendedCount": required,
+            "sufficient": count >= required,
+            "breadth": snapshot.get("breadth") or {},
+            "message": "Breadth coverage is institutional-grade." if count >= required else "Add more NIFTY/BankNifty/sector instruments; current breadth coverage is too small for full confidence.",
+        }
 
     def _institutional_profile_recommendations(
         self,

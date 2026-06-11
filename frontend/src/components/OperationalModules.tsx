@@ -620,7 +620,23 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
             <MetricCard label="Best Window" value={performance.bestObserved.bucket ?? 'n/a'} helper={`PF ${performance.bestObserved.bucket ? performance.byBucket[performance.bestObserved.bucket]?.profitFactor ?? 0 : 0}`} tone="cyan" />
             <MetricCard label="Best Symbol / Side" value={`${performance.bestObserved.symbol ?? 'n/a'} ${performance.bestObserved.side ?? ''}`} helper="From today's paper trades" tone="violet" />
             <MetricCard label="Base Profile" value={profilePlan.recommendedBaseProfile.replaceAll('_', ' ')} helper="Dynamic by time window" tone="amber" />
+            {performance.rollingProof && <MetricCard label="Rolling Proof PF" value={performance.rollingProof.profitFactor} helper={`${performance.rollingProof.paperTrades}/${performance.rollingProof.windowTrades} trades | DD ${performance.rollingProof.maxDrawdownPct}%`} tone={performance.rollingProof.profitFactor >= 2 ? 'emerald' : 'amber'} />}
+            {performance.liveReadiness && <MetricCard label="Live Readiness" value={performance.liveReadiness.ready ? 'PASS' : 'NO'} helper={performance.liveReadiness.mode.replaceAll('_', ' ')} tone={performance.liveReadiness.ready ? 'emerald' : 'rose'} />}
+            {performance.breadthReadiness && <MetricCard label="Breadth Coverage" value={`${performance.breadthReadiness.count}/${performance.breadthReadiness.recommendedCount}`} helper={performance.breadthReadiness.sufficient ? 'Institutional-grade' : 'Add more instruments'} tone={performance.breadthReadiness.sufficient ? 'emerald' : 'amber'} />}
           </div>
+          {performance.liveReadiness && (
+            <div className="mt-4 rounded-2xl border border-slate-700 bg-slate-950/60 p-4 text-xs text-slate-300">
+              <p className="font-bold uppercase tracking-[0.18em] text-cyan-200">100-trade proof gate</p>
+              <p className="mt-2">{performance.liveReadiness.message}</p>
+              <div className="mt-3 grid gap-2 md:grid-cols-2">
+                {performance.liveReadiness.checks.map((check) => (
+                  <div key={check.name} className={check.passed ? 'text-emerald-300' : 'text-rose-300'}>
+                    {check.passed ? 'PASS' : 'FAIL'} {check.name}: {JSON.stringify(check.value)} / {JSON.stringify(check.required)}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {profilePlan.bestTiming && (
             <div className="mt-4 rounded-2xl border border-emerald-300/20 bg-emerald-300/10 p-4 text-sm text-emerald-100">
               <p className="text-xs font-bold uppercase tracking-[0.22em] text-emerald-200">Best timing profile</p>
@@ -651,6 +667,20 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
           <ul className="mt-4 list-disc space-y-1 pl-5 text-xs text-slate-300">
             {profilePlan.why.map((item) => <li key={item}>{item}</li>)}
           </ul>
+          {performance.recentPostmortems && performance.recentPostmortems.length > 0 && (
+            <div className="mt-4 rounded-2xl border border-slate-700 bg-slate-950/60 p-4 text-xs text-slate-300">
+              <p className="font-bold uppercase tracking-[0.18em] text-violet-200">Recent AI postmortems</p>
+              <div className="mt-3 space-y-2">
+                {performance.recentPostmortems.slice(-3).reverse().map((item) => (
+                  <div key={item.id} className="rounded-xl border border-slate-800 p-3">
+                    <p className={item.pnl >= 0 ? 'text-emerald-300' : 'text-rose-300'}>{item.symbol} {item.side} | {formatCurrency(item.pnl)} | {item.quality}</p>
+                    <p className="mt-1 text-slate-400">{item.findings.join(' | ')}</p>
+                    <p className="mt-1 text-cyan-200">{item.nextActions.join(' | ')}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </Card>
       )}
 

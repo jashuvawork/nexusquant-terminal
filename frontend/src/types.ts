@@ -586,6 +586,39 @@ export interface PaperPerformanceAnalysis {
   byBucket: Record<string, PaperPerformanceSummary>;
   bySymbol: Record<string, PaperPerformanceSummary>;
   bySide: Record<string, PaperPerformanceSummary>;
+  rollingProof?: PaperPerformanceSummary & {
+    windowTrades: number;
+    sampleComplete: boolean;
+    maxDrawdownPct: number;
+    avgWin: number;
+    avgLoss: number;
+    expectancy: number;
+  };
+  liveReadiness?: {
+    ready: boolean;
+    mode: string;
+    message: string;
+    checks: Array<{ name: string; passed: boolean; value: unknown; required: unknown }>;
+  };
+  recentPostmortems?: Array<{
+    id: string;
+    symbol: string;
+    side: string;
+    bucket: string;
+    pnl: number;
+    exitReason: string;
+    quality: string;
+    findings: string[];
+    nextActions: string[];
+  }>;
+  breadthReadiness?: {
+    available: boolean;
+    count: number;
+    recommendedCount: number;
+    sufficient: boolean;
+    breadth: Record<string, unknown>;
+    message: string;
+  };
   bestObserved: {
     bucket?: string | null;
     symbol?: string | null;

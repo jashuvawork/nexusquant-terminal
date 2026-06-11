@@ -93,6 +93,11 @@ class Settings(BaseSettings):
     paper_breadth_min_count: int = 2
     paper_breadth_bullish_threshold: float = 60.0
     paper_breadth_bearish_threshold: float = 40.0
+    market_breadth_recommended_count: int = 20
+    paper_live_readiness_min_trades: int = 100
+    paper_live_readiness_min_profit_factor: float = 2.0
+    paper_live_readiness_min_win_rate_pct: float = 50.0
+    paper_live_readiness_max_drawdown_pct: float = 5.0
     paper_daily_profit_target_amount: float = 50000.0
     paper_daily_profit_target_worst_pct: float = 5.0
     paper_daily_profit_target_medium_pct: float = 8.0

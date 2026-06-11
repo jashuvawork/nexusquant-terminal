@@ -165,6 +165,7 @@ async def deployment_status(
         "runtimeValidation": engine.validate_runtime(),
         "optimizerValidation": get_strategy_optimizer(settings, get_upstox(settings, auth_service)).validate_runtime(),
         "environment": settings.environment,
+        "backendCommit": os.getenv("NEXUSQUANT_BACKEND_COMMIT"),
         "railwayCommit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
         "railwayService": os.getenv("RAILWAY_SERVICE_NAME"),
         "upstoxConfigured": token_status["configured"],
