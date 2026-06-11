@@ -480,6 +480,7 @@ export interface AutoTraderState {
     winRate: number;
     grossProfit: number;
     grossLoss: number;
+    netPnl?: number;
     profitFactor: number;
     maxDrawdown: number;
     sessionId?: string;

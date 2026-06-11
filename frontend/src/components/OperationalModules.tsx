@@ -566,7 +566,11 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
   const currentSession = paperSessions?.currentSession;
   const completedSessions = paperSessions?.completedSessionsToday ?? [];
   const openPnl = openPaperTrades.reduce((sum, trade) => sum + (trade.pnl ?? 0), 0);
-  const closedPnl = closedPaperTrades.reduce((sum, trade) => sum + (trade.pnl ?? 0), 0);
+  const recentClosedPnl = closedPaperTrades.reduce((sum, trade) => sum + (trade.pnl ?? 0), 0);
+  const dayNetPnl = dailyReport.netPnl ?? dayAggregate?.netPnl ?? 0;
+  const dayClosedTrades = dailyReport.paperTrades ?? dayAggregate?.paperTrades ?? closedPaperTrades.length;
+  const dayProfitFactor = dailyReport.profitFactor ?? dayAggregate?.profitFactor ?? 0;
+  const dayWinRate = dailyReport.winRate ?? 0;
 
   return (
     <div className="space-y-4">
@@ -574,8 +578,8 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <MetricCard label="Paper Mode" value={auto.paperTrading ? 'ON' : 'OFF'} helper={auto.shadowTradeAllSignals ? 'Shadow all signals' : 'Quality-gated'} tone={auto.paperTrading ? 'emerald' : 'amber'} />
           <MetricCard label="Open Paper Trades" value={openPaperTrades.length} helper={`Open PnL ${formatCurrency(openPnl)}`} tone="cyan" />
-          <MetricCard label="Closed Paper Trades" value={closedPaperTrades.length} helper={`Closed PnL ${formatCurrency(closedPnl)}`} tone="violet" />
-          <MetricCard label="Profit Factor" value={dailyReport.profitFactor} helper={`${dailyReport.winRate}% win rate`} tone="emerald" />
+          <MetricCard label="Day Paper Trades" value={dayClosedTrades} helper={`Day PnL ${formatCurrency(dayNetPnl)}`} tone={dayNetPnl >= 0 ? 'emerald' : 'rose'} />
+          <MetricCard label="Day Profit Factor" value={dayProfitFactor} helper={`${dayWinRate}% win rate`} tone={dayProfitFactor >= 2 ? 'emerald' : dayProfitFactor >= 1 ? 'amber' : 'rose'} />
           <MetricCard label="Signals / Tick" value={auto.signalsThisTick ?? 0} helper={`${skippedSignals.length} skipped shown`} tone="cyan" />
           <MetricCard label="Replay Buffer" value={replay.storedSnapshots} helper="Stored snapshots" tone="violet" />
           <MetricCard label="Learning Samples" value={auto.onlineLearning.samples} helper={`Score ${auto.onlineLearning.learningScore ?? auto.onlineLearning.score ?? 0}`} tone="emerald" />
@@ -598,6 +602,7 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
         )}
         <div className="mt-4 rounded-2xl border border-slate-700 bg-slate-950/60 p-4 text-sm text-slate-300">
           Reset endpoint: <span className="font-mono text-cyan-200">/api/auto-trader/reset</span> | Status endpoint: <span className="font-mono text-cyan-200">/api/auto-trader/status</span>
+          {' '}| Recent closed shown: <span className="font-mono text-cyan-200">{closedPaperTrades.length}</span> ({formatCurrency(recentClosedPnl)})
           {paperSessions?.rotationEnabled && <> | Sessions: <span className="font-mono text-cyan-200">/api/auto-trader/paper-sessions</span></>}
           {performance && <> | Analysis: <span className="font-mono text-cyan-200">/api/auto-trader/performance-analysis</span></>}
         </div>
