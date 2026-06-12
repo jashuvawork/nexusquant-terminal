@@ -84,13 +84,13 @@ class Settings(BaseSettings):
     open_drive_allocation_multiplier: float = 1.85
     max_paper_trade_seconds: int = 240
     paper_duplicate_signal_cooldown_seconds: int = 150
-    paper_trade_allocation_pct: float = 25.0
-    paper_min_trade_allocation_pct: float = 12.0
+    paper_trade_allocation_pct: float = 40.0
+    paper_min_trade_allocation_pct: float = 20.0
     paper_max_daily_loss_pct: float = 5.0
-    paper_max_daily_loss_amount: float = 12500.0
+    paper_max_daily_loss_amount: float = 20000.0
     paper_max_consecutive_losses: int = 2
     paper_max_trade_loss_pct: float = 1.0
-    paper_max_trade_loss_amount: float = 3000.0
+    paper_max_trade_loss_amount: float = 7500.0
     paper_max_open_trades: int = 2
     paper_max_open_same_side_trades: int = 2
     paper_same_side_entry_cooldown_seconds: int = 600
