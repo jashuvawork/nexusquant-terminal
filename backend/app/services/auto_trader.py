@@ -1583,13 +1583,17 @@ class AutoTraderEngine:
         snapshot = self._latest_market_snapshot or {}
         breadth = snapshot.get("breadth") or {}
         count = int(snapshot.get("count") or 0)
-        score = float(breadth.get("score") or 50.0)
+        # Prefer stock-level score (50 stocks) over index-level (16 indices) when available
+        stock_score = breadth.get("stockScore")
+        raw_score = float(stock_score if stock_score is not None else breadth.get("score") or 50.0)
+        score = raw_score
         bias = str(breadth.get("bias") or "NEUTRAL")
         enabled = bool(self.settings.paper_breadth_filter_enabled)
         enough_data = count >= int(self.settings.paper_breadth_min_count)
         side = str(side or "").upper()
         aligned = True
         reason = "market breadth neutral or unavailable"
+        sector_breadth = snapshot.get("sectorBreadth") or {}
         if enabled and enough_data:
             bullish = score >= float(self.settings.paper_breadth_bullish_threshold)
             bearish = score <= float(self.settings.paper_breadth_bearish_threshold)
@@ -1599,15 +1603,19 @@ class AutoTraderEngine:
             elif side == "PUT":
                 aligned = bearish
                 reason = "PUT aligned with bearish breadth" if aligned else f"PUT rejected: breadth not bearish ({score:.1f})"
+        stock_count = int(snapshot.get("stockCount") or 0)
         return {
             "available": bool(snapshot.get("available")) and enough_data,
             "enabled": enabled,
             "aligned": aligned,
             "score": round(score, 2),
+            "stockScore": round(raw_score, 2) if stock_score is not None else None,
             "bias": bias,
             "count": count,
+            "stockCount": stock_count,
             "reason": reason,
             "source": snapshot.get("source") or "market_snapshot_cache",
+            "sectorBreadth": sector_breadth,
         }
 
     def _ai_trade_quality_prediction(
