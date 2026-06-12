@@ -1787,6 +1787,9 @@ class AutoTraderEngine:
             quantity = desired_quantity
         if quantity < lot_size:
             return None
+        min_viable_lots = 3
+        if quantity < lot_size * min_viable_lots:
+            return None
         charges = self._charges_estimate(premium, premium, max(1, quantity))
         trade = PaperTrade(
             id=trade_id,
@@ -1873,7 +1876,7 @@ class AutoTraderEngine:
                     reason = "runner time stop"
             elif not is_runner and current >= trade.entry_price + target_points:
                 reason = "trailing profit lock / target extension"
-            elif trade.breakeven_armed and current <= trade.entry_price and (not is_runner or age >= runner_min_hold):
+            elif trade.breakeven_armed and current <= trade.entry_price + 2.0 and (not is_runner or age >= runner_min_hold):
                 reason = "breakeven protection after +8 move"
             elif current <= trade.entry_price - stop_points:
                 reason = psych_exit_reason or "momentum decay or delta reversal stop"

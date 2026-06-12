@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     explosive_runner_elite_delta_velocity_min: float = 55.0
     explosive_runner_elite_spread_min: float = 78.0
     explosive_runner_premium_min: float = 25.0
-    explosive_runner_premium_max: float = 250.0
+    explosive_runner_premium_max: float = 185.0
     background_market_monitor_enabled: bool = True
     news_lookback_items: int = 20
     news_cache_ttl_seconds: float = 300.0
@@ -87,10 +87,10 @@ class Settings(BaseSettings):
     paper_trade_allocation_pct: float = 12.0
     paper_min_trade_allocation_pct: float = 8.0
     paper_max_daily_loss_pct: float = 5.0
-    paper_max_daily_loss_amount: float = 25000.0
-    paper_max_consecutive_losses: int = 3
+    paper_max_daily_loss_amount: float = 12500.0
+    paper_max_consecutive_losses: int = 2
     paper_max_trade_loss_pct: float = 1.0
-    paper_max_trade_loss_amount: float = 5000.0
+    paper_max_trade_loss_amount: float = 3000.0
     paper_max_open_trades: int = 1
     paper_max_open_same_side_trades: int = 1
     paper_same_side_entry_cooldown_seconds: int = 1800
@@ -114,7 +114,7 @@ class Settings(BaseSettings):
     paper_daily_profit_stop_pct: float = 18.0
     paper_stop_points: float = 6.0
     paper_target_points: float = 12.0
-    paper_breakeven_shift_points: float = 6.0
+    paper_breakeven_shift_points: float = 9.0
     option_brokerage_per_order: float = 20.0
     option_stt_sell_pct: float = 0.0625
     option_exchange_txn_pct: float = 0.03503
@@ -135,7 +135,7 @@ class Settings(BaseSettings):
     paper_trading: bool = True
     paper_session_adjustments_enabled: bool = True
     paper_high_confidence_only: bool = True
-    paper_min_premium_ltp: float = 150.0
+    paper_min_premium_ltp: float = 80.0
     paper_high_confidence_min_runner_score: float = 90.0
     paper_high_confidence_min_tqs: int = 86
     paper_runner_target_premium_pct: float = 28.0
