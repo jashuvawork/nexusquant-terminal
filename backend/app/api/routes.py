@@ -177,6 +177,7 @@ async def deployment_status(
             "/api/upstox/callback",
             "/api/upstox/token/status",
             "/api/upstox/token/diagnostics",
+            "/api/upstox/token/persist",
             "/api/upstox/account-summary",
             "/api/market/expiries/NIFTY",
             "/api/market/snapshot/NIFTY",
@@ -353,6 +354,19 @@ async def upstox_token_diagnostics(settings: Settings = Depends(get_settings), a
         "tokenStatus": status,
         "note": "Token value is intentionally not returned.",
     }
+
+
+@router.get("/upstox/token/persist")
+async def upstox_token_persist(auth_service: UpstoxAuthService = Depends(get_upstox_auth)) -> dict:
+    """Re-persist the current token to all durable stores (file + Redis + memory).
+
+    Call this after manually setting UPSTOX_ACCESS_TOKEN in the environment,
+    after copying a token file onto the persistent volume, or any time you want to
+    ensure the token is cached across all storage tiers without re-running OAuth.
+    """
+    result = await auth_service.warm_token_cache()
+    status = await auth_service.token_status()
+    return {"persisted": result.get("warmed", False), "warmResult": result, "tokenStatus": status}
 
 
 @router.get("/upstox/account-summary")
@@ -1000,6 +1014,11 @@ async def upstox_callback_alias(
 @alias_router.get("/upstox/token/status")
 async def upstox_token_status_alias(auth_service: UpstoxAuthService = Depends(get_upstox_auth)) -> dict:
     return await upstox_token_status(auth_service)
+
+
+@alias_router.get("/upstox/token/persist")
+async def upstox_token_persist_alias(auth_service: UpstoxAuthService = Depends(get_upstox_auth)) -> dict:
+    return await upstox_token_persist(auth_service)
 
 
 @alias_router.get("/deployment/status")

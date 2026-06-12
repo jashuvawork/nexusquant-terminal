@@ -55,6 +55,7 @@ _market_snapshot_tick = 0.0
 async def lifespan(app: FastAPI):
     await storage.connect()
     await event_journal.connect()
+    await auth_service.warm_token_cache()
     monitor_task = asyncio.create_task(background_market_monitor()) if settings.background_market_monitor_enabled else None
     yield
     if monitor_task:

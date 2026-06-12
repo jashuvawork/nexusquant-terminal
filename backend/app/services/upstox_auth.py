@@ -124,12 +124,64 @@ class UpstoxAuthService:
                     return token
             except Exception:
                 pass
-        file_token = self._get_file_token()
-        if file_token:
-            return file_token
         if UpstoxAuthService._memory_token and self._meta_is_valid(UpstoxAuthService._memory_meta):
             return UpstoxAuthService._memory_token
+        file_payload = self._read_file_payload()
+        if file_payload:
+            meta = file_payload.get("meta") or {}
+            if self._meta_is_valid(meta):
+                token = file_payload.get("accessToken")
+                if token and isinstance(token, str):
+                    UpstoxAuthService._memory_token = token
+                    UpstoxAuthService._memory_meta = meta
+                    return token
+            else:
+                self._remove_file_token()
         return self.access_token
+
+    async def warm_token_cache(self) -> dict[str, Any]:
+        """Warm Redis and in-process memory from the most-durable token source.
+
+        Called at application startup so the first request never cold-reads from disk.
+        If only UPSTOX_ACCESS_TOKEN env var is present (no valid file token), it is
+        persisted to the token file with a synthetic expiry so it survives container
+        recreations even after the env var is removed.
+        """
+        file_payload = self._read_file_payload()
+        if file_payload:
+            meta = file_payload.get("meta") or {}
+            token = file_payload.get("accessToken")
+            if token and isinstance(token, str) and self._meta_is_valid(meta):
+                expires_at_dt = self._parse_datetime(meta.get("expiresAt"))
+                now = datetime.now(timezone.utc)
+                expires_in = max(60, int((expires_at_dt - now).total_seconds())) if expires_at_dt else 3600
+                UpstoxAuthService._memory_token = token
+                UpstoxAuthService._memory_meta = meta
+                if redis is not None:
+                    try:
+                        redis_client = redis.from_url(self.redis_url, encoding="utf-8", decode_responses=True)
+                        await redis_client.set(TOKEN_KEY, token, ex=max(60, expires_in - 60))
+                        await redis_client.hset(TOKEN_META_KEY, mapping={k: str(v) for k, v in meta.items()})
+                        await redis_client.expire(TOKEN_META_KEY, max(60, expires_in - 60))
+                        await redis_client.aclose()
+                    except Exception:
+                        pass
+                return {"source": "file", "warmed": True, "expiresAt": meta.get("expiresAt")}
+
+        if self.access_token:
+            now = datetime.now(timezone.utc)
+            expires_at_dt = self._next_upstox_expiry(now)
+            expires_in = max(60, int((expires_at_dt - now).total_seconds()))
+            meta = {
+                "storedAt": now.isoformat(),
+                "expiresAt": expires_at_dt.isoformat(),
+                "expiresAtIst": expires_at_dt.astimezone(IST).isoformat(),
+                "tokenType": "Bearer",
+            }
+            await self.store_token(self.access_token, meta, expires_in)
+            return {"source": "environment", "warmed": True, "persisted": True, "expiresAt": expires_at_dt.isoformat()}
+
+        return {"source": None, "warmed": False}
 
     async def token_status(self) -> dict[str, Any]:
         token = await self.get_token()
