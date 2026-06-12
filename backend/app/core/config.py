@@ -142,7 +142,7 @@ class Settings(BaseSettings):
     paper_runner_max_target_premium_pct: float = 55.0
     paper_runner_trail_retain_pct: float = 30.0
     paper_runner_min_hold_seconds: int = 60
-    paper_runner_max_hold_seconds: int = 600
+    paper_runner_max_hold_seconds: int = 900
     paper_always_trade_explosive_runners: bool = True
     paper_min_hold_before_chop_exit_seconds: int = 45
     paper_trading_respects_stop: bool = False

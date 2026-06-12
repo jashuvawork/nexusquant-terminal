@@ -195,7 +195,7 @@ class ExplosiveRunnerEngine:
                 reasons.append("momentum runner auto-candidate")
 
         target_pct = 45 if elite_runner else 33 if confidence == "HIGH" else 22 if confidence == "MEDIUM" else 11
-        hard_stop_pct = 10 if elite_runner else 12 if confidence == "HIGH" else 8
+        hard_stop_pct = 8 if elite_runner else 10 if confidence == "HIGH" else 7
         trail_pct = 24 if elite_runner else 18 if confidence == "HIGH" else 12
         partial_pct = 0.25 if elite_runner else 0.35 if confidence == "HIGH" else 0.5
 
