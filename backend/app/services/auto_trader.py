@@ -1901,8 +1901,8 @@ class AutoTraderEngine:
                 trade.lifecycle.append(LifecycleEvent("PARTIAL_FILL", datetime.now(timezone.utc).isoformat(), "partial exit threshold reached in paper model", {"partialExitAt": round(partial_exit_at, 2), "bestPrice": trade.best_price}))
             runner_min_hold = int(self.settings.paper_runner_min_hold_seconds)
             scalp_trail = max(2.0, target_points * 0.35)
-            trail_pts = float(trade.trail_points or (target_points * 0.30 if is_runner else scalp_trail))
-            in_profitable_trail = trade.best_price >= trade.entry_price + target_points * 0.40
+            trail_pts = float(trade.trail_points or (target_points * 0.22 if is_runner else scalp_trail))
+            in_profitable_trail = trade.best_price >= trade.entry_price + target_points * 0.25
             if in_profitable_trail and current <= trade.best_price - trail_pts:
                 reason = "elite runner trailing max-points lock" if is_runner else "trailing profit lock"
             elif is_runner and age >= max_hold_seconds:
