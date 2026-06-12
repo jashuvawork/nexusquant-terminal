@@ -69,6 +69,7 @@ class PaperSessionManager:
         }
         return dict(self._current)
 
+
     def _dedupe_sessions(self, sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen: set[str] = set()
         unique: list[dict[str, Any]] = []
