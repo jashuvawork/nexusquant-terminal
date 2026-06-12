@@ -141,7 +141,7 @@ def get_market_engine(
 async def terminal_state(settings: Settings = Depends(get_settings)) -> dict[str, str | bool | float | None]:
     return {
         "pipeline": "Upstox token -> option chain -> market quote -> intraday candles -> risk gates -> execution router",
-        "symbols": "NIFTY,SENSEX",
+        "symbols": ",".join(settings.trading_symbol_list),
         "mode": "real-upstox-data-only",
         "primarySymbol": settings.primary_symbol,
         "niftyExpiryDate": settings.nifty_expiry_date,
@@ -210,14 +210,14 @@ async def deployment_status(
 
 @router.get("/market/snapshots")
 async def market_snapshots(engine: RealTimeMarketEngine = Depends(get_market_engine), auto_engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
+    active_symbols = get_settings().trading_symbol_list
     results = await asyncio.gather(
-        engine.snapshot("NIFTY"),
-        engine.snapshot("SENSEX"),
+        *(engine.snapshot(sym) for sym in active_symbols),
         return_exceptions=True,
     )
     snapshots = {}
     errors = {}
-    for symbol, result in zip(["NIFTY", "SENSEX"], results, strict=True):
+    for symbol, result in zip(active_symbols, results, strict=True):
         if isinstance(result, Exception):
             errors[symbol] = str(result)
         else:
@@ -248,7 +248,7 @@ async def market_snapshots(engine: RealTimeMarketEngine = Depends(get_market_eng
         **primary,
         "type": "multi_snapshot",
         "displaySymbol": primary.get("symbol"),
-        "backgroundSymbols": ["NIFTY", "SENSEX"],
+        "backgroundSymbols": active_symbols,
         "snapshots": snapshots,
         "symbolErrors": errors,
         "executionCandidates": candidates,
@@ -263,7 +263,7 @@ async def market_snapshots(engine: RealTimeMarketEngine = Depends(get_market_eng
 
 
 @router.get("/market/news/{symbol}")
-async def market_news(symbol: Literal["NIFTY", "SENSEX"], settings: Settings = Depends(get_settings), client: UpstoxClient = Depends(get_upstox)) -> dict:
+async def market_news(symbol: Literal["NIFTY", "SENSEX", "BANKNIFTY"], settings: Settings = Depends(get_settings), client: UpstoxClient = Depends(get_upstox)) -> dict:
     external = await NewsProvider(settings).fetch(symbol)
     upstox_payload = None
     upstox_error = None
@@ -297,7 +297,7 @@ async def market_movers(settings: Settings = Depends(get_settings), client: Upst
 
 
 @router.get("/institutional/readiness/{symbol}")
-async def institutional_readiness(symbol: Literal["NIFTY", "SENSEX"], engine: RealTimeMarketEngine = Depends(get_market_engine), auto_engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
+async def institutional_readiness(symbol: Literal["NIFTY", "SENSEX", "BANKNIFTY"], engine: RealTimeMarketEngine = Depends(get_market_engine), auto_engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
     try:
         snapshot = await engine.snapshot(symbol)
         snapshot["autoTrader"] = auto_engine.status()
@@ -307,7 +307,7 @@ async def institutional_readiness(symbol: Literal["NIFTY", "SENSEX"], engine: Re
 
 
 @router.get("/market/snapshot/{symbol}")
-async def market_snapshot(symbol: Literal["NIFTY", "SENSEX"], engine: RealTimeMarketEngine = Depends(get_market_engine)) -> dict:
+async def market_snapshot(symbol: Literal["NIFTY", "SENSEX", "BANKNIFTY"], engine: RealTimeMarketEngine = Depends(get_market_engine)) -> dict:
     try:
         return await engine.snapshot(symbol)
     except (UpstoxAuthRequired, UpstoxDataError, MarketConfigurationError) as exc:
@@ -396,7 +396,7 @@ async def upstox_portfolio(client: UpstoxClient = Depends(get_upstox)) -> dict:
 
 
 @router.get("/market/expiries/{symbol}")
-async def market_expiries(symbol: Literal["NIFTY", "SENSEX"], engine: RealTimeMarketEngine = Depends(get_market_engine), settings: Settings = Depends(get_settings)) -> dict:
+async def market_expiries(symbol: Literal["NIFTY", "SENSEX", "BANKNIFTY"], engine: RealTimeMarketEngine = Depends(get_market_engine), settings: Settings = Depends(get_settings)) -> dict:
     try:
         return await engine.resolve_expiry(symbol, settings.instrument_key_for(symbol), [])
     except (UpstoxAuthRequired, UpstoxDataError, MarketConfigurationError) as exc:
@@ -404,7 +404,7 @@ async def market_expiries(symbol: Literal["NIFTY", "SENSEX"], engine: RealTimeMa
 
 
 @router.get("/upstox/option-chain/{symbol}")
-async def option_chain(symbol: Literal["NIFTY", "SENSEX"], settings: Settings = Depends(get_settings), client: UpstoxClient = Depends(get_upstox), engine: RealTimeMarketEngine = Depends(get_market_engine)) -> dict:
+async def option_chain(symbol: Literal["NIFTY", "SENSEX", "BANKNIFTY"], settings: Settings = Depends(get_settings), client: UpstoxClient = Depends(get_upstox), engine: RealTimeMarketEngine = Depends(get_market_engine)) -> dict:
     try:
         expiry_state = await engine.resolve_expiry(symbol, settings.instrument_key_for(symbol), [])
         payload = await client.option_chain(settings.instrument_key_for(symbol), expiry_state["selectedExpiry"])
@@ -546,7 +546,7 @@ async def strategy_optimizer_latest(optimizer: StrategyOptimizer = Depends(get_s
 
 @router.get("/option-premium-optimizer/run")
 async def option_premium_optimizer_run(
-    symbol: Literal["NIFTY", "SENSEX"] = "NIFTY",
+    symbol: Literal["NIFTY", "SENSEX", "BANKNIFTY"] = "NIFTY",
     target_samples: int = 500,
     expiry_date: str | None = None,
     from_date: str | None = None,
@@ -574,7 +574,7 @@ async def option_premium_optimizer_run_both(
 ) -> dict:
     results = {}
     errors = {}
-    for symbol in ["NIFTY", "SENSEX"]:
+    for symbol in get_settings().trading_symbol_list:
         try:
             results[symbol] = await optimizer.optimize(symbol, target_samples, None, from_date, to_date, max_contracts, max_param_sets, objective)
         except (UpstoxAuthRequired, UpstoxDataError) as exc:
@@ -596,7 +596,7 @@ async def analytics_ltp_ranges(
     analyzer = LtpRangeAnalyzer()
     results = {}
     errors = {}
-    for symbol in ["NIFTY", "SENSEX"]:
+    for symbol in get_settings().trading_symbol_list:
         try:
             expiry_state = await engine.resolve_expiry(symbol, settings.instrument_key_for(symbol), [])
             chain = await client.option_chain(settings.instrument_key_for(symbol), expiry_state["selectedExpiry"])
@@ -625,7 +625,7 @@ async def analytics_ltp_ranges(
 
 @router.get("/strategy-optimizer/run")
 async def strategy_optimizer_run(
-    symbol: Literal["NIFTY", "SENSEX"] = "NIFTY",
+    symbol: Literal["NIFTY", "SENSEX", "BANKNIFTY"] = "NIFTY",
     target_samples: int = 1000,
     from_date: str | None = None,
     to_date: str | None = None,
@@ -650,7 +650,7 @@ async def strategy_optimizer_run_both(
 ) -> dict:
     results = {}
     errors = {}
-    for symbol in ["NIFTY", "SENSEX"]:
+    for symbol in get_settings().trading_symbol_list:
         try:
             results[symbol] = await optimizer.optimize(symbol, target_samples, from_date, to_date, 1, max_param_sets, objective)
         except (UpstoxAuthRequired, UpstoxDataError) as exc:
@@ -670,7 +670,7 @@ async def ai_learning_train_now(
     target = target_trades or 1000
     results: dict[str, dict] = {}
     errors: dict[str, str] = {}
-    for symbol in ["NIFTY", "SENSEX"]:
+    for symbol in get_settings().trading_symbol_list:
         try:
             results[symbol] = await trainer.train(symbol, target, from_date, to_date)
         except (UpstoxAuthRequired, UpstoxDataError) as exc:
@@ -692,7 +692,7 @@ async def ai_learning_train_now_get(
 
 @router.get("/ai-learning/train-option-runner")
 async def ai_learning_train_option_runner(
-    symbol: Literal["NIFTY", "SENSEX"] = "NIFTY",
+    symbol: Literal["NIFTY", "SENSEX", "BANKNIFTY"] = "NIFTY",
     target_trades: int | None = None,
     expiry_date: str | None = None,
     from_date: str | None = None,
@@ -716,7 +716,7 @@ async def ai_learning_train_option_runner_both(
 ) -> dict:
     results = {}
     errors = {}
-    for symbol in ["NIFTY", "SENSEX"]:
+    for symbol in get_settings().trading_symbol_list:
         try:
             results[symbol] = await trainer.train_option_runner(symbol, target_trades, None, from_date, to_date, 1, max_contracts)
         except (UpstoxAuthRequired, UpstoxDataError) as exc:
@@ -728,7 +728,7 @@ async def ai_learning_train_option_runner_both(
 
 @router.get("/ai-learning/train-explosive-high-profit")
 async def ai_learning_train_explosive_high_profit(
-    symbol: Literal["NIFTY", "SENSEX"] = "NIFTY",
+    symbol: Literal["NIFTY", "SENSEX", "BANKNIFTY"] = "NIFTY",
     target_trades: int | None = 500,
     expiry_date: str | None = None,
     from_date: str | None = None,
@@ -752,7 +752,7 @@ async def ai_learning_train_explosive_high_profit_both(
 ) -> dict:
     results = {}
     errors = {}
-    for symbol in ["NIFTY", "SENSEX"]:
+    for symbol in get_settings().trading_symbol_list:
         try:
             results[symbol] = await trainer.train_option_runner(symbol, target_trades, None, from_date, to_date, 1, max_contracts, high_profit_only=True)
         except (UpstoxAuthRequired, UpstoxDataError) as exc:
@@ -812,7 +812,7 @@ async def ai_learning_backtest_and_train_missed_today(
     replay_result = await auto_engine.backtest_and_train_missed_today(target_trades, horizon_ticks, min_profit_points, include_losses)
     historical: dict[str, Any] = {"results": {}, "errors": {}}
     today = date.today().isoformat()
-    for symbol in ["NIFTY", "SENSEX"]:
+    for symbol in get_settings().trading_symbol_list:
         try:
             historical["results"][symbol] = await trainer.train_option_runner(
                 symbol,
@@ -843,7 +843,7 @@ async def ai_learning_backtest_and_train_missed_today_post(
 
 @router.get("/ai-learning/train-runner")
 async def ai_learning_train_runner(
-    symbol: Literal["NIFTY", "SENSEX"] = "NIFTY",
+    symbol: Literal["NIFTY", "SENSEX", "BANKNIFTY"] = "NIFTY",
     target_trades: int | None = None,
     from_date: str | None = None,
     to_date: str | None = None,
@@ -864,7 +864,7 @@ async def ai_learning_train_runner_both(
 ) -> dict:
     results = {}
     errors = {}
-    for symbol in ["NIFTY", "SENSEX"]:
+    for symbol in get_settings().trading_symbol_list:
         try:
             results[symbol] = await trainer.train_runner(symbol, target_trades, from_date, to_date)
         except (UpstoxAuthRequired, UpstoxDataError) as exc:
@@ -876,7 +876,7 @@ async def ai_learning_train_runner_both(
 
 @router.post("/ai-learning/train-historical")
 async def ai_learning_train_historical(
-    symbol: Literal["NIFTY", "SENSEX"] = "NIFTY",
+    symbol: Literal["NIFTY", "SENSEX", "BANKNIFTY"] = "NIFTY",
     target_trades: int | None = None,
     from_date: str | None = None,
     to_date: str | None = None,
@@ -890,7 +890,7 @@ async def ai_learning_train_historical(
 
 @router.get("/ai-learning/train-historical")
 async def ai_learning_train_historical_get(
-    symbol: Literal["NIFTY", "SENSEX"] = "NIFTY",
+    symbol: Literal["NIFTY", "SENSEX", "BANKNIFTY"] = "NIFTY",
     target_trades: int | None = None,
     from_date: str | None = None,
     to_date: str | None = None,

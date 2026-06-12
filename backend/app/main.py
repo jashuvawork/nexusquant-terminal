@@ -204,7 +204,7 @@ async def emit_journal_events(payload: dict) -> list[dict]:
     return emitted
 
 async def build_multi_symbol_snapshot(*, include_auto_trader: bool | None = None) -> dict:
-    symbols = ["NIFTY", "SENSEX"]
+    symbols = settings.trading_symbol_list
     results = await asyncio.gather(*(market_engine.snapshot(symbol) for symbol in symbols), return_exceptions=True)
     snapshots: dict[str, dict] = {}
     errors: dict[str, str] = {}
