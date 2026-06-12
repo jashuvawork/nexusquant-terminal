@@ -1866,7 +1866,7 @@ class AutoTraderEngine:
                 trade.partial_exit_taken = True
                 trade.lifecycle.append(LifecycleEvent("PARTIAL_FILL", datetime.now(timezone.utc).isoformat(), "partial exit threshold reached in paper model", {"partialExitAt": round(partial_exit_at, 2), "bestPrice": trade.best_price}))
             runner_min_hold = int(self.settings.paper_runner_min_hold_seconds)
-            if is_runner and trade.best_price >= trade.entry_price + target_points and current <= trade.best_price - float(trade.trail_points or target_points * 0.45):
+            if is_runner and trade.best_price >= trade.entry_price + target_points * 0.60 and current <= trade.best_price - float(trade.trail_points or target_points * 0.30):
                 reason = "elite runner trailing max-points lock"
             elif is_runner and age >= max_hold_seconds:
                 min_lock_profit = target_points * 0.35
@@ -2399,9 +2399,9 @@ class AutoTraderEngine:
         stop = min(base_stop, premium_capped_stop) if premium > 0 and not is_runner else base_stop
         stop = max(costs_per_unit + 0.75, stop)
         if is_runner:
-            plan = runner.get("maxPointsPlan") or {}
-            trail_pct = float(plan.get("trailPct") or self.settings.paper_runner_trail_retain_pct)
-            trail = max(2.0, target * 0.45, premium * trail_pct / 100)
+            # Trail must be smaller than target so profit lock actually fires.
+            # Give back at most 30% of the target gain → lock in 70%.
+            trail = max(2.0, target * 0.30)
         else:
             trail = max(1.5, target * 0.35)
         return {
