@@ -352,55 +352,39 @@ async def market_heatmap(
     items: list[dict] = []
     error: str | None = None
 
-    # Upstox uses different formats for equity instruments — try several
-    # Format 1: NSE_EQ|SYMBOL (standard internal format)
-    # Format 2: NSE_EQ:SYMBOL (response format uses colon)
-    # Fall through to sector index heatmap if all fail
-    for batch_keys in [stock_keys[:20], [k.replace("|", ":") for k in stock_keys[:20]]]:
-        if items:
-            break
-        try:
-            resp = await client.ltp(batch_keys)
-            raw = resp.get("data") or {}
-            if raw:
-                items = _parse_stock_ltp(raw)
-        except Exception as exc:
-            error = str(exc)
+    # Upstox equity instrument keys (NSE_EQ|SYMBOL) require the numeric exchange token
+    # from the Upstox instrument master, not the trading symbol — skipping direct stock lookup.
+    # Using sector index heatmap instead (reliable, always works with current subscription).
+    try:
+        sector_keys = [k for k in settings.market_snapshot_instrument_list if "INDEX" in k.upper()][:20]
+        if not sector_keys:
+            sector_keys = [
+                "NSE_INDEX|Nifty 50", "NSE_INDEX|Nifty Bank", "NSE_INDEX|Nifty IT",
+                "NSE_INDEX|Nifty Auto", "NSE_INDEX|Nifty FMCG", "NSE_INDEX|Nifty Pharma",
+                "NSE_INDEX|Nifty Metal", "NSE_INDEX|Nifty PSU Bank", "NSE_INDEX|Nifty Energy",
+                "NSE_INDEX|India VIX", "BSE_INDEX|SENSEX",
+            ]
+        resp3 = await client.full_market_quote(sector_keys)
+        raw3 = resp3.get("data") or {}
+        if raw3:
+            sector_items = []
+            for key, val in raw3.items():
+                sym = key.split("|")[-1].split(":")[-1]
+                ltp = float(val.get("last_price") or val.get("ltp") or 0)
+                prev = float(val.get("ohlc", {}).get("close") or val.get("close") or val.get("previous_close") or 0)
+                change_pct = round((ltp - prev) / prev * 100, 2) if prev else 0.0
+                sector_items.append({
+                    "symbol": sym.replace("Nifty ", ""), "instrumentKey": key, "ltp": ltp,
+                    "prevClose": prev, "changePct": change_pct, "volume": 0, "weight": 3.0,
+                    "tone": "bullish" if change_pct > 0 else "bearish" if change_pct < 0 else "neutral",
+                })
+            items = sorted(sector_items, key=lambda x: abs(x["changePct"]), reverse=True)
+            error = None
+    except Exception as exc3:
+        error = str(exc3)
 
     if not items:
-        try:
-            resp2 = await client.full_market_quote(stock_keys[:20])
-            raw2 = resp2.get("data") or {}
-            if raw2:
-                items = _parse_stock_ltp(raw2)
-        except Exception as exc2:
-            error = f"{error} | quote: {exc2}"
-
-    # Fallback: use sector index data (always works)
-    if not items:
-        try:
-            sector_keys = settings.market_snapshot_instrument_list[:20]
-            resp3 = await client.full_market_quote(sector_keys)
-            raw3 = resp3.get("data") or {}
-            if raw3:
-                sector_items = []
-                for key, val in raw3.items():
-                    sym = key.split("|")[-1].split(":")[-1].replace("Nifty ", "")
-                    ltp = float(val.get("last_price") or val.get("ltp") or 0)
-                    prev = float(val.get("ohlc", {}).get("close") or val.get("close") or val.get("previous_close") or 0)
-                    change_pct = round((ltp - prev) / prev * 100, 2) if prev else 0.0
-                    sector_items.append({
-                        "symbol": sym, "instrumentKey": key, "ltp": ltp, "prevClose": prev,
-                        "changePct": change_pct, "volume": 0, "weight": 3.0, "tone": "bullish" if change_pct > 0 else "bearish" if change_pct < 0 else "neutral",
-                    })
-                items = sorted(sector_items, key=lambda x: abs(x["changePct"]), reverse=True)
-                error = None  # sector fallback works
-        except Exception as exc3:
-            error = f"{error} | sector: {exc3}"
-
-    if not items:
-        return {"index": idx, "available": False, "reason": error or "No data returned by Upstox", "stocks": [],
-                "hint": "Upstox equity instrument keys (NSE_EQ|SYMBOL) may require subscription upgrade. Using sector index heatmap as fallback."}
+        return {"index": idx, "available": False, "reason": error or "No data returned by Upstox", "stocks": []}
 
     advancing = sum(1 for i in items if i["changePct"] > 0)
     declining = sum(1 for i in items if i["changePct"] < 0)
