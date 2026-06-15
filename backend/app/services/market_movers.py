@@ -50,8 +50,9 @@ def summarize_market_movers(instruments: list[str], quote_payload: dict[str, Any
     data = quote_payload.get("data") or {}
     items = [quote_item(key, value or {}) for key, value in data.items()]
 
-    indices = [i for i in items if "INDEX|" in i["instrumentKey"]]
-    stocks = [i for i in items if "INDEX|" not in i["instrumentKey"]]
+    # Upstox response replaces | with : in keys (e.g. NSE_INDEX:Nifty 50)
+    indices = [i for i in items if "INDEX" in i["instrumentKey"].upper()]
+    stocks = [i for i in items if "INDEX" not in i["instrumentKey"].upper() and "NSE_EQ" not in i["instrumentKey"].upper()]
 
     gainers = sorted(items, key=lambda i: i["changePct"], reverse=True)
     losers = sorted(items, key=lambda i: i["changePct"])
@@ -161,4 +162,5 @@ def summarize_market_movers(instruments: list[str], quote_payload: dict[str, Any
         "mostActiveValue": most_active_value[:10],
         "indices": indices,
         "stocks": stocks,
+        "breadthNote": f"{'Institutional-grade' if stock_sufficient else 'Index-level'} breadth from {len(indices)} indices + {len(stocks)} stocks",
     }
