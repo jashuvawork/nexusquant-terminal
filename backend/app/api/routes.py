@@ -1153,13 +1153,14 @@ async def auto_trader_replay(limit: int = 250, engine: AutoTraderEngine = Depend
 
 
 @router.post("/auto-trader/reset")
-async def auto_trader_reset(engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
-    return engine.reset()
+async def auto_trader_reset(engine: AutoTraderEngine = Depends(get_auto_trader), preserve_history: bool = True) -> dict:
+    """Reset daily trading state. preserve_history=True keeps all-time closed trades for analysis."""
+    return engine.reset(preserve_history=preserve_history)
 
 
 @router.get("/auto-trader/reset")
-async def auto_trader_reset_get(engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
-    return engine.reset()
+async def auto_trader_reset_get(engine: AutoTraderEngine = Depends(get_auto_trader), preserve_history: bool = True) -> dict:
+    return engine.reset(preserve_history=preserve_history)
 
 
 @router.get("/auto-trader/daily-report")

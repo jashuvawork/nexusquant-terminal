@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from contextlib import asynccontextmanager, suppress
+from datetime import datetime
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,6 +21,7 @@ from app.services.institutional_readiness import InstitutionalReadinessEngine
 from app.services.market_movers import summarize_market_movers
 from app.services.realtime_engine import MarketConfigurationError, RealTimeMarketEngine
 from app.services.risk_engine import RiskEngine
+from app.services.session import IST, MarketPhase, current_session_state
 from app.services.storage import AnalyticsStorage
 from app.services.trading_control import TradingControl
 from app.services.upstox_auth import UpstoxAuthService
@@ -57,7 +59,11 @@ async def lifespan(app: FastAPI):
     await event_journal.connect()
     await auth_service.warm_token_cache()
     monitor_task = asyncio.create_task(background_market_monitor()) if settings.background_market_monitor_enabled else None
+    daily_reset_task = asyncio.create_task(daily_market_open_reset())
     yield
+    daily_reset_task.cancel()
+    with suppress(BaseException):
+        await daily_reset_task
     if monitor_task:
         monitor_task.cancel()
         with suppress(BaseException):
@@ -245,6 +251,26 @@ async def build_multi_symbol_snapshot(*, include_auto_trader: bool | None = None
     await emit_journal_events(payload)
     payload["eventJournal"] = await event_journal.recent(50)
     return payload
+
+
+async def daily_market_open_reset() -> None:
+    """Auto-resets paper trades at 09:15 IST every trading day so each session starts clean.
+    Preserves closed trade history for rolling analysis."""
+    import logging
+    log = logging.getLogger("nexusquant.daily_reset")
+    last_reset_date: str | None = None
+    while True:
+        try:
+            now_ist = datetime.now(IST)
+            today = now_ist.date().isoformat()
+            # Reset at 09:15 IST (market open) if not already done today
+            if (now_ist.hour == 9 and now_ist.minute >= 15 and last_reset_date != today):
+                auto_trader.reset(preserve_history=True)
+                last_reset_date = today
+                log.info(f"[daily_reset] Auto-reset at market open — {today} 09:15 IST. History preserved.")
+        except Exception as exc:
+            pass
+        await asyncio.sleep(30)  # check every 30s
 
 
 async def background_market_monitor() -> None:

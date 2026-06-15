@@ -17,6 +17,7 @@ import {
   PaperTradingPanel,
   PortfolioPanel,
   RiskEnginePanel,
+  RunnerOpportunityPanel,
   SessionIntelligence,
   SettingsPanel,
   StrategyRouter,
@@ -101,6 +102,7 @@ function App() {
 
   const content = {
     execution: <ExecutionHud snapshot={displaySnapshot} />,
+    runner: <RunnerOpportunityPanel snapshot={displaySnapshot} />,
     marketHeatmap: <MarketHeatmapPanel snapshot={displaySnapshot} />,
     heatmap: <HeatmapTerminal snapshot={displaySnapshot} />,
     orderflow: <OrderflowAnalytics snapshot={displaySnapshot} />,

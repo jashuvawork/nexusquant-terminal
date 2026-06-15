@@ -352,17 +352,21 @@ class AutoTraderEngine:
             ],
         }
 
-    def reset(self) -> dict[str, Any]:
+    def reset(self, preserve_history: bool = True) -> dict[str, Any]:
+        """Reset active trading state. By default preserves closed trade history for analysis."""
         self.replay_buffer.clear()
         self.open_paper.clear()
-        self.closed_paper.clear()
+        if not preserve_history:
+            self.closed_paper.clear()
         self.lifecycle_events.clear()
         AutoTraderEngine._shared_recent_signal_times.clear()
         self._persist_paper_trades_file()
         AutoTraderEngine._shared_learning_samples = 0
         AutoTraderEngine._shared_learning_score = 50.0
         AutoTraderEngine._shared_last_learning_update = None
-        return {"reset": True, "status": self.status()}
+        self.paper_sessions.start_session("daily_reset")
+        return {"reset": True, "preservedHistory": preserve_history,
+                "allTimeTrades": len(self.closed_paper), "status": self.status()}
 
     def replay(self, limit: int = 250) -> dict[str, Any]:
         return {"snapshots": list(self.replay_buffer)[-limit:], "count": min(limit, len(self.replay_buffer))}

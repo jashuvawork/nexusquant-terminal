@@ -137,6 +137,22 @@ class RealTimeMarketEngine:
         expiry_state = await self.resolve_expiry(selected_symbol, instrument_key, data_warnings)
         expiry = expiry_state["selectedExpiry"]
 
+        # For explosive runner: also check nearest available expiry if within near_expiry_runner_max_days
+        # Near-expiry options have higher gamma → premium moves faster → bigger runner scores
+        near_expiry: str | None = None
+        if self.settings.near_expiry_runner_enabled:
+            available = expiry_state.get("availableExpiries") or []
+            today = datetime.now(timezone.utc).date()
+            for exp in available:
+                try:
+                    exp_date = datetime.strptime(exp, "%Y-%m-%d").date()
+                    days_to_exp = (exp_date - today).days
+                    if 1 <= days_to_exp <= self.settings.near_expiry_runner_max_days and exp != expiry:
+                        near_expiry = exp
+                        break
+                except ValueError:
+                    pass
+
         option_chain_task = self.client.option_chain(instrument_key, expiry)
         candle_task = self.client.intraday_candles(instrument_key, "minutes", 1)
         quote_task = self.client.ltp([instrument_key])
@@ -261,6 +277,23 @@ class RealTimeMarketEngine:
             chart_analysis=chart_analysis,
             option_bias=option_bias,
         )
+        # Near-expiry scan: cheaper options with higher gamma = stronger runner scores
+        if near_expiry:
+            try:
+                near_chain = await self.client.option_chain(instrument_key, near_expiry)
+                near_rows = self._option_chain_rows(near_chain)
+                near_runners = self._explosive_runner_watchlist(
+                    symbol=selected_symbol, expiry=near_expiry, rows=near_rows,
+                    spot=spot, heatmap=heatmap, market_profile=market_profile,
+                    entry_model=entry_model, tqs=tqs, chart_analysis=chart_analysis, option_bias=option_bias,
+                )
+                if near_runners:
+                    for r in near_runners:
+                        r["nearExpiry"] = True
+                        r["daysToExpiry"] = (datetime.strptime(near_expiry, "%Y-%m-%d").date() - datetime.now(timezone.utc).date()).days
+                    runner_watchlist = near_runners + runner_watchlist
+            except Exception:
+                pass
         runner_signal = runner_watchlist[0] if runner_watchlist else self._explosive_runner_disabled(selected_symbol, expiry)
         plan_signal = self._best_in_range_runner_signal(runner_watchlist)
         plan_strike = as_int(plan_signal.get("strike")) if plan_signal else atm_strike

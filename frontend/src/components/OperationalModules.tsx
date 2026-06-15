@@ -1081,3 +1081,96 @@ export function MorningChecklistPanel() {
     </Card>
   );
 }
+export function RunnerOpportunityPanel({ snapshot }: { snapshot: TerminalSnapshot }) {
+  const rawSnapshots = (snapshot as unknown as Record<string, Record<string, unknown>>)['snapshots'] ?? {};
+
+  type RunnerSig = { score?: number; eliteRunner?: boolean; confidence?: string; momentumAligned?: boolean; momentumSurge?: boolean; metrics?: Record<string, number>; };
+  type WLItem = { sym?: string; side?: string; strike?: number; lastPremium?: number; nearExpiry?: boolean; daysToExpiry?: number; expiry?: string; runnerSignal?: RunnerSig; };
+  type SymSnap = { explosiveRunner?: RunnerSig & { side?: string; }; explosiveRunnerWatchlist?: WLItem[]; tradeQualityScore?: number; regime?: string; marketPhase?: string; expiryState?: { selectedExpiry?: string; }; };
+
+  const symbols = Object.entries(rawSnapshots as Record<string, SymSnap>);
+  const allRunners: (WLItem & { sym: string; score: number })[] = [];
+  for (const [sym, snap] of symbols) {
+    for (const w of (snap.explosiveRunnerWatchlist ?? []).slice(0, 4)) {
+      const r = w.runnerSignal ?? {};
+      allRunners.push({ ...w, sym, score: r.score ?? 0 });
+    }
+  }
+  const strong = allRunners.filter(r => r.score >= 75).sort((a, b) => b.score - a.score);
+  const elite = strong.filter(r => r.runnerSignal?.eliteRunner);
+  const at = snapshot.autoTrader;
+  const dr = (at?.dailyReport ?? {}) as Record<string, number>;
+
+  return (
+    <Card title="Explosive Runner Opportunities" eyebrow="Real-time across NIFTY · SENSEX · BANKNIFTY — near-expiry high-gamma scanner active">
+      <div className="grid gap-3 sm:grid-cols-3 mb-4">
+        <div className={`rounded-xl border p-3 text-center ${elite.length > 0 ? 'border-emerald-300/30 bg-emerald-300/10' : 'border-slate-700 bg-slate-900'}`}>
+          <p className="text-xs text-slate-500 uppercase tracking-widest">Elite</p>
+          <p className={`text-3xl font-black mt-1 ${elite.length > 0 ? 'text-emerald-300' : 'text-slate-500'}`}>{elite.length}</p>
+          <p className="text-xs text-slate-500 mt-1">score ≥ 88 + eliteRunner</p>
+        </div>
+        <div className="rounded-xl border border-slate-700 bg-slate-900 p-3 text-center">
+          <p className="text-xs text-slate-500 uppercase tracking-widest">Strong</p>
+          <p className={`text-3xl font-black mt-1 ${strong.length > 0 ? 'text-cyan-300' : 'text-slate-500'}`}>{strong.length}</p>
+          <p className="text-xs text-slate-500 mt-1">score ≥ 75</p>
+        </div>
+        <div className="rounded-xl border border-slate-700 bg-slate-900 p-3 text-center">
+          <p className="text-xs text-slate-500 uppercase tracking-widest">Day PnL</p>
+          <p className={`text-xl font-black mt-1 ${(dr.netPnl ?? 0) >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>{formatCurrency(dr.netPnl ?? 0)}</p>
+          <p className="text-xs text-slate-500 mt-1">{dr.paperTrades ?? 0} trades · {dr.wins ?? 0}W/{dr.losses ?? 0}L</p>
+        </div>
+      </div>
+
+      {symbols.map(([sym, snap]) => {
+        const er = snap.explosiveRunner;
+        const score = er?.score ?? 0;
+        const pct = Math.min(100, score);
+        return (
+          <div key={sym} className="mb-3 rounded-2xl border border-slate-700 bg-slate-950/60 p-4">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <span className={`rounded-lg px-2 py-1 text-xs font-black ${snap.marketPhase === 'LIVE_MARKET' ? 'bg-emerald-400/20 text-emerald-300' : 'bg-slate-800 text-slate-500'}`}>{sym}</span>
+                {er?.eliteRunner && <span className="text-xs font-bold text-amber-300 animate-pulse">⚡ ELITE</span>}
+                <span className={`text-xs ${er?.confidence === 'HIGH' ? 'text-emerald-300' : er?.confidence === 'MEDIUM' ? 'text-amber-300' : 'text-slate-500'}`}>{er?.confidence ?? 'LOW'}</span>
+              </div>
+              <div className="text-right text-xs text-slate-500">{snap.regime?.replace(/_/g, ' ')} | {snap.expiryState?.selectedExpiry} | TQS {snap.tradeQualityScore}</div>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="flex-1">
+                <div className="flex justify-between text-xs mb-1">
+                  <span className="text-slate-400">Runner Score (need 88+ for elite)</span>
+                  <span className={`font-bold ${score >= 88 ? 'text-emerald-300' : score >= 75 ? 'text-cyan-300' : score >= 60 ? 'text-amber-300' : 'text-slate-500'}`}>{score.toFixed(0)}</span>
+                </div>
+                <div className="h-2 rounded-full bg-slate-800 overflow-hidden">
+                  <div className={`h-full rounded-full ${score >= 88 ? 'bg-emerald-400' : score >= 75 ? 'bg-cyan-400' : score >= 60 ? 'bg-amber-400' : 'bg-slate-600'}`} style={{ width: `${pct}%` }} />
+                </div>
+                <p className="text-[10px] text-slate-600 mt-0.5">{er?.momentumSurge ? '⚡ momentum surge active' : er?.momentumAligned ? '→ direction aligned, waiting for surge' : '○ no momentum — typical in range absorption'}</p>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+
+      {strong.length > 0 && (
+        <div className="mt-2 space-y-1.5">
+          <p className="text-xs font-bold text-cyan-200 uppercase tracking-widest mb-2">Best Watchlist Signals</p>
+          {strong.slice(0, 5).map((r, i) => (
+            <div key={i} className={`flex items-center justify-between rounded-lg border px-3 py-2 text-xs ${r.runnerSignal?.eliteRunner ? 'border-emerald-300/30 bg-emerald-300/8' : 'border-slate-700 bg-slate-900'}`}>
+              <span className="font-mono text-white">{r.sym} {r.side} {r.strike}</span>
+              <span className="text-slate-400">₹{r.lastPremium}</span>
+              <span className={`font-bold ${r.runnerSignal?.eliteRunner ? 'text-emerald-300' : 'text-cyan-300'}`}>{r.score.toFixed(0)}</span>
+              {r.nearExpiry && <span className="text-amber-300">⚡ {r.daysToExpiry}d-expiry</span>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-3 rounded-2xl border border-slate-700 bg-slate-950/60 p-3 text-xs text-slate-400 space-y-1">
+        <p className="font-bold text-white">Why runners haven't fired today:</p>
+        <p>• Regime = RANGE_ABSORPTION — runners need TREND_EXPANSION or sudden breakout</p>
+        <p>• Near-expiry scanner (≤5 days) now active → catches high-gamma bursts from cheap options</p>
+        <p className="text-emerald-300/80 font-medium mt-2">✅ Background monitor runs 24/7 — website does NOT need to be open. Trades open/close automatically during market hours.</p>
+      </div>
+    </Card>
+  );
+}
