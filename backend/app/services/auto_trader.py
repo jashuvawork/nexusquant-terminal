@@ -166,6 +166,7 @@ class AutoTraderEngine:
     _shared_learning_score = 50.0
     _shared_last_learning_update: str | None = None
     _shared_recent_signal_times: dict[str, float] = {}
+    _shared_missed_runners: deque[dict[str, Any]] = deque(maxlen=500)  # near-miss runner log
 
     def __init__(self, settings: Settings, trading_control: TradingControl, learner: ContinuousAILearner | None = None) -> None:
         self.settings = settings
@@ -221,7 +222,10 @@ class AutoTraderEngine:
             if cached_snapshot:
                 skipped.append({"candidate": signal_id, "reason": "cached snapshot; paper open skipped to avoid duplicate training sample"})
                 continue
-            if self._recent_signal_active(signal_id, signal_cooldown_seconds):
+            # Momentum override uses shorter cooldown (20s) to catch continuation moves
+            runner_sig = (candidate.get("runnerSignal") or {})
+            effective_cooldown = 20 if runner_sig.get("momentumOverride") else signal_cooldown_seconds
+            if self._recent_signal_active(signal_id, effective_cooldown):
                 skipped.append({"candidate": signal_id, "reason": "duplicate signal cooldown active"})
                 continue
             if session_adj.get("blockNewPaperTrades") and not self._session_entry_allowed(candidate, session_adj, market_phase):
@@ -229,10 +233,27 @@ class AutoTraderEngine:
                 continue
             quality = self._pre_trade_quality(candidate, session_adj, market_phase)
             if quality["blocked"]:
-                skipped.append({"candidate": candidate.get("id"), "reason": quality["reason"], "quality": quality})
-                if not (self.settings.paper_trading and self.settings.shadow_trade_all_signals and quality.get("paperEligible")):
+                if quality.get("paperEligible"):
+                    # tradeable_runner / momentum override — enter despite quality issues
+                    # paperEligible means the runner's own tape overrides secondary gates
+                    pass
+                elif self.settings.paper_trading and self.settings.shadow_trade_all_signals:
+                    skipped.append({"candidate": candidate.get("id"), "reason": quality["reason"], "quality": quality})
+                    quality = {**quality, "shadowOverride": True, "reason": f"SHADOW despite: {quality['reason']}"}
+                else:
+                    skipped.append({"candidate": candidate.get("id"), "reason": quality["reason"], "quality": quality})
+                    # Log near-miss runners for post-session analysis
+                    runner_s = (candidate.get("runnerSignal") or {})
+                    if runner_s.get("score", 0) >= 70 or runner_s.get("momentumOverride"):
+                        AutoTraderEngine._shared_missed_runners.append({
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "symbol": candidate.get("symbol"), "side": candidate.get("side"),
+                            "strike": candidate.get("strike"), "premium": candidate.get("lastPremium"),
+                            "runnerScore": runner_s.get("score"), "momentumOverride": runner_s.get("momentumOverride"),
+                            "premiumVelocity": runner_s.get("premiumVelocityPct"), "reason": quality["reason"],
+                            "nearExpiry": candidate.get("nearExpiry"), "daysToExpiry": candidate.get("daysToExpiry"),
+                        })
                     continue
-                quality = {**quality, "shadowOverride": True, "reason": f"SHADOW PAPER despite rejection: {quality['reason']}"}
             if trading_control.get("autoTradingStopped") and self.settings.paper_trading_respects_stop:
                 skipped.append({"candidate": candidate.get("id"), "reason": "manual stop active", "quality": quality})
                 continue
@@ -1417,9 +1438,10 @@ class AutoTraderEngine:
         news = self._latest_news_state or {}
         impact = news.get("impact") or {}
         if impact.get("avoidFreshTrades") and not result.get("blockNewPaperTrades"):
+            # Block regular trades but NOT momentum override — velocity overrides news hesitation
             result["blockNewPaperTrades"] = True
-            result["blockReason"] = f"News: avoid entries — {news.get('eventRisk')} risk, {news.get('sentiment')} sentiment"
-            result.setdefault("adjustments", []).append("News avoidFreshTrades: paper entries paused")
+            result["blockReason"] = f"News: avoid regular entries — {news.get('eventRisk')} risk, {news.get('sentiment')} sentiment (momentum override still active)"
+            result.setdefault("adjustments", []).append("News avoidFreshTrades: scalps paused, momentum override runners still allowed")
         elif impact.get("raiseTqs"):
             result["minEntryTqs"] = int(result.get("minEntryTqs", 74)) + 4
             result.setdefault("adjustments", []).append(f"News event risk ({news.get('eventRisk')}): TQS floor +4")
@@ -1439,7 +1461,12 @@ class AutoTraderEngine:
         premium = float(candidate.get("lastPremium") or runner.get("premium") or runner.get("lastPremium") or 0)
         min_ltp = float(self.settings.paper_min_premium_ltp or 0)
         if min_ltp > 0 and premium < min_ltp:
-            return False, f"LTP ₹{premium:.0f} below high-confidence minimum ₹{min_ltp:.0f}"
+            # Momentum override and near-expiry options bypass the LTP floor
+            # ₹48 near-expiry PE can still be a 100%+ runner — don't miss for LTP
+            if runner.get("momentumOverride") or candidate.get("nearExpiry"):
+                pass  # bypass — velocity/near-expiry is the signal
+            else:
+                return False, f"LTP ₹{premium:.0f} below high-confidence minimum ₹{min_ltp:.0f}"
         if candidate.get("strategyType") == "EXPLOSIVE_RUNNER":
             confidence = str(runner.get("confidence") or "").upper()
             score = float(runner.get("score") or candidate.get("tqs") or 0)
@@ -1689,14 +1716,16 @@ class AutoTraderEngine:
 
         news = self._latest_news_state or {}
         news_impact = news.get("impact") or {}
-        if news_impact.get("avoidFreshTrades"):
-            score -= 40.0
-        elif news_impact.get("raiseTqs"):
+        if news_impact.get("avoidFreshTrades") and not runner.get("momentumOverride"):
+            score -= 40.0  # penalise regular trades; momentum override bypasses
+        elif news_impact.get("raiseTqs") and not runner.get("momentumOverride"):
             score -= 7.0
         if news_impact.get("allowRunnerBias") and is_runner:
             bias_side = str(news_impact.get("biasSide") or "")
             if not bias_side or bias_side == side:
                 score += 12.0
+        if runner.get("momentumOverride"):
+            score = max(score, 70.0)  # momentum override always passes AI predictor
 
         expected_move = max(required_move * 2.0, float((runner.get("maxPointsPlan") or {}).get("targetPremiumPct") or 0) * premium / 100)
         if is_runner:

@@ -1178,6 +1178,17 @@ async def auto_trader_performance_analysis(engine: AutoTraderEngine = Depends(ge
     return engine.performance_analysis()
 
 
+@router.get("/auto-trader/missed-runners")
+async def auto_trader_missed_runners(engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
+    """Near-miss runner signals — high-score runners that were blocked. Diagnose missed moves here."""
+    missed = list(engine._shared_missed_runners)
+    return {
+        "count": len(missed),
+        "missedRunners": missed[-50:],  # last 50 near-misses
+        "note": "Runners with score ≥70 or momentumOverride=True that were blocked by quality/news/cooldown gates.",
+    }
+
+
 @router.get("/risk/profiles")
 async def risk_profiles(settings: Settings = Depends(get_settings)) -> dict:
     return {"activeProfile": settings.aggression_profile, "profiles": profile_list()}
