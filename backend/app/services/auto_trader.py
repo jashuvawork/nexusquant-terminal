@@ -1593,14 +1593,22 @@ class AutoTraderEngine:
     def _entry_correlation_gate(self, candidate: dict[str, Any], session_adj: dict[str, Any]) -> str | None:
         side = str(candidate.get("side") or "").upper()
         bucket = str(session_adj.get("sessionBucket") or "UNKNOWN")
-        if int(self.settings.paper_max_open_trades) > 0 and len(self.open_paper) >= int(self.settings.paper_max_open_trades):
-            return f"max open paper trades reached ({self.settings.paper_max_open_trades}); avoid correlated stacking"
+        runner_sig = (candidate.get("runnerSignal") or {})
+        is_momentum_override = bool(runner_sig.get("momentumOverride"))
+        # Momentum override: allow stacking across different symbols (NIFTY+SENSEX+BANKNIFTY all moving)
+        # Hard cap at 5 total to prevent runaway stacking
+        hard_cap = 5 if is_momentum_override else int(self.settings.paper_max_open_trades)
+        if len(self.open_paper) >= hard_cap:
+            return f"max open trades reached ({hard_cap})"
+        # For momentum override: allow up to 3 same-side (all 3 symbols crashing/surging simultaneously)
+        same_side_cap = 3 if is_momentum_override else int(self.settings.paper_max_open_same_side_trades)
         same_side_open = [trade for trade in self.open_paper.values() if str(trade.side or "").upper() == side]
-        if int(self.settings.paper_max_open_same_side_trades) > 0 and len(same_side_open) >= int(self.settings.paper_max_open_same_side_trades):
-            return f"{side} side already has an open paper trade"
+        if same_side_cap > 0 and len(same_side_open) >= same_side_cap:
+            return f"{side} side at max capacity ({same_side_cap})"
         now = datetime.now(timezone.utc)
-        entry_cooldown = max(0, int(self.settings.paper_same_side_entry_cooldown_seconds))
-        loss_cooldown = max(0, int(self.settings.paper_same_side_loss_cooldown_seconds))
+        # Momentum override: 30s entry cooldown (vs 300s) — catch continuation of explosive move
+        entry_cooldown = 30 if is_momentum_override else max(0, int(self.settings.paper_same_side_entry_cooldown_seconds))
+        loss_cooldown = 60 if is_momentum_override else max(0, int(self.settings.paper_same_side_loss_cooldown_seconds))
         for trade in reversed(list(self.closed_paper)[-50:]):
             if str(trade.side or "").upper() != side:
                 continue
