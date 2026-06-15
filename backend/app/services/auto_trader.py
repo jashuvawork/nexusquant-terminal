@@ -890,8 +890,12 @@ class AutoTraderEngine:
 
     def _rolling_proof(self, limit: int | None = None) -> dict[str, Any]:
         limit = int(limit or self.settings.paper_live_readiness_min_trades)
-        trades = list(self.closed_paper)[-limit:]
+        # Use all in-memory closed trades (up to deque maxlen=2000), not just today
+        all_closed = list(self.closed_paper)
+        trades = all_closed[-limit:]
         summary = self._summarize_trades(trades)
+        # Total all-time count (for 100-trade gate progress across resets)
+        all_time_total = len(all_closed)
         capital = float(self.settings.trading_capital_default or 0)
         max_drawdown_pct = (float(summary.get("maxDrawdown") or 0) / capital * 100) if capital > 0 else 0.0
         avg_win = (float(summary.get("grossProfit") or 0) / int(summary.get("wins") or 1)) if int(summary.get("wins") or 0) else 0.0
@@ -899,6 +903,7 @@ class AutoTraderEngine:
         return {
             **summary,
             "windowTrades": limit,
+            "allTimeTrades": all_time_total,
             "sampleComplete": len(trades) >= limit,
             "maxDrawdownPct": round(max_drawdown_pct, 2),
             "avgWin": round(avg_win, 2),
@@ -1579,15 +1584,22 @@ class AutoTraderEngine:
                 return f"{side} side same-window entry cooldown active after {trade.symbol} trade ({int((entry_cooldown - age_seconds) // 60)}m left)"
         return None
 
-    def _breadth_confirmation(self, side: str) -> dict[str, Any]:
+    def _breadth_confirmation(self, side: str, symbol: str = "") -> dict[str, Any]:
         snapshot = self._latest_market_snapshot or {}
         breadth = snapshot.get("breadth") or {}
         count = int(snapshot.get("count") or 0)
-        # Prefer stock-level score (50 stocks) over index-level (16 indices) when available
-        stock_score = breadth.get("stockScore")
-        raw_score = float(stock_score if stock_score is not None else breadth.get("score") or 50.0)
+        sector_breadth = snapshot.get("sectorBreadth") or {}
+        # For BANKNIFTY: use banking-sector breadth score instead of overall Nifty 50 breadth
+        sym_upper = symbol.upper()
+        if sym_upper == "BANKNIFTY" and sector_breadth.get("banking", {}).get("count", 0) >= 4:
+            banking = sector_breadth["banking"]
+            raw_score = float(banking.get("score") or 50.0)
+            bias = str(banking.get("bias") or "NEUTRAL")
+        else:
+            stock_score = breadth.get("stockScore")
+            raw_score = float(stock_score if stock_score is not None else breadth.get("score") or 50.0)
+            bias = str(breadth.get("bias") or "NEUTRAL")
         score = raw_score
-        bias = str(breadth.get("bias") or "NEUTRAL")
         enabled = bool(self.settings.paper_breadth_filter_enabled)
         enough_data = count >= int(self.settings.paper_breadth_min_count)
         side = str(side or "").upper()
@@ -1729,9 +1741,12 @@ class AutoTraderEngine:
         side_gate = self._side_performance_gate(candidate)
         if side_gate:
             reasons.append(side_gate)
-        breadth = self._breadth_confirmation(side)
-        if breadth.get("available") and not breadth.get("aligned"):
+        symbol = str(candidate.get("symbol") or "")
+        breadth = self._breadth_confirmation(side, symbol=symbol)
+        if breadth.get("available") and not breadth.get("aligned") and not tradeable_runner:
             reasons.append(str(breadth.get("reason") or "market breadth does not confirm trade side"))
+        elif breadth.get("available") and not breadth.get("aligned") and tradeable_runner:
+            pass  # elite runners bypass stale breadth; runner tape score is more current
         high_conf_ok, high_conf_reason = self._passes_high_confidence_gate(candidate, runner)
         if not high_conf_ok:
             reasons.append(high_conf_reason)
