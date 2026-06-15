@@ -222,10 +222,27 @@ class ExplosiveRunnerEngine:
                 confidence = "MEDIUM"
                 reasons.append("momentum runner auto-candidate")
 
-        target_pct = 45 if elite_runner else 33 if confidence == "HIGH" else 22 if confidence == "MEDIUM" else 11
-        hard_stop_pct = 8 if elite_runner else 10 if confidence == "HIGH" else 7
-        trail_pct = 24 if elite_runner else 18 if confidence == "HIGH" else 12
-        partial_pct = 0.25 if elite_runner else 0.35 if confidence == "HIGH" else 0.5
+        # Momentum override: bigger targets because these are explosive moves (50-100%+ potential)
+        if momentum_override and momentum_aligned:
+            target_pct = 60  # ₹130 → ₹208 is 60% — capture the full open-drive explosion
+            hard_stop_pct = 8
+            trail_pct = 18   # tighter trail — lock in gains faster on volatile near-expiry
+            partial_pct = 0.3
+        elif elite_runner:
+            target_pct = 45
+            hard_stop_pct = 8
+            trail_pct = 24
+            partial_pct = 0.25
+        elif momentum_override:
+            target_pct = 50  # strong velocity without direction lock — still big target
+            hard_stop_pct = 8
+            trail_pct = 18
+            partial_pct = 0.35
+        else:
+            target_pct = 33 if confidence == "HIGH" else 22 if confidence == "MEDIUM" else 11
+            hard_stop_pct = 8 if confidence == "HIGH" else 7
+            trail_pct = 18 if confidence == "HIGH" else 12
+            partial_pct = 0.35 if confidence == "HIGH" else 0.5
 
         return {
             "strategyType": "EXPLOSIVE_RUNNER",

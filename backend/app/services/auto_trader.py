@@ -1862,7 +1862,9 @@ class AutoTraderEngine:
         risk_plan = self._paper_risk_plan(candidate, quality, premium, session_adj)
         if available_capital is not None and premium > 0:
             capital = max(0.0, float(trading_capital or 0))
-            allocation_pct = float(self.settings.paper_trade_allocation_pct) * float(session_adj.get("allocationPctMultiplier") or 1.0)
+            runner_sig_inner = candidate.get("runnerSignal") or {}
+            alloc_boost = 1.5 if runner_sig_inner.get("momentumOverride") else 1.0
+            allocation_pct = float(self.settings.paper_trade_allocation_pct) * float(session_adj.get("allocationPctMultiplier") or 1.0) * alloc_boost
             if tradeable_runner:
                 allocation_pct = max(allocation_pct, float(self.settings.paper_trade_allocation_pct))
             target_allocation = capital * max(0.0, allocation_pct) / 100 if capital > 0 else max(0.0, available_capital)

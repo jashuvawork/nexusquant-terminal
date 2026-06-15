@@ -169,7 +169,7 @@ class Settings(BaseSettings):
     shadow_trade_all_signals: bool = False
     market_poll_seconds: float = 3.0
     near_expiry_runner_enabled: bool = True
-    near_expiry_runner_max_days: int = 5
+    near_expiry_runner_max_days: int = 7
     websocket_heartbeat_seconds: float = 10.0
     websocket_send_interval_seconds: float = 1.0
 
