@@ -103,7 +103,7 @@ class Settings(BaseSettings):
     open_drive_profit_stop_pct: float = 33.0
     open_drive_allocation_multiplier: float = 1.85
     max_paper_trade_seconds: int = 240
-    paper_duplicate_signal_cooldown_seconds: int = 150
+    paper_duplicate_signal_cooldown_seconds: int = 90
     paper_trade_allocation_pct: float = 40.0
     paper_min_trade_allocation_pct: float = 20.0
     paper_max_daily_loss_pct: float = 5.0
@@ -113,8 +113,8 @@ class Settings(BaseSettings):
     paper_max_trade_loss_amount: float = 7500.0
     paper_max_open_trades: int = 3
     paper_max_open_same_side_trades: int = 2
-    paper_same_side_entry_cooldown_seconds: int = 600
-    paper_same_side_loss_cooldown_seconds: int = 1200
+    paper_same_side_entry_cooldown_seconds: int = 300
+    paper_same_side_loss_cooldown_seconds: int = 600
     paper_ai_min_win_probability_pct: float = 65.0
     paper_ai_min_risk_reward: float = 2.0
     paper_ai_min_confidence_pct: float = 75.0
@@ -167,7 +167,7 @@ class Settings(BaseSettings):
     paper_min_hold_before_chop_exit_seconds: int = 45
     paper_trading_respects_stop: bool = False
     shadow_trade_all_signals: bool = False
-    market_poll_seconds: float = 5.0
+    market_poll_seconds: float = 3.0
     websocket_heartbeat_seconds: float = 10.0
     websocket_send_interval_seconds: float = 1.0
 

@@ -1438,16 +1438,21 @@ class AutoTraderEngine:
             return False, f"LTP ₹{premium:.0f} below high-confidence minimum ₹{min_ltp:.0f}"
         if candidate.get("strategyType") == "EXPLOSIVE_RUNNER":
             confidence = str(runner.get("confidence") or "").upper()
-            if confidence != "HIGH":
-                return False, f"runner confidence {confidence or 'LOW'}; HIGH confidence only"
-            if not runner.get("eliteRunner"):
-                return False, "explosive runner is not elite quality"
             score = float(runner.get("score") or candidate.get("tqs") or 0)
             min_score = float(self.settings.paper_high_confidence_min_runner_score)
-            if score < min_score:
-                return False, f"runner score {score:.0f} below high-confidence minimum {min_score:.0f}"
-            if not runner.get("momentumAligned"):
-                return False, "high-confidence runners require momentum alignment"
+            # Elite HIGH confidence (preferred path)
+            if confidence == "HIGH" and runner.get("eliteRunner"):
+                if score < min_score:
+                    return False, f"runner score {score:.0f} below high-confidence minimum {min_score:.0f}"
+            # Allow MEDIUM confidence with strong score (≥75) for more trade opportunities
+            elif confidence == "HIGH" and score >= 75:
+                pass  # HIGH confidence non-elite allowed at score ≥75
+            elif confidence == "MEDIUM" and score >= 80 and runner.get("momentumAligned"):
+                pass  # MEDIUM confidence with strong tape (score ≥80, momentum) — secondary path
+            else:
+                return False, f"runner: confidence={confidence} score={score:.0f}; need HIGH+elite or HIGH≥75 or MEDIUM≥80+momentum"
+            if not runner.get("momentumAligned") and confidence != "HIGH":
+                return False, "non-HIGH-confidence runners require momentum alignment"
             chart_bias = str(candidate.get("chartBias") or "")
             side = str(candidate.get("side") or "")
             if chart_bias in {"CALL", "PUT"} and side in {"CALL", "PUT"} and side != chart_bias:

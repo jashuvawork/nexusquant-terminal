@@ -97,18 +97,34 @@ class UpstoxClient:
         )
 
     async def ltp(self, instrument_keys: list[str]) -> dict[str, Any]:
-        return await self._request(
-            "GET",
-            f"{UPSTOX_API_BASE}/v3/market-quote/ltp",
-            params={"instrument_key": ",".join(instrument_keys)},
-        )
+        # HFT endpoint has lower latency for market quotes
+        try:
+            return await self._request(
+                "GET",
+                f"{UPSTOX_HFT_BASE}/v3/market-quote/ltp",
+                params={"instrument_key": ",".join(instrument_keys)},
+            )
+        except Exception:
+            return await self._request(
+                "GET",
+                f"{UPSTOX_API_BASE}/v3/market-quote/ltp",
+                params={"instrument_key": ",".join(instrument_keys)},
+            )
 
     async def full_market_quote(self, instrument_keys: list[str]) -> dict[str, Any]:
-        return await self._request(
-            "GET",
-            f"{UPSTOX_API_BASE}/v2/market-quote/quotes",
-            params={"instrument_key": ",".join(instrument_keys)},
-        )
+        # HFT endpoint for lower latency on market data
+        try:
+            return await self._request(
+                "GET",
+                f"{UPSTOX_HFT_BASE}/v2/market-quote/quotes",
+                params={"instrument_key": ",".join(instrument_keys)},
+            )
+        except Exception:
+            return await self._request(
+                "GET",
+                f"{UPSTOX_API_BASE}/v2/market-quote/quotes",
+                params={"instrument_key": ",".join(instrument_keys)},
+            )
 
 
     async def option_contracts(self, instrument_key: str, expiry_date: str | None = None) -> dict[str, Any]:
