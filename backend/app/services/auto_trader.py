@@ -1513,6 +1513,9 @@ class AutoTraderEngine:
         if candidate.get("strategyType") != "EXPLOSIVE_RUNNER":
             return False
         runner = candidate.get("runnerSignal") or {}
+        # MOMENTUM OVERRIDE: premium velocity burst bypasses all score/elite gates
+        if runner.get("momentumOverride") and str(runner.get("confidence") or "").upper() == "HIGH":
+            return True  # velocity is the signal — enter now, let trailing manage risk
         momentum_runner = self._is_momentum_aligned_runner(candidate, runner)
         if not momentum_runner and not self.settings.paper_always_trade_explosive_runners:
             return False
@@ -1752,7 +1755,10 @@ class AutoTraderEngine:
             reasons.append(side_gate)
         symbol = str(candidate.get("symbol") or "")
         breadth = self._breadth_confirmation(side, symbol=symbol)
-        if breadth.get("available") and not breadth.get("aligned") and not tradeable_runner:
+        runner_momentum_override = bool((runner.get("momentumOverride")) or (runner.get("premiumVelocityPct", 0) >= 10.0))
+        if runner_momentum_override:
+            pass  # momentum override: premium velocity is the signal, not breadth
+        elif breadth.get("available") and not breadth.get("aligned") and not tradeable_runner:
             reasons.append(str(breadth.get("reason") or "market breadth does not confirm trade side"))
         elif breadth.get("available") and not breadth.get("aligned") and tradeable_runner:
             pass  # elite runners bypass stale breadth; runner tape score is more current

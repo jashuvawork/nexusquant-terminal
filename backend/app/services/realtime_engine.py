@@ -137,16 +137,17 @@ class RealTimeMarketEngine:
         expiry_state = await self.resolve_expiry(selected_symbol, instrument_key, data_warnings)
         expiry = expiry_state["selectedExpiry"]
 
-        # For explosive runner: also check nearest available expiry if within near_expiry_runner_max_days
-        # Near-expiry options have higher gamma → premium moves faster → bigger runner scores
+        # Near-expiry explosive runner scanner
+        # Near-expiry options: highest gamma, biggest % moves on small underlying moves
+        # NIFTY 23850 PE June 16 went ₹48→₹98 in 25 min — ONLY possible with near-expiry gamma
         near_expiry: str | None = None
         if self.settings.near_expiry_runner_enabled:
             available = expiry_state.get("availableExpiries") or []
-            today = datetime.now(timezone.utc).date()
+            today_date = datetime.now(timezone.utc).date()
             for exp in available:
                 try:
                     exp_date = datetime.strptime(exp, "%Y-%m-%d").date()
-                    days_to_exp = (exp_date - today).days
+                    days_to_exp = (exp_date - today_date).days
                     if 1 <= days_to_exp <= self.settings.near_expiry_runner_max_days and exp != expiry:
                         near_expiry = exp
                         break

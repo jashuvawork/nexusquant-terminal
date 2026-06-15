@@ -190,13 +190,15 @@ def paper_session_adjustments(
         block_reason = "Midday chop window: paper entries paused unless runner score >= 90 with chart alignment."
         adjustments.append("Midday chop: block new paper trades except A+ runners; tighter stops and shorter holds.")
     elif bucket == "CLOSING_MOMENTUM":
-        min_entry_tqs = max(70, min_entry_tqs)
-        min_runner_score = max(80.0, min_runner_score - 2.0)
-        allocation_multiplier = 1.0
-        duplicate_cooldown = max(180, int(duplicate_cooldown * 0.8))
-        target_multiplier = 1.0
-        max_hold_seconds = min(max_hold_seconds, 180)
-        adjustments.append("Closing momentum: moderate gates for continuation setups.")
+        # 14:30-15:15 IST: where the BIGGEST explosive moves happen (end-of-day gamma, institutional)
+        # Lower ALL thresholds — better to miss a false signal than miss a 100%+ move
+        min_entry_tqs = max(58, min_entry_tqs - 10)   # was max(70), now 58 — catch moves earlier
+        min_runner_score = max(65.0, min_runner_score - 15.0)  # was max(80), now 65 — near-expiry high-gamma
+        allocation_multiplier = 1.2   # slightly larger size — end-of-day moves are real
+        duplicate_cooldown = max(60, int(duplicate_cooldown * 0.4))  # fast re-entry for momentum continuation
+        target_multiplier = 1.3    # bigger targets — closing moves extend further
+        max_hold_seconds = max_hold_seconds  # no cap — let trailing exit handle it
+        adjustments.append("Closing momentum: AGGRESSIVE gates — TQS-10, runner-15, fast cooldowns for end-of-day explosive moves.")
     elif bucket == "NORMAL":
         adjustments.append("Normal session: use configured high-PF thresholds.")
     elif bucket in {"PREMARKET", "CLOSED"}:
