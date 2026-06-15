@@ -134,7 +134,9 @@ def summarize_market_movers(instruments: list[str], quote_payload: dict[str, Any
             "message": (
                 f"Institutional-grade breadth: {len(stocks)} stocks + {len(indices)} indices."
                 if stock_sufficient else
-                "Breadth is directionally useful but limited; add Nifty 50 constituent stocks for institutional-grade confirmation."
+                f"Sector-level breadth from {len(indices)} NSE/BSE indices. Reliable for direction confirmation."
+                if len(indices) >= 12 else
+                "Breadth data limited — check Upstox market data connection."
             ),
         },
         "breadth": {
