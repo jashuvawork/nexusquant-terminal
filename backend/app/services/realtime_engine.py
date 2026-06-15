@@ -118,8 +118,8 @@ class RealTimeMarketEngine:
     async def snapshot(self, symbol: str | None = None) -> dict[str, Any]:
         processing_started = perf_counter()
         selected_symbol = (symbol or self.settings.primary_symbol).upper()
-        if selected_symbol not in {"NIFTY", "SENSEX"}:
-            raise MarketConfigurationError("PRIMARY_SYMBOL must be NIFTY or SENSEX.")
+        if selected_symbol not in {"NIFTY", "SENSEX", "BANKNIFTY"}:
+            raise MarketConfigurationError(f"Symbol {selected_symbol} not supported. Use NIFTY, SENSEX, or BANKNIFTY.")
         cached = self._snapshot_cache.get(selected_symbol)
         if cached:
             age_seconds = monotonic() - cached[0]

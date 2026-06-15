@@ -12,6 +12,7 @@ import {
   BacktestingPanel,
   InfrastructureTelemetry,
   LiveReadinessGate,
+  MarketHeatmapPanel,
   MorningChecklistPanel,
   PaperTradingPanel,
   PortfolioPanel,
@@ -100,6 +101,7 @@ function App() {
 
   const content = {
     execution: <ExecutionHud snapshot={displaySnapshot} />,
+    marketHeatmap: <MarketHeatmapPanel snapshot={displaySnapshot} />,
     heatmap: <HeatmapTerminal snapshot={displaySnapshot} />,
     orderflow: <OrderflowAnalytics snapshot={displaySnapshot} />,
     ai: <AiMatrix snapshot={displaySnapshot} />,

@@ -1,8 +1,9 @@
 import type { LucideIcon } from 'lucide-react';
-import { Activity, BarChart3, Bot, BrainCircuit, CheckSquare, DatabaseZap, Gauge, History, LineChart, Lock, Network, Radar, ReceiptText, Route, Settings, ShieldCheck, WalletCards } from 'lucide-react';
+import { Activity, BarChart3, Bot, BrainCircuit, CheckSquare, DatabaseZap, Gauge, Grid, History, LineChart, Lock, Network, Radar, ReceiptText, Route, Settings, ShieldCheck, WalletCards } from 'lucide-react';
 
 export type ModuleId =
   | 'execution'
+  | 'marketHeatmap'
   | 'heatmap'
   | 'orderflow'
   | 'ai'
@@ -28,7 +29,8 @@ interface NavItem {
 
 export const navItems: NavItem[] = [
   { id: 'execution', label: 'Execution HUD', icon: Gauge },
-  { id: 'heatmap', label: 'Heatmap Terminal', icon: Radar },
+  { id: 'marketHeatmap', label: 'Market Heatmap', icon: Grid },
+  { id: 'heatmap', label: 'Option Heatmap', icon: Radar },
   { id: 'orderflow', label: 'Orderflow Analytics', icon: Activity },
   { id: 'ai', label: 'AI Matrix', icon: BrainCircuit },
   { id: 'greeks', label: 'Greeks & IV', icon: LineChart },

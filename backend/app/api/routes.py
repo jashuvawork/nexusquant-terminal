@@ -281,6 +281,119 @@ async def market_news(symbol: Literal["NIFTY", "SENSEX", "BANKNIFTY"], settings:
     return state
 
 
+NIFTY50_STOCKS = [
+    "NSE_EQ|HDFCBANK","NSE_EQ|ICICIBANK","NSE_EQ|RELIANCE","NSE_EQ|INFY","NSE_EQ|BHARTIARTL",
+    "NSE_EQ|ITC","NSE_EQ|LT","NSE_EQ|TCS","NSE_EQ|AXISBANK","NSE_EQ|SBIN",
+    "NSE_EQ|KOTAKBANK","NSE_EQ|WIPRO","NSE_EQ|HCLTECH","NSE_EQ|BAJFINANCE","NSE_EQ|ADANIENT",
+    "NSE_EQ|TATAMOTORS","NSE_EQ|NTPC","NSE_EQ|ONGC","NSE_EQ|POWERGRID","NSE_EQ|SUNPHARMA",
+    "NSE_EQ|JSWSTEEL","NSE_EQ|TITAN","NSE_EQ|HINDUNILVR","NSE_EQ|NESTLEIND","NSE_EQ|ULTRACEMCO",
+    "NSE_EQ|MARUTI","NSE_EQ|BAJAJFINSV","NSE_EQ|DRREDDY","NSE_EQ|CIPLA","NSE_EQ|ADANIPORTS",
+    "NSE_EQ|ASIANPAINT","NSE_EQ|EICHERMOT","NSE_EQ|TRENT","NSE_EQ|TATASTEEL","NSE_EQ|BEL",
+    "NSE_EQ|HEROMOTOCO","NSE_EQ|HINDALCO","NSE_EQ|COALINDIA","NSE_EQ|SBILIFE","NSE_EQ|HDFCLIFE",
+    "NSE_EQ|TECHM","NSE_EQ|APOLLOHOSP","NSE_EQ|MAXHEALTH","NSE_EQ|TATACONSUM","NSE_EQ|JIOFIN",
+    "NSE_EQ|SHRIRAMFIN","NSE_EQ|ETERNAL","NSE_EQ|SIEMENS","NSE_EQ|INDUSINDBK","NSE_EQ|BAJAJ-AUTO",
+]
+BANKNIFTY_STOCKS = [
+    "NSE_EQ|HDFCBANK","NSE_EQ|ICICIBANK","NSE_EQ|AXISBANK","NSE_EQ|SBIN","NSE_EQ|KOTAKBANK",
+    "NSE_EQ|INDUSINDBK","NSE_EQ|BANDHANBNK","NSE_EQ|FEDERALBNK","NSE_EQ|IDFCFIRSTB",
+    "NSE_EQ|PNB","NSE_EQ|BANKBARODA","NSE_EQ|AUBANK",
+]
+SENSEX30_STOCKS = [
+    "NSE_EQ|HDFCBANK","NSE_EQ|RELIANCE","NSE_EQ|ICICIBANK","NSE_EQ|INFY","NSE_EQ|BHARTIARTL",
+    "NSE_EQ|ITC","NSE_EQ|TCS","NSE_EQ|AXISBANK","NSE_EQ|SBIN","NSE_EQ|KOTAKBANK",
+    "NSE_EQ|LT","NSE_EQ|MARUTI","NSE_EQ|HINDUNILVR","NSE_EQ|BAJFINANCE","NSE_EQ|SUNPHARMA",
+    "NSE_EQ|TITAN","NSE_EQ|NESTLEIND","NSE_EQ|ULTRACEMCO","NSE_EQ|POWERGRID","NSE_EQ|NTPC",
+    "NSE_EQ|TATAMOTORS","NSE_EQ|DRREDDY","NSE_EQ|WIPRO","NSE_EQ|HCLTECH","NSE_EQ|BAJAJFINSV",
+    "NSE_EQ|ADANIENT","NSE_EQ|ADANIPORTS","NSE_EQ|ASIANPAINT","NSE_EQ|TATACONSUM","NSE_EQ|ETERNAL",
+]
+STOCK_WEIGHTS = {
+    "HDFCBANK":13.0,"ICICIBANK":8.5,"RELIANCE":8.0,"INFY":6.0,"BHARTIARTL":4.5,
+    "ITC":4.2,"LT":3.8,"TCS":3.5,"AXISBANK":3.2,"SBIN":3.0,"KOTAKBANK":2.8,
+    "WIPRO":2.2,"HCLTECH":2.0,"BAJFINANCE":1.9,"ADANIENT":1.8,"TATAMOTORS":1.7,
+    "MARUTI":1.6,"NTPC":1.5,"ONGC":1.4,"POWERGRID":1.3,"SUNPHARMA":1.3,"TITAN":1.2,
+    "HINDUNILVR":1.1,"NESTLEIND":1.0,"ULTRACEMCO":1.0,"BAJAJFINSV":0.9,"DRREDDY":0.9,
+    "CIPLA":0.8,"ADANIPORTS":0.8,"ASIANPAINT":0.8,"INDUSINDBK":0.8,"BANDHANBNK":0.5,
+    "FEDERALBNK":0.4,"IDFCFIRSTB":0.4,"PNB":0.4,"BANKBARODA":0.4,"AUBANK":0.4,
+}
+
+
+def _parse_stock_ltp(raw_data: dict) -> list[dict]:
+    """Parse Upstox LTP or full-quote response into heatmap items."""
+    items = []
+    for key, val in raw_data.items():
+        sym = key.split("|")[-1].split(":")[-1]
+        ltp = float(val.get("last_price") or val.get("lastPrice") or val.get("ltp") or 0)
+        prev = float(val.get("close") or val.get("ohlc", {}).get("close") or val.get("previous_close") or 0)
+        change_pct = round((ltp - prev) / prev * 100, 2) if prev else 0.0
+        vol = int(val.get("volume") or val.get("volume_traded") or 0)
+        items.append({
+            "symbol": sym,
+            "instrumentKey": key,
+            "ltp": ltp,
+            "prevClose": prev,
+            "changePct": change_pct,
+            "volume": vol,
+            "weight": STOCK_WEIGHTS.get(sym, 0.3),
+            "tone": "bullish" if change_pct > 0.5 else "bearish" if change_pct < -0.5 else "neutral",
+        })
+    return sorted(items, key=lambda x: x["weight"], reverse=True)
+
+
+@router.get("/market/heatmap")
+async def market_heatmap(
+    index: str = "NIFTY",
+    settings: Settings = Depends(get_settings),
+    client: UpstoxClient = Depends(get_upstox),
+) -> dict:
+    """Constituent stock heatmap for NIFTY, SENSEX, or BANKNIFTY.
+    Returns price change % and weight for each constituent stock."""
+    idx = index.upper()
+    stock_keys = {"BANKNIFTY": BANKNIFTY_STOCKS, "SENSEX": SENSEX30_STOCKS}.get(idx, NIFTY50_STOCKS)
+    items: list[dict] = []
+    error: str | None = None
+
+    # Try LTP endpoint (v3) first — faster and simpler
+    try:
+        batch = stock_keys[:50]  # max 50 per request
+        resp = await client.ltp(batch)
+        raw = resp.get("data") or {}
+        if raw:
+            items = _parse_stock_ltp(raw)
+    except Exception as exc:
+        error = str(exc)
+
+    # If LTP failed, try full_market_quote
+    if not items:
+        try:
+            resp2 = await client.full_market_quote(stock_keys[:30])
+            raw2 = resp2.get("data") or {}
+            if raw2:
+                items = _parse_stock_ltp(raw2)
+        except Exception as exc2:
+            error = f"LTP: {error} | Quote: {exc2}"
+
+    if not items:
+        return {"index": idx, "available": False, "reason": error or "No data returned by Upstox", "stocks": []}
+
+    advancing = sum(1 for i in items if i["changePct"] > 0)
+    declining = sum(1 for i in items if i["changePct"] < 0)
+    weight_adv = sum(i["weight"] for i in items if i["changePct"] > 0)
+    weight_dec = sum(i["weight"] for i in items if i["changePct"] < 0)
+    total_weight = weight_adv + weight_dec
+    breadth_score = round(weight_adv / total_weight * 100, 1) if total_weight else 50.0
+
+    return {
+        "index": idx,
+        "available": True,
+        "stockCount": len(items),
+        "advancing": advancing,
+        "declining": declining,
+        "breadthScore": breadth_score,
+        "breadthBias": "BULLISH" if breadth_score >= 60 else "BEARISH" if breadth_score <= 40 else "NEUTRAL",
+        "stocks": items,
+    }
+
+
 @router.get("/market/movers")
 async def market_movers(settings: Settings = Depends(get_settings), client: UpstoxClient = Depends(get_upstox)) -> dict:
     instruments = settings.market_snapshot_instrument_list

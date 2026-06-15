@@ -874,6 +874,98 @@ export function SettingsPanel() {
   );
 }
 
+interface HeatmapStock {
+  symbol: string; instrumentKey: string; ltp: number; prevClose: number;
+  changePct: number; volume: number; weight: number; tone: string;
+}
+interface HeatmapData {
+  index: string; available: boolean; reason?: string; stockCount?: number;
+  advancing?: number; declining?: number; breadthScore?: number; breadthBias?: string;
+  stocks?: HeatmapStock[];
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function MarketHeatmapPanel(_props: { snapshot: TerminalSnapshot }) {
+  const [index, setIndex] = useState<'NIFTY' | 'SENSEX' | 'BANKNIFTY'>('NIFTY');
+  const [data, setData] = useState<HeatmapData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const r = await fetch(`${apiUrl}/api/market/heatmap?index=${index}`);
+        const d: HeatmapData = await r.json();
+        if (!cancelled) { setData(d); setLoading(false); }
+      } catch (e) {
+        if (!cancelled) { setError(String(e)); setLoading(false); }
+      }
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, [index]);
+
+  const stocks = data?.stocks ?? [];
+  const maxWeight = Math.max(...stocks.map(s => s.weight), 1);
+
+  return (
+    <Card title="Market Heatmap" eyebrow="Constituent stock performance — weight-sized tiles, color by % change">
+      <div className="flex gap-2 mb-4">
+        {(['NIFTY', 'SENSEX', 'BANKNIFTY'] as const).map(idx => (
+          <button key={idx} type="button" onClick={() => setIndex(idx)}
+            className={`rounded-xl border px-4 py-2 text-xs font-bold uppercase tracking-widest transition ${index === idx ? 'border-cyan-300/50 bg-cyan-300/15 text-cyan-100' : 'border-slate-700 bg-slate-950/70 text-slate-400 hover:border-cyan-300/30'}`}>
+            {idx}
+          </button>
+        ))}
+      </div>
+
+      {data && data.available && (
+        <div className="mb-4 grid grid-cols-4 gap-2 text-center text-xs">
+          <div className="rounded-xl bg-slate-900 p-2"><p className="text-slate-500">Stocks</p><p className="text-lg font-black text-white">{data.stockCount}</p></div>
+          <div className="rounded-xl bg-emerald-900/40 p-2"><p className="text-slate-500">Advancing</p><p className="text-lg font-black text-emerald-300">{data.advancing}</p></div>
+          <div className="rounded-xl bg-rose-900/40 p-2"><p className="text-slate-500">Declining</p><p className="text-lg font-black text-rose-300">{data.declining}</p></div>
+          <div className={`rounded-xl p-2 ${data.breadthBias === 'BULLISH' ? 'bg-emerald-900/40' : data.breadthBias === 'BEARISH' ? 'bg-rose-900/40' : 'bg-slate-900'}`}>
+            <p className="text-slate-500">Breadth</p>
+            <p className={`text-lg font-black ${data.breadthBias === 'BULLISH' ? 'text-emerald-300' : data.breadthBias === 'BEARISH' ? 'text-rose-300' : 'text-slate-300'}`}>{data.breadthScore?.toFixed(1)}%</p>
+          </div>
+        </div>
+      )}
+
+      {loading && <div className="py-8 text-center text-slate-500 text-sm">Loading {index} constituent stocks...</div>}
+      {!loading && error && <div className="py-4 text-center text-rose-400 text-sm">Error: {error}</div>}
+      {!loading && data && !data.available && (
+        <div className="py-4 rounded-2xl border border-amber-300/20 bg-amber-300/8 text-center text-sm text-amber-200">
+          <p className="font-bold">Stock data unavailable</p>
+          <p className="text-xs text-slate-400 mt-1">{data.reason}</p>
+          <p className="text-xs text-slate-500 mt-1">Upstox subscription may not include equity market data. Sector index breadth is still active.</p>
+        </div>
+      )}
+
+      {!loading && stocks.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {stocks.map(stock => {
+            const size = Math.max(48, Math.round((stock.weight / maxWeight) * 96));
+            const pct = stock.changePct;
+            const bg = pct > 2 ? 'bg-emerald-500' : pct > 0.5 ? 'bg-emerald-700/80' : pct > 0 ? 'bg-emerald-900/60' : pct < -2 ? 'bg-rose-500' : pct < -0.5 ? 'bg-rose-700/80' : 'bg-rose-900/60';
+            const textC = Math.abs(pct) > 0.5 ? 'text-white' : 'text-slate-300';
+            return (
+              <div key={stock.symbol} title={`${stock.symbol}: ₹${stock.ltp} (${pct > 0 ? '+' : ''}${pct}%)`}
+                className={`${bg} rounded-lg flex flex-col items-center justify-center cursor-default transition-all hover:opacity-90 border border-white/10`}
+                style={{ width: size, height: size, minWidth: 44, minHeight: 44 }}>
+                <p className={`font-black text-[9px] leading-none ${textC} px-1 text-center`}>{stock.symbol}</p>
+                <p className={`font-bold text-[10px] mt-0.5 ${pct >= 0 ? 'text-emerald-200' : 'text-rose-200'}`}>{pct > 0 ? '+' : ''}{pct.toFixed(1)}%</p>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <p className="mt-3 text-[10px] text-slate-600">Tile size = index weight. Green = advancing, Red = declining. Data via Upstox LTP API.</p>
+    </Card>
+  );
+}
+
 export function LiveReadinessGate({ snapshot }: { snapshot: TerminalSnapshot }) {
   const auto = snapshot.autoTrader;
   const perf = auto?.performanceAnalysis;
