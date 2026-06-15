@@ -139,15 +139,24 @@ class RealTimeMarketEngine:
 
         # Near-expiry explosive runner scanner
         # Near-expiry options: highest gamma, biggest % moves on small underlying moves
-        # NIFTY 23850 PE June 16 went ₹48→₹98 in 25 min — ONLY possible with near-expiry gamma
+        # EXPIRY DAY (days=0): MAXIMUM gamma — NIFTY 23850 CE/PE move 50-100% in morning of expiry
+        # Must include days=0 until 14:30 IST (safe trading window before settlement at 15:30)
         near_expiry: str | None = None
         if self.settings.near_expiry_runner_enabled:
             available = expiry_state.get("availableExpiries") or []
-            today_date = datetime.now(timezone.utc).date()
+            now_ist = datetime.now(IST)
+            today_date = now_ist.date()
+            # Allow expiry-day scanning until 14:30 IST (stop 1hr before 15:30 settlement)
+            expiry_day_ok = not (now_ist.hour >= 14 and now_ist.minute >= 30)
             for exp in available:
                 try:
                     exp_date = datetime.strptime(exp, "%Y-%m-%d").date()
                     days_to_exp = (exp_date - today_date).days
+                    # days=0: expiry day (most explosive) — allow until 14:30 IST
+                    # days=1 to max_days: near-expiry (high gamma)
+                    if days_to_exp == 0 and expiry_day_ok and exp != expiry:
+                        near_expiry = exp
+                        break
                     if 1 <= days_to_exp <= self.settings.near_expiry_runner_max_days and exp != expiry:
                         near_expiry = exp
                         break
@@ -279,6 +288,7 @@ class RealTimeMarketEngine:
             option_bias=option_bias,
         )
         # Near-expiry scan: cheaper options with higher gamma = stronger runner scores
+        # On EXPIRY DAY (days=0): this is the primary opportunity — scan first, prioritise
         if near_expiry:
             try:
                 near_chain = await self.client.option_chain(instrument_key, near_expiry)
@@ -289,9 +299,18 @@ class RealTimeMarketEngine:
                     entry_model=entry_model, tqs=tqs, chart_analysis=chart_analysis, option_bias=option_bias,
                 )
                 if near_runners:
+                    near_today = datetime.now(IST).date()
                     for r in near_runners:
+                        try:
+                            exp_d = datetime.strptime(near_expiry, "%Y-%m-%d").date()
+                            days_left = (exp_d - near_today).days
+                        except ValueError:
+                            days_left = 1
                         r["nearExpiry"] = True
-                        r["daysToExpiry"] = (datetime.strptime(near_expiry, "%Y-%m-%d").date() - datetime.now(timezone.utc).date()).days
+                        r["daysToExpiry"] = days_left
+                        r["expiryDay"] = days_left == 0  # flag expiry-day options
+                    # Expiry day: near_runners go FIRST (highest gamma = highest priority)
+                    # Other days: near_runners still prepended but lower priority
                     runner_watchlist = near_runners + runner_watchlist
             except Exception:
                 pass

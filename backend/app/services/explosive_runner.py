@@ -222,19 +222,20 @@ class ExplosiveRunnerEngine:
                 confidence = "MEDIUM"
                 reasons.append("momentum runner auto-candidate")
 
-        # Momentum override: bigger targets because these are explosive moves (50-100%+ potential)
+        # Expiry day: infinite gamma — on expiry morning a 100-200% move is normal
+        # Set maximum targets for expiry day momentum options
         if momentum_override and momentum_aligned:
-            target_pct = 60  # ₹130 → ₹208 is 60% — capture the full open-drive explosion
+            target_pct = 60  # ₹130→₹208 open drive explosion
             hard_stop_pct = 8
-            trail_pct = 18   # tighter trail — lock in gains faster on volatile near-expiry
-            partial_pct = 0.3
+            trail_pct = 15   # tightest trail — lock in gains immediately on volatile expiry options
+            partial_pct = 0.25
         elif elite_runner:
             target_pct = 45
             hard_stop_pct = 8
             trail_pct = 24
             partial_pct = 0.25
         elif momentum_override:
-            target_pct = 50  # strong velocity without direction lock — still big target
+            target_pct = 50
             hard_stop_pct = 8
             trail_pct = 18
             partial_pct = 0.35
