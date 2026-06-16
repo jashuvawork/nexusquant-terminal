@@ -1,0 +1,89 @@
+name: Deploy EC2 API
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Git branch to build and deploy
+        required: true
+        default: cursor/persist-upstox-token-36ec
+      image_tag:
+        description: Docker image tag
+        required: true
+        default: latest
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ap-south-1
+      ECR_REPOSITORY: nexusquant-api
+      ACCOUNT_ID: "939198471076"
+      EC2_HOST: 13.206.45.57
+      EC2_USER: ubuntu
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          IMAGE_URI="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          docker build -t "${ECR_REPOSITORY}:${IMAGE_TAG}" ./backend
+          docker tag "${ECR_REPOSITORY}:${IMAGE_TAG}" "${IMAGE_URI}"
+          docker push "${IMAGE_URI}"
+          echo "Pushed ${IMAGE_URI}"
+
+      - name: Write SSH key
+        env:
+          SSH_KEY: ${{ secrets.NEXUSQUANT_EC2_SSH_KEY }}
+          SSH_KEY_B64: ${{ secrets.NEXUSQUANT_EC2_SSH_KEY_B64 }}
+        run: |
+          if [[ -n "${SSH_KEY_B64}" ]]; then
+            printf '%s' "${SSH_KEY_B64}" | tr -d '\n' | base64 -d > ec2_key
+          elif [[ -n "${SSH_KEY}" ]]; then
+            printf '%s\n' "${SSH_KEY}" > ec2_key
+          else
+            echo "Missing NEXUSQUANT_EC2_SSH_KEY or NEXUSQUANT_EC2_SSH_KEY_B64 secret" >&2
+            exit 1
+          fi
+          chmod 600 ec2_key
+          ssh-keygen -y -f ec2_key >/dev/null
+
+      - name: Redeploy on EC2
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          scp -i ec2_key -o StrictHostKeyChecking=no scripts/ec2-redeploy.sh "${EC2_USER}@${EC2_HOST}:/tmp/ec2-redeploy.sh"
+          ssh -i ec2_key -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" \
+            "chmod +x /tmp/ec2-redeploy.sh && sudo AWS_REGION=${AWS_REGION} ACCOUNT_ID=${ACCOUNT_ID} IMAGE_TAG=${IMAGE_TAG} /tmp/ec2-redeploy.sh"
+
+      - name: Verify public health
+        run: |
+          for i in $(seq 1 20); do
+            code=$(curl -sS -o /tmp/health.json -w "%{http_code}" https://api.nexusquant.uk/health || true)
+            echo "attempt ${i}: HTTP ${code}"
+            if [[ "${code}" == "200" ]]; then
+              cat /tmp/health.json
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Public health still not 200" >&2
+          exit 1
