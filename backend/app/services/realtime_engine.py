@@ -292,7 +292,7 @@ class RealTimeMarketEngine:
         if near_expiry:
             try:
                 near_chain = await self.client.option_chain(instrument_key, near_expiry)
-                near_rows = self._option_chain_rows(near_chain)
+                near_rows = near_chain.get("data") or []
                 near_today = datetime.now(IST).date()
                 try:
                     exp_d = datetime.strptime(near_expiry, "%Y-%m-%d").date()
