@@ -268,6 +268,10 @@ class AutoTraderEngine:
                 skipped.append({"candidate": candidate.get("id"), "reason": f"psychology gate: {pre_trade_psychology.get('tradePermission')}", "quality": quality})
                 continue
             if self.settings.paper_trading or not self.settings.enable_live_trading:
+                # HARD CAP: never exceed paper_max_open_trades regardless of any gate
+                if len(self.open_paper) >= int(self.settings.paper_max_open_trades):
+                    skipped.append({"candidate": candidate.get("id"), "reason": f"HARD CAP: {len(self.open_paper)}/{self.settings.paper_max_open_trades} trades already open"})
+                    continue
                 opened = self._open_paper_trade(candidate, quality, self._available_capital(trading_capital), trading_capital, session_adj, market_phase)
                 if opened:
                     signal_events.append(opened.lifecycle[-1])

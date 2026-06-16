@@ -308,9 +308,11 @@ class RealTimeMarketEngine:
                     r["nearExpiry"] = True
                     r["daysToExpiry"] = days_left
                     r["expiryDay"] = days_left == 0
-                # Only take TOP 3 near-expiry runners (best score) to avoid flooding watchlist
+                # Only take TOP 1 near-expiry runner (best score) per symbol
+                # This prevents the watchlist from being flooded with near-expiry candidates
+                # causing multiple simultaneous near-expiry trades from the same symbol
                 near_runners_sorted = sorted(near_runners, key=lambda r: float(r.get("score") or 0), reverse=True)
-                runner_watchlist = near_runners_sorted[:3] + runner_watchlist
+                runner_watchlist = near_runners_sorted[:1] + runner_watchlist
                 data_warnings.append(f"near_expiry_scan: {near_expiry} ({days_left}d) — {len(near_rows)} contracts, {len(near_runners)} runners") if near_runners else data_warnings.append(f"near_expiry_scan: {near_expiry} ({days_left}d) — {len(near_rows)} contracts, 0 qualifying runners")
             except Exception as near_exc:
                 data_warnings.append(f"near_expiry_scan_failed: {near_expiry} — {str(near_exc)[:80]}")
