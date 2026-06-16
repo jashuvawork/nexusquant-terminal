@@ -233,9 +233,13 @@ class AutoTraderEngine:
                 continue
             quality = self._pre_trade_quality(candidate, session_adj, market_phase)
             if quality["blocked"]:
-                if quality.get("paperEligible"):
-                    # tradeable_runner / momentum override — enter despite quality issues
-                    # paperEligible means the runner's own tape overrides secondary gates
+                reason_text = str(quality.get("reason") or "")
+                # Position limits (max_open, same_side) are HARD limits — never bypassed
+                is_position_limit = any(s in reason_text for s in ["max open", "max capacity", "already has an open"])
+                can_bypass = quality.get("paperEligible") and not is_position_limit
+                if can_bypass:
+                    # tradeable_runner bypasses quality gates (TQS, breadth, regime, news)
+                    # but NOT position limits (max simultaneous trades)
                     pass
                 elif self.settings.paper_trading and self.settings.shadow_trade_all_signals:
                     skipped.append({"candidate": candidate.get("id"), "reason": quality["reason"], "quality": quality})
