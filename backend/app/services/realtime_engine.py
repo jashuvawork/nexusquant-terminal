@@ -118,8 +118,8 @@ class RealTimeMarketEngine:
     async def snapshot(self, symbol: str | None = None) -> dict[str, Any]:
         processing_started = perf_counter()
         selected_symbol = (symbol or self.settings.primary_symbol).upper()
-        if selected_symbol not in {"NIFTY", "SENSEX"}:
-            raise MarketConfigurationError("PRIMARY_SYMBOL must be NIFTY or SENSEX.")
+        if selected_symbol not in {"NIFTY", "SENSEX", "BANKNIFTY"}:
+            raise MarketConfigurationError(f"Symbol {selected_symbol} not supported. Use NIFTY, SENSEX, or BANKNIFTY.")
         cached = self._snapshot_cache.get(selected_symbol)
         if cached:
             age_seconds = monotonic() - cached[0]
@@ -136,6 +136,32 @@ class RealTimeMarketEngine:
         data_warnings: list[str] = []
         expiry_state = await self.resolve_expiry(selected_symbol, instrument_key, data_warnings)
         expiry = expiry_state["selectedExpiry"]
+
+        # Near-expiry explosive runner scanner
+        # Near-expiry options: highest gamma, biggest % moves on small underlying moves
+        # EXPIRY DAY (days=0): MAXIMUM gamma — NIFTY 23850 CE/PE move 50-100% in morning of expiry
+        # Must include days=0 until 14:30 IST (safe trading window before settlement at 15:30)
+        near_expiry: str | None = None
+        if self.settings.near_expiry_runner_enabled:
+            available = expiry_state.get("availableExpiries") or []
+            now_ist = datetime.now(IST)
+            today_date = now_ist.date()
+            # Allow expiry-day scanning until 14:30 IST (stop 1hr before 15:30 settlement)
+            expiry_day_ok = not (now_ist.hour >= 14 and now_ist.minute >= 30)
+            for exp in available:
+                try:
+                    exp_date = datetime.strptime(exp, "%Y-%m-%d").date()
+                    days_to_exp = (exp_date - today_date).days
+                    # days=0: expiry day (most explosive) — allow until 14:30 IST
+                    # days=1 to max_days: near-expiry (high gamma)
+                    if days_to_exp == 0 and expiry_day_ok and exp != expiry:
+                        near_expiry = exp
+                        break
+                    if 1 <= days_to_exp <= self.settings.near_expiry_runner_max_days and exp != expiry:
+                        near_expiry = exp
+                        break
+                except ValueError:
+                    pass
 
         option_chain_task = self.client.option_chain(instrument_key, expiry)
         candle_task = self.client.intraday_candles(instrument_key, "minutes", 1)
@@ -261,6 +287,35 @@ class RealTimeMarketEngine:
             chart_analysis=chart_analysis,
             option_bias=option_bias,
         )
+        # Near-expiry scan: cheaper options with higher gamma = stronger runner scores
+        # On EXPIRY DAY (days=0): this is the primary opportunity — scan first, prioritise
+        if near_expiry:
+            try:
+                near_chain = await self.client.option_chain(instrument_key, near_expiry)
+                near_rows = near_chain.get("data") or []
+                near_today = datetime.now(IST).date()
+                try:
+                    exp_d = datetime.strptime(near_expiry, "%Y-%m-%d").date()
+                    days_left = (exp_d - near_today).days
+                except ValueError:
+                    days_left = 1
+                near_runners = self._explosive_runner_watchlist(
+                    symbol=selected_symbol, expiry=near_expiry, rows=near_rows,
+                    spot=spot, heatmap=heatmap, market_profile=market_profile,
+                    entry_model=entry_model, tqs=tqs, chart_analysis=chart_analysis, option_bias=option_bias,
+                )
+                for r in near_runners:
+                    r["nearExpiry"] = True
+                    r["daysToExpiry"] = days_left
+                    r["expiryDay"] = days_left == 0
+                # Only take TOP 1 near-expiry runner (best score) per symbol
+                # This prevents the watchlist from being flooded with near-expiry candidates
+                # causing multiple simultaneous near-expiry trades from the same symbol
+                near_runners_sorted = sorted(near_runners, key=lambda r: float(r.get("score") or 0), reverse=True)
+                runner_watchlist = near_runners_sorted[:1] + runner_watchlist
+                data_warnings.append(f"near_expiry_scan: {near_expiry} ({days_left}d) — {len(near_rows)} contracts, {len(near_runners)} runners") if near_runners else data_warnings.append(f"near_expiry_scan: {near_expiry} ({days_left}d) — {len(near_rows)} contracts, 0 qualifying runners")
+            except Exception as near_exc:
+                data_warnings.append(f"near_expiry_scan_failed: {near_expiry} — {str(near_exc)[:80]}")
         runner_signal = runner_watchlist[0] if runner_watchlist else self._explosive_runner_disabled(selected_symbol, expiry)
         plan_signal = self._best_in_range_runner_signal(runner_watchlist)
         plan_strike = as_int(plan_signal.get("strike")) if plan_signal else atm_strike

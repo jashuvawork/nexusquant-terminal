@@ -166,6 +166,7 @@ class AutoTraderEngine:
     _shared_learning_score = 50.0
     _shared_last_learning_update: str | None = None
     _shared_recent_signal_times: dict[str, float] = {}
+    _shared_missed_runners: deque[dict[str, Any]] = deque(maxlen=500)  # near-miss runner log
 
     def __init__(self, settings: Settings, trading_control: TradingControl, learner: ContinuousAILearner | None = None) -> None:
         self.settings = settings
@@ -221,7 +222,10 @@ class AutoTraderEngine:
             if cached_snapshot:
                 skipped.append({"candidate": signal_id, "reason": "cached snapshot; paper open skipped to avoid duplicate training sample"})
                 continue
-            if self._recent_signal_active(signal_id, signal_cooldown_seconds):
+            # Momentum override uses shorter cooldown (20s) to catch continuation moves
+            runner_sig = (candidate.get("runnerSignal") or {})
+            effective_cooldown = 20 if runner_sig.get("momentumOverride") else signal_cooldown_seconds
+            if self._recent_signal_active(signal_id, effective_cooldown):
                 skipped.append({"candidate": signal_id, "reason": "duplicate signal cooldown active"})
                 continue
             if session_adj.get("blockNewPaperTrades") and not self._session_entry_allowed(candidate, session_adj, market_phase):
@@ -229,10 +233,31 @@ class AutoTraderEngine:
                 continue
             quality = self._pre_trade_quality(candidate, session_adj, market_phase)
             if quality["blocked"]:
-                skipped.append({"candidate": candidate.get("id"), "reason": quality["reason"], "quality": quality})
-                if not (self.settings.paper_trading and self.settings.shadow_trade_all_signals and quality.get("paperEligible")):
+                reason_text = str(quality.get("reason") or "")
+                # Position limits (max_open, same_side) are HARD limits — never bypassed
+                is_position_limit = any(s in reason_text for s in ["max open", "max capacity", "already has an open"])
+                can_bypass = quality.get("paperEligible") and not is_position_limit
+                if can_bypass:
+                    # tradeable_runner bypasses quality gates (TQS, breadth, regime, news)
+                    # but NOT position limits (max simultaneous trades)
+                    pass
+                elif self.settings.paper_trading and self.settings.shadow_trade_all_signals:
+                    skipped.append({"candidate": candidate.get("id"), "reason": quality["reason"], "quality": quality})
+                    quality = {**quality, "shadowOverride": True, "reason": f"SHADOW despite: {quality['reason']}"}
+                else:
+                    skipped.append({"candidate": candidate.get("id"), "reason": quality["reason"], "quality": quality})
+                    # Log near-miss runners for post-session analysis
+                    runner_s = (candidate.get("runnerSignal") or {})
+                    if runner_s.get("score", 0) >= 70 or runner_s.get("momentumOverride"):
+                        AutoTraderEngine._shared_missed_runners.append({
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "symbol": candidate.get("symbol"), "side": candidate.get("side"),
+                            "strike": candidate.get("strike"), "premium": candidate.get("lastPremium"),
+                            "runnerScore": runner_s.get("score"), "momentumOverride": runner_s.get("momentumOverride"),
+                            "premiumVelocity": runner_s.get("premiumVelocityPct"), "reason": quality["reason"],
+                            "nearExpiry": candidate.get("nearExpiry"), "daysToExpiry": candidate.get("daysToExpiry"),
+                        })
                     continue
-                quality = {**quality, "shadowOverride": True, "reason": f"SHADOW PAPER despite rejection: {quality['reason']}"}
             if trading_control.get("autoTradingStopped") and self.settings.paper_trading_respects_stop:
                 skipped.append({"candidate": candidate.get("id"), "reason": "manual stop active", "quality": quality})
                 continue
@@ -243,6 +268,10 @@ class AutoTraderEngine:
                 skipped.append({"candidate": candidate.get("id"), "reason": f"psychology gate: {pre_trade_psychology.get('tradePermission')}", "quality": quality})
                 continue
             if self.settings.paper_trading or not self.settings.enable_live_trading:
+                # HARD CAP: never exceed paper_max_open_trades regardless of any gate
+                if len(self.open_paper) >= int(self.settings.paper_max_open_trades):
+                    skipped.append({"candidate": candidate.get("id"), "reason": f"HARD CAP: {len(self.open_paper)}/{self.settings.paper_max_open_trades} trades already open"})
+                    continue
                 opened = self._open_paper_trade(candidate, quality, self._available_capital(trading_capital), trading_capital, session_adj, market_phase)
                 if opened:
                     signal_events.append(opened.lifecycle[-1])
@@ -352,17 +381,21 @@ class AutoTraderEngine:
             ],
         }
 
-    def reset(self) -> dict[str, Any]:
+    def reset(self, preserve_history: bool = True) -> dict[str, Any]:
+        """Reset active trading state. By default preserves closed trade history for analysis."""
         self.replay_buffer.clear()
         self.open_paper.clear()
-        self.closed_paper.clear()
+        if not preserve_history:
+            self.closed_paper.clear()
         self.lifecycle_events.clear()
         AutoTraderEngine._shared_recent_signal_times.clear()
         self._persist_paper_trades_file()
         AutoTraderEngine._shared_learning_samples = 0
         AutoTraderEngine._shared_learning_score = 50.0
         AutoTraderEngine._shared_last_learning_update = None
-        return {"reset": True, "status": self.status()}
+        self.paper_sessions.start_session("daily_reset")
+        return {"reset": True, "preservedHistory": preserve_history,
+                "allTimeTrades": len(self.closed_paper), "status": self.status()}
 
     def replay(self, limit: int = 250) -> dict[str, Any]:
         return {"snapshots": list(self.replay_buffer)[-limit:], "count": min(limit, len(self.replay_buffer))}
@@ -890,8 +923,12 @@ class AutoTraderEngine:
 
     def _rolling_proof(self, limit: int | None = None) -> dict[str, Any]:
         limit = int(limit or self.settings.paper_live_readiness_min_trades)
-        trades = list(self.closed_paper)[-limit:]
+        # Use all in-memory closed trades (up to deque maxlen=2000), not just today
+        all_closed = list(self.closed_paper)
+        trades = all_closed[-limit:]
         summary = self._summarize_trades(trades)
+        # Total all-time count (for 100-trade gate progress across resets)
+        all_time_total = len(all_closed)
         capital = float(self.settings.trading_capital_default or 0)
         max_drawdown_pct = (float(summary.get("maxDrawdown") or 0) / capital * 100) if capital > 0 else 0.0
         avg_win = (float(summary.get("grossProfit") or 0) / int(summary.get("wins") or 1)) if int(summary.get("wins") or 0) else 0.0
@@ -899,6 +936,7 @@ class AutoTraderEngine:
         return {
             **summary,
             "windowTrades": limit,
+            "allTimeTrades": all_time_total,
             "sampleComplete": len(trades) >= limit,
             "maxDrawdownPct": round(max_drawdown_pct, 2),
             "avgWin": round(avg_win, 2),
@@ -1408,9 +1446,10 @@ class AutoTraderEngine:
         news = self._latest_news_state or {}
         impact = news.get("impact") or {}
         if impact.get("avoidFreshTrades") and not result.get("blockNewPaperTrades"):
+            # Block regular trades but NOT momentum override — velocity overrides news hesitation
             result["blockNewPaperTrades"] = True
-            result["blockReason"] = f"News: avoid entries — {news.get('eventRisk')} risk, {news.get('sentiment')} sentiment"
-            result.setdefault("adjustments", []).append("News avoidFreshTrades: paper entries paused")
+            result["blockReason"] = f"News: avoid regular entries — {news.get('eventRisk')} risk, {news.get('sentiment')} sentiment (momentum override still active)"
+            result.setdefault("adjustments", []).append("News avoidFreshTrades: scalps paused, momentum override runners still allowed")
         elif impact.get("raiseTqs"):
             result["minEntryTqs"] = int(result.get("minEntryTqs", 74)) + 4
             result.setdefault("adjustments", []).append(f"News event risk ({news.get('eventRisk')}): TQS floor +4")
@@ -1430,19 +1469,29 @@ class AutoTraderEngine:
         premium = float(candidate.get("lastPremium") or runner.get("premium") or runner.get("lastPremium") or 0)
         min_ltp = float(self.settings.paper_min_premium_ltp or 0)
         if min_ltp > 0 and premium < min_ltp:
-            return False, f"LTP ₹{premium:.0f} below high-confidence minimum ₹{min_ltp:.0f}"
+            # Momentum override and near-expiry options bypass the LTP floor
+            # ₹48 near-expiry PE can still be a 100%+ runner — don't miss for LTP
+            if runner.get("momentumOverride") or candidate.get("nearExpiry"):
+                pass  # bypass — velocity/near-expiry is the signal
+            else:
+                return False, f"LTP ₹{premium:.0f} below high-confidence minimum ₹{min_ltp:.0f}"
         if candidate.get("strategyType") == "EXPLOSIVE_RUNNER":
             confidence = str(runner.get("confidence") or "").upper()
-            if confidence != "HIGH":
-                return False, f"runner confidence {confidence or 'LOW'}; HIGH confidence only"
-            if not runner.get("eliteRunner"):
-                return False, "explosive runner is not elite quality"
             score = float(runner.get("score") or candidate.get("tqs") or 0)
             min_score = float(self.settings.paper_high_confidence_min_runner_score)
-            if score < min_score:
-                return False, f"runner score {score:.0f} below high-confidence minimum {min_score:.0f}"
-            if not runner.get("momentumAligned"):
-                return False, "high-confidence runners require momentum alignment"
+            # Elite HIGH confidence (preferred path)
+            if confidence == "HIGH" and runner.get("eliteRunner"):
+                if score < min_score:
+                    return False, f"runner score {score:.0f} below high-confidence minimum {min_score:.0f}"
+            # Allow MEDIUM confidence with strong score (≥75) for more trade opportunities
+            elif confidence == "HIGH" and score >= 75:
+                pass  # HIGH confidence non-elite allowed at score ≥75
+            elif confidence == "MEDIUM" and score >= 80 and runner.get("momentumAligned"):
+                pass  # MEDIUM confidence with strong tape (score ≥80, momentum) — secondary path
+            else:
+                return False, f"runner: confidence={confidence} score={score:.0f}; need HIGH+elite or HIGH≥75 or MEDIUM≥80+momentum"
+            if not runner.get("momentumAligned") and confidence != "HIGH":
+                return False, "non-HIGH-confidence runners require momentum alignment"
             chart_bias = str(candidate.get("chartBias") or "")
             side = str(candidate.get("side") or "")
             if chart_bias in {"CALL", "PUT"} and side in {"CALL", "PUT"} and side != chart_bias:
@@ -1499,15 +1548,23 @@ class AutoTraderEngine:
         if candidate.get("strategyType") != "EXPLOSIVE_RUNNER":
             return False
         runner = candidate.get("runnerSignal") or {}
+        # MOMENTUM OVERRIDE: premium velocity burst bypasses all score/elite gates
+        confidence = str(runner.get("confidence") or "").upper()
+        score = float(runner.get("score") or candidate.get("tqs") or 0)
+        if runner.get("momentumOverride") and confidence == "HIGH":
+            return True  # velocity is the signal — enter now, let trailing manage risk
+        # HIGH confidence + strong score + momentum surge = tradeable without elite flag
+        # Catches score=85, surge=True runners that just miss elite threshold (88)
+        if confidence == "HIGH" and score >= 80 and runner.get("momentumSurge"):
+            return True
         momentum_runner = self._is_momentum_aligned_runner(candidate, runner)
         if not momentum_runner and not self.settings.paper_always_trade_explosive_runners:
             return False
         if runner.get("candidate") is False and not momentum_runner:
             return False
-        score = float(runner.get("score") or candidate.get("tqs") or 0)
         if not runner.get("eliteRunner"):
             return False
-        if str(runner.get("confidence") or "").upper() != "HIGH":
+        if confidence != "HIGH":
             return False
         if score < max(self._runner_min_score(runner), float(self.settings.explosive_runner_elite_min_score), float(self.settings.paper_high_confidence_min_runner_score)):
             return False
@@ -1549,14 +1606,22 @@ class AutoTraderEngine:
     def _entry_correlation_gate(self, candidate: dict[str, Any], session_adj: dict[str, Any]) -> str | None:
         side = str(candidate.get("side") or "").upper()
         bucket = str(session_adj.get("sessionBucket") or "UNKNOWN")
-        if int(self.settings.paper_max_open_trades) > 0 and len(self.open_paper) >= int(self.settings.paper_max_open_trades):
-            return f"max open paper trades reached ({self.settings.paper_max_open_trades}); avoid correlated stacking"
+        runner_sig = (candidate.get("runnerSignal") or {})
+        is_momentum_override = bool(runner_sig.get("momentumOverride"))
+        # Momentum override: allow stacking across different symbols (NIFTY+SENSEX+BANKNIFTY all moving)
+        # Hard cap at 5 total to prevent runaway stacking
+        hard_cap = 5 if is_momentum_override else int(self.settings.paper_max_open_trades)
+        if len(self.open_paper) >= hard_cap:
+            return f"max open trades reached ({hard_cap})"
+        # For momentum override: allow up to 3 same-side (all 3 symbols crashing/surging simultaneously)
+        same_side_cap = 3 if is_momentum_override else int(self.settings.paper_max_open_same_side_trades)
         same_side_open = [trade for trade in self.open_paper.values() if str(trade.side or "").upper() == side]
-        if int(self.settings.paper_max_open_same_side_trades) > 0 and len(same_side_open) >= int(self.settings.paper_max_open_same_side_trades):
-            return f"{side} side already has an open paper trade"
+        if same_side_cap > 0 and len(same_side_open) >= same_side_cap:
+            return f"{side} side at max capacity ({same_side_cap})"
         now = datetime.now(timezone.utc)
-        entry_cooldown = max(0, int(self.settings.paper_same_side_entry_cooldown_seconds))
-        loss_cooldown = max(0, int(self.settings.paper_same_side_loss_cooldown_seconds))
+        # Momentum override: 30s entry cooldown (vs 300s) — catch continuation of explosive move
+        entry_cooldown = 30 if is_momentum_override else max(0, int(self.settings.paper_same_side_entry_cooldown_seconds))
+        loss_cooldown = 60 if is_momentum_override else max(0, int(self.settings.paper_same_side_loss_cooldown_seconds))
         for trade in reversed(list(self.closed_paper)[-50:]):
             if str(trade.side or "").upper() != side:
                 continue
@@ -1579,17 +1644,28 @@ class AutoTraderEngine:
                 return f"{side} side same-window entry cooldown active after {trade.symbol} trade ({int((entry_cooldown - age_seconds) // 60)}m left)"
         return None
 
-    def _breadth_confirmation(self, side: str) -> dict[str, Any]:
+    def _breadth_confirmation(self, side: str, symbol: str = "") -> dict[str, Any]:
         snapshot = self._latest_market_snapshot or {}
         breadth = snapshot.get("breadth") or {}
         count = int(snapshot.get("count") or 0)
-        score = float(breadth.get("score") or 50.0)
-        bias = str(breadth.get("bias") or "NEUTRAL")
+        sector_breadth = snapshot.get("sectorBreadth") or {}
+        # For BANKNIFTY: use banking-sector breadth score instead of overall Nifty 50 breadth
+        sym_upper = symbol.upper()
+        if sym_upper == "BANKNIFTY" and sector_breadth.get("banking", {}).get("count", 0) >= 4:
+            banking = sector_breadth["banking"]
+            raw_score = float(banking.get("score") or 50.0)
+            bias = str(banking.get("bias") or "NEUTRAL")
+        else:
+            stock_score = breadth.get("stockScore")
+            raw_score = float(stock_score if stock_score is not None else breadth.get("score") or 50.0)
+            bias = str(breadth.get("bias") or "NEUTRAL")
+        score = raw_score
         enabled = bool(self.settings.paper_breadth_filter_enabled)
         enough_data = count >= int(self.settings.paper_breadth_min_count)
         side = str(side or "").upper()
         aligned = True
         reason = "market breadth neutral or unavailable"
+        sector_breadth = snapshot.get("sectorBreadth") or {}
         if enabled and enough_data:
             bullish = score >= float(self.settings.paper_breadth_bullish_threshold)
             bearish = score <= float(self.settings.paper_breadth_bearish_threshold)
@@ -1599,15 +1675,19 @@ class AutoTraderEngine:
             elif side == "PUT":
                 aligned = bearish
                 reason = "PUT aligned with bearish breadth" if aligned else f"PUT rejected: breadth not bearish ({score:.1f})"
+        stock_count = int(snapshot.get("stockCount") or 0)
         return {
             "available": bool(snapshot.get("available")) and enough_data,
             "enabled": enabled,
             "aligned": aligned,
             "score": round(score, 2),
+            "stockScore": round(raw_score, 2) if stock_score is not None else None,
             "bias": bias,
             "count": count,
+            "stockCount": stock_count,
             "reason": reason,
             "source": snapshot.get("source") or "market_snapshot_cache",
+            "sectorBreadth": sector_breadth,
         }
 
     def _ai_trade_quality_prediction(
@@ -1657,14 +1737,16 @@ class AutoTraderEngine:
 
         news = self._latest_news_state or {}
         news_impact = news.get("impact") or {}
-        if news_impact.get("avoidFreshTrades"):
-            score -= 40.0
-        elif news_impact.get("raiseTqs"):
+        if news_impact.get("avoidFreshTrades") and not runner.get("momentumOverride"):
+            score -= 40.0  # penalise regular trades; momentum override bypasses
+        elif news_impact.get("raiseTqs") and not runner.get("momentumOverride"):
             score -= 7.0
         if news_impact.get("allowRunnerBias") and is_runner:
             bias_side = str(news_impact.get("biasSide") or "")
             if not bias_side or bias_side == side:
                 score += 12.0
+        if runner.get("momentumOverride"):
+            score = max(score, 70.0)  # momentum override always passes AI predictor
 
         expected_move = max(required_move * 2.0, float((runner.get("maxPointsPlan") or {}).get("targetPremiumPct") or 0) * premium / 100)
         if is_runner:
@@ -1721,9 +1803,15 @@ class AutoTraderEngine:
         side_gate = self._side_performance_gate(candidate)
         if side_gate:
             reasons.append(side_gate)
-        breadth = self._breadth_confirmation(side)
-        if breadth.get("available") and not breadth.get("aligned"):
+        symbol = str(candidate.get("symbol") or "")
+        breadth = self._breadth_confirmation(side, symbol=symbol)
+        runner_momentum_override = bool((runner.get("momentumOverride")) or (runner.get("premiumVelocityPct", 0) >= 10.0))
+        if runner_momentum_override:
+            pass  # momentum override: premium velocity is the signal, not breadth
+        elif breadth.get("available") and not breadth.get("aligned") and not tradeable_runner:
             reasons.append(str(breadth.get("reason") or "market breadth does not confirm trade side"))
+        elif breadth.get("available") and not breadth.get("aligned") and tradeable_runner:
+            pass  # elite runners bypass stale breadth; runner tape score is more current
         high_conf_ok, high_conf_reason = self._passes_high_confidence_gate(candidate, runner)
         if not high_conf_ok:
             reasons.append(high_conf_reason)
@@ -1795,7 +1883,9 @@ class AutoTraderEngine:
         risk_plan = self._paper_risk_plan(candidate, quality, premium, session_adj)
         if available_capital is not None and premium > 0:
             capital = max(0.0, float(trading_capital or 0))
-            allocation_pct = float(self.settings.paper_trade_allocation_pct) * float(session_adj.get("allocationPctMultiplier") or 1.0)
+            runner_sig_inner = candidate.get("runnerSignal") or {}
+            alloc_boost = 1.5 if runner_sig_inner.get("momentumOverride") else 1.0
+            allocation_pct = float(self.settings.paper_trade_allocation_pct) * float(session_adj.get("allocationPctMultiplier") or 1.0) * alloc_boost
             if tradeable_runner:
                 allocation_pct = max(allocation_pct, float(self.settings.paper_trade_allocation_pct))
             target_allocation = capital * max(0.0, allocation_pct) / 100 if capital > 0 else max(0.0, available_capital)
@@ -1901,13 +1991,13 @@ class AutoTraderEngine:
                 trade.lifecycle.append(LifecycleEvent("PARTIAL_FILL", datetime.now(timezone.utc).isoformat(), "partial exit threshold reached in paper model", {"partialExitAt": round(partial_exit_at, 2), "bestPrice": trade.best_price}))
             runner_min_hold = int(self.settings.paper_runner_min_hold_seconds)
             scalp_trail = max(2.0, target_points * 0.35)
-            trail_pts = float(trade.trail_points or (target_points * 0.30 if is_runner else scalp_trail))
-            in_profitable_trail = trade.best_price >= trade.entry_price + target_points * 0.60
+            trail_pts = float(trade.trail_points or (target_points * 0.22 if is_runner else scalp_trail))
+            in_profitable_trail = trade.best_price >= trade.entry_price + target_points * 0.25
             if in_profitable_trail and current <= trade.best_price - trail_pts:
                 reason = "elite runner trailing max-points lock" if is_runner else "trailing profit lock"
             elif is_runner and age >= max_hold_seconds:
-                if in_profitable_trail and current > trade.entry_price + 2.0:
-                    pass  # still in profitable trailing zone — let trail exit handle it
+                if current > trade.entry_price + 2.0:
+                    pass  # any profitable runner at max hold — let trail or stop exit handle it
                 elif current >= trade.entry_price + target_points * 0.35:
                     reason = "elite runner max hold profit lock"
                 else:

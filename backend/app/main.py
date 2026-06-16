@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from contextlib import asynccontextmanager, suppress
+from datetime import datetime
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,6 +21,7 @@ from app.services.institutional_readiness import InstitutionalReadinessEngine
 from app.services.market_movers import summarize_market_movers
 from app.services.realtime_engine import MarketConfigurationError, RealTimeMarketEngine
 from app.services.risk_engine import RiskEngine
+from app.services.session import IST, MarketPhase, current_session_state
 from app.services.storage import AnalyticsStorage
 from app.services.trading_control import TradingControl
 from app.services.upstox_auth import UpstoxAuthService
@@ -57,7 +59,11 @@ async def lifespan(app: FastAPI):
     await event_journal.connect()
     await auth_service.warm_token_cache()
     monitor_task = asyncio.create_task(background_market_monitor()) if settings.background_market_monitor_enabled else None
+    daily_reset_task = asyncio.create_task(daily_market_open_reset())
     yield
+    daily_reset_task.cancel()
+    with suppress(BaseException):
+        await daily_reset_task
     if monitor_task:
         monitor_task.cancel()
         with suppress(BaseException):
@@ -204,7 +210,7 @@ async def emit_journal_events(payload: dict) -> list[dict]:
     return emitted
 
 async def build_multi_symbol_snapshot(*, include_auto_trader: bool | None = None) -> dict:
-    symbols = ["NIFTY", "SENSEX"]
+    symbols = settings.trading_symbol_list
     results = await asyncio.gather(*(market_engine.snapshot(symbol) for symbol in symbols), return_exceptions=True)
     snapshots: dict[str, dict] = {}
     errors: dict[str, str] = {}
@@ -247,9 +253,34 @@ async def build_multi_symbol_snapshot(*, include_auto_trader: bool | None = None
     return payload
 
 
+async def daily_market_open_reset() -> None:
+    """Auto-resets paper trades at 09:15 IST every trading day so each session starts clean.
+    Preserves closed trade history for rolling analysis."""
+    import logging
+    log = logging.getLogger("nexusquant.daily_reset")
+    last_reset_date: str | None = None
+    while True:
+        try:
+            now_ist = datetime.now(IST)
+            today = now_ist.date().isoformat()
+            # Reset at 09:15 IST (market open) if not already done today
+            if (now_ist.hour == 9 and now_ist.minute >= 15 and last_reset_date != today):
+                auto_trader.reset(preserve_history=True)
+                last_reset_date = today
+                log.info(f"[daily_reset] Auto-reset at market open — {today} 09:15 IST. History preserved.")
+        except Exception as exc:
+            pass
+        await asyncio.sleep(30)  # check every 30s
+
+
 async def background_market_monitor() -> None:
-    """Continuously evaluates runner/paper candidates even when no UI is open."""
+    """Continuously evaluates runner/paper candidates even when no UI is open.
+    This runs 24/7 regardless of whether the website is open. Paper trades
+    open and close automatically during LIVE_MARKET hours."""
+    import logging
+    log = logging.getLogger("nexusquant.monitor")
     global _market_snapshot_tick
+    tick_count = 0
     while True:
         try:
             _market_snapshot_tick += max(1.0, float(settings.market_poll_seconds or 1))
@@ -258,20 +289,24 @@ async def background_market_monitor() -> None:
                 await refresh_market_snapshot_cache()
             session = current_session_state()
             if session.phase != MarketPhase.LIVE_MARKET:
-                if settings.market_snapshot_monitor_enabled and _market_snapshot_tick >= max(1.0, float(settings.market_snapshot_poll_seconds or 5)):
-                    _market_snapshot_tick = 0.0
-                    await refresh_market_snapshot_cache()
                 await asyncio.sleep(max(15.0, float(settings.market_poll_seconds or 1)))
                 continue
             payload = await build_multi_symbol_snapshot(include_auto_trader=True)
-            LATEST_TQS.set(payload["tradeQualityScore"])
+            tqs = payload.get("tradeQualityScore", 0)
+            LATEST_TQS.set(tqs)
             SNAPSHOTS_STREAMED.inc(len(payload.get("snapshots", {})) or 1)
-        except (UpstoxAuthRequired, MarketConfigurationError, UpstoxDataError):
-            pass
+            at = payload.get("autoTrader", {})
+            open_t = len(at.get("openPaperTrades") or [])
+            closed_t = len(at.get("closedPaperTrades") or [])
+            tick_count += 1
+            if tick_count % 60 == 0:  # log every ~5min (60 × 5s)
+                log.info(f"[BG monitor] TQS={tqs} open={open_t} closed={closed_t} phase={session.phase.value}")
+        except (UpstoxAuthRequired, MarketConfigurationError, UpstoxDataError) as exc:
+            pass  # expected when market closed or token missing
         except asyncio.CancelledError:
             raise
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning(f"[BG monitor] unexpected error: {exc}")
         await asyncio.sleep(max(1.0, float(settings.market_poll_seconds or 1)))
 
 

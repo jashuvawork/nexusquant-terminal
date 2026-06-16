@@ -164,19 +164,20 @@ def paper_session_adjustments(
     session_profit_stop_pct: float | None = None
 
     if bucket == "OPEN_DRIVE":
-        min_entry_tqs = max(58, min_entry_tqs - 4)
-        min_runner_score = max(75.0, min_runner_score - 5.0)
-        allocation_multiplier = max(1.15, float(open_drive_allocation_boost))
-        duplicate_cooldown = max(120, int(duplicate_cooldown * 0.6))
-        target_multiplier = 1.1
-        max_hold_seconds = min(max_hold_seconds + 45, 270)
+        # 9:15-10:30 IST: where the BIGGEST morning explosions happen
+        # NIFTY 23850 CE: ₹130→₹200+ in 30 min at open — must catch this
+        min_entry_tqs = max(55, min_entry_tqs - 8)   # aggressive: 55 TQS floor (was 58 after -4)
+        min_runner_score = max(62.0, min_runner_score - 16.0)  # 62 for near-expiry morning bursts
+        allocation_multiplier = max(1.5, float(open_drive_allocation_boost))  # bigger size on open
+        duplicate_cooldown = max(20, int(duplicate_cooldown * 0.2))  # 20s for momentum continuation
+        target_multiplier = 1.5   # bigger targets — open drive moves extend far
+        max_hold_seconds = min(max_hold_seconds + 300, 900)  # up to 900s for 30-min open drive moves
         profit_fallback_pct = float(open_drive_profit_fallback_pct)
         profit_secondary_pct = float(open_drive_profit_secondary_pct)
         profit_primary_pct = float(open_drive_profit_primary_pct)
         session_profit_stop_pct = float(open_drive_profit_stop_pct)
         adjustments.append(
-            f"Open drive: target {profit_secondary_pct:.0f}%/{profit_primary_pct:.0f}% profit lock, "
-            f"size x{allocation_multiplier:.2f}, push for momentum capture 09:15-10:30 IST."
+            f"Open drive AGGRESSIVE: TQS-8, runner-16, 20s cooldown, 1.5x size, 1.5x target — catch morning explosions."
         )
     elif bucket == "MIDDAY_CHOP":
         min_entry_tqs = max(min_entry_tqs + 6, 84)
@@ -190,13 +191,15 @@ def paper_session_adjustments(
         block_reason = "Midday chop window: paper entries paused unless runner score >= 90 with chart alignment."
         adjustments.append("Midday chop: block new paper trades except A+ runners; tighter stops and shorter holds.")
     elif bucket == "CLOSING_MOMENTUM":
-        min_entry_tqs = max(70, min_entry_tqs)
-        min_runner_score = max(80.0, min_runner_score - 2.0)
-        allocation_multiplier = 1.0
-        duplicate_cooldown = max(180, int(duplicate_cooldown * 0.8))
-        target_multiplier = 1.0
-        max_hold_seconds = min(max_hold_seconds, 180)
-        adjustments.append("Closing momentum: moderate gates for continuation setups.")
+        # 14:30-15:15 IST: where the BIGGEST explosive moves happen (end-of-day gamma, institutional)
+        # Lower ALL thresholds — better to miss a false signal than miss a 100%+ move
+        min_entry_tqs = max(58, min_entry_tqs - 10)   # was max(70), now 58 — catch moves earlier
+        min_runner_score = max(65.0, min_runner_score - 15.0)  # was max(80), now 65 — near-expiry high-gamma
+        allocation_multiplier = 1.2   # slightly larger size — end-of-day moves are real
+        duplicate_cooldown = max(60, int(duplicate_cooldown * 0.4))  # fast re-entry for momentum continuation
+        target_multiplier = 1.3    # bigger targets — closing moves extend further
+        max_hold_seconds = max_hold_seconds  # no cap — let trailing exit handle it
+        adjustments.append("Closing momentum: AGGRESSIVE gates — TQS-10, runner-15, fast cooldowns for end-of-day explosive moves.")
     elif bucket == "NORMAL":
         adjustments.append("Normal session: use configured high-PF thresholds.")
     elif bucket in {"PREMARKET", "CLOSED"}:

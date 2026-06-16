@@ -1,4 +1,4 @@
-export type MarketSymbol = 'NIFTY' | 'SENSEX';
+export type MarketSymbol = 'NIFTY' | 'SENSEX' | 'BANKNIFTY';
 export type Regime = 'TREND_EXPANSION' | 'RANGE_ABSORPTION' | 'VOLATILITY_COMPRESSION' | 'REVERSAL_RISK' | 'CLOSED_MARKET_ANALYSIS';
 export type VolatilityRegime = 'LOW_IV' | 'NORMAL_IV' | 'IV_EXPANSION' | 'EVENT_SPIKE';
 export type StreamStatus = 'connecting' | 'live' | 'status' | 'error';

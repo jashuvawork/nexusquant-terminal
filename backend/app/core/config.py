@@ -14,10 +14,13 @@ class Settings(BaseSettings):
     upstox_access_token: str | None = None
     upstox_token_file: str = "/opt/nexusquant/upstox_token.json"
     primary_symbol: str = "NIFTY"
+    trading_symbols: str = "NIFTY,SENSEX,BANKNIFTY"
     nifty_instrument_key: str = "NSE_INDEX|Nifty 50"
     sensex_instrument_key: str = "BSE_INDEX|SENSEX"
+    banknifty_instrument_key: str = "NSE_INDEX|Nifty Bank"
     nifty_expiry_date: str | None = None
     sensex_expiry_date: str | None = None
+    banknifty_expiry_date: str | None = None
     enable_live_trading: bool = False
     aggressive_mode: bool = False
     aggression_profile: str = "balanced_pro"
@@ -54,7 +57,17 @@ class Settings(BaseSettings):
         "NSE_INDEX|Nifty 50,BSE_INDEX|SENSEX,NSE_INDEX|Nifty Bank,NSE_INDEX|Nifty IT,"
         "NSE_INDEX|Nifty Auto,NSE_INDEX|Nifty FMCG,NSE_INDEX|Nifty Pharma,NSE_INDEX|Nifty Metal,"
         "NSE_INDEX|Nifty Realty,NSE_INDEX|Nifty PSU Bank,NSE_INDEX|Nifty Media,NSE_INDEX|Nifty Energy,"
-        "NSE_INDEX|Nifty Next 50,NSE_INDEX|Nifty 100,NSE_INDEX|Nifty Midcap 50,NSE_INDEX|India VIX"
+        "NSE_INDEX|Nifty Next 50,NSE_INDEX|Nifty 100,NSE_INDEX|Nifty Midcap 50,NSE_INDEX|India VIX,"
+        "NSE_EQ|HDFCBANK,NSE_EQ|ICICIBANK,NSE_EQ|RELIANCE,NSE_EQ|INFY,NSE_EQ|BHARTIARTL,"
+        "NSE_EQ|ITC,NSE_EQ|LT,NSE_EQ|TCS,NSE_EQ|AXISBANK,NSE_EQ|SBIN,"
+        "NSE_EQ|KOTAKBANK,NSE_EQ|WIPRO,NSE_EQ|HCLTECH,NSE_EQ|BAJFINANCE,NSE_EQ|ADANIENT,"
+        "NSE_EQ|TATAMOTORS,NSE_EQ|M%26M,NSE_EQ|NTPC,NSE_EQ|ONGC,NSE_EQ|POWERGRID,"
+        "NSE_EQ|SUNPHARMA,NSE_EQ|JSWSTEEL,NSE_EQ|TITAN,NSE_EQ|HINDUNILVR,NSE_EQ|NESTLEIND,"
+        "NSE_EQ|ULTRACEMCO,NSE_EQ|MARUTI,NSE_EQ|BAJAJFINSV,NSE_EQ|DRREDDY,NSE_EQ|CIPLA,"
+        "NSE_EQ|ADANIPORTS,NSE_EQ|ASIANPAINT,NSE_EQ|EICHERMOT,NSE_EQ|TRENT,NSE_EQ|TATASTEEL,"
+        "NSE_EQ|BEL,NSE_EQ|HEROMOTOCO,NSE_EQ|HINDALCO,NSE_EQ|COALINDIA,NSE_EQ|SIEMENS,"
+        "NSE_EQ|SBILIFE,NSE_EQ|HDFCLIFE,NSE_EQ|TECHM,NSE_EQ|APOLLOHOSP,NSE_EQ|MAXHEALTH,"
+        "NSE_EQ|TATACONSUM,NSE_EQ|JIOFIN,NSE_EQ|SHRIRAMFIN,NSE_EQ|ETERNAL,NSE_EQ|BAJAJ-AUTO"
     )
     market_snapshot_monitor_enabled: bool = True
     market_snapshot_poll_seconds: float = 60.0
@@ -73,6 +86,13 @@ class Settings(BaseSettings):
     sensex_opt_stop_points: float = 10.0
     sensex_opt_trail_atr: float = 0.7
     sensex_opt_entry_model: str = "breakout"
+    banknifty_opt_min_tqs: int = 72
+    banknifty_opt_breakout_atr: float = 0.45
+    banknifty_opt_volume_multiplier: float = 1.8
+    banknifty_opt_target_points: float = 25.0
+    banknifty_opt_stop_points: float = 12.0
+    banknifty_opt_trail_atr: float = 0.75
+    banknifty_opt_entry_model: str = "breakout"
     profit_lock_retain_pct: float = 100.0
     profit_target_fallback_pct: float = 6.0
     profit_target_secondary_pct: float = 12.0
@@ -83,7 +103,7 @@ class Settings(BaseSettings):
     open_drive_profit_stop_pct: float = 33.0
     open_drive_allocation_multiplier: float = 1.85
     max_paper_trade_seconds: int = 240
-    paper_duplicate_signal_cooldown_seconds: int = 150
+    paper_duplicate_signal_cooldown_seconds: int = 90
     paper_trade_allocation_pct: float = 40.0
     paper_min_trade_allocation_pct: float = 20.0
     paper_max_daily_loss_pct: float = 5.0
@@ -91,10 +111,10 @@ class Settings(BaseSettings):
     paper_max_consecutive_losses: int = 2
     paper_max_trade_loss_pct: float = 1.0
     paper_max_trade_loss_amount: float = 7500.0
-    paper_max_open_trades: int = 2
-    paper_max_open_same_side_trades: int = 2
-    paper_same_side_entry_cooldown_seconds: int = 600
-    paper_same_side_loss_cooldown_seconds: int = 1200
+    paper_max_open_trades: int = 5
+    paper_max_open_same_side_trades: int = 3
+    paper_same_side_entry_cooldown_seconds: int = 300
+    paper_same_side_loss_cooldown_seconds: int = 600
     paper_ai_min_win_probability_pct: float = 65.0
     paper_ai_min_risk_reward: float = 2.0
     paper_ai_min_confidence_pct: float = 75.0
@@ -142,12 +162,14 @@ class Settings(BaseSettings):
     paper_runner_max_target_premium_pct: float = 55.0
     paper_runner_trail_retain_pct: float = 30.0
     paper_runner_min_hold_seconds: int = 60
-    paper_runner_max_hold_seconds: int = 600
+    paper_runner_max_hold_seconds: int = 900
     paper_always_trade_explosive_runners: bool = True
     paper_min_hold_before_chop_exit_seconds: int = 45
     paper_trading_respects_stop: bool = False
     shadow_trade_all_signals: bool = False
-    market_poll_seconds: float = 5.0
+    market_poll_seconds: float = 3.0
+    near_expiry_runner_enabled: bool = True
+    near_expiry_runner_max_days: int = 7
     websocket_heartbeat_seconds: float = 10.0
     websocket_send_interval_seconds: float = 1.0
 
@@ -157,18 +179,33 @@ class Settings(BaseSettings):
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
+    @property
+    def trading_symbol_list(self) -> list[str]:
+        return [s.strip().upper() for s in self.trading_symbols.split(",") if s.strip()]
+
     def instrument_key_for(self, symbol: str) -> str:
-        return self.sensex_instrument_key if symbol.upper() == "SENSEX" else self.nifty_instrument_key
+        sym = symbol.upper()
+        if sym == "SENSEX":
+            return self.sensex_instrument_key
+        if sym == "BANKNIFTY":
+            return self.banknifty_instrument_key
+        return self.nifty_instrument_key
 
     def expiry_for(self, symbol: str) -> str | None:
-        return self.sensex_expiry_date if symbol.upper() == "SENSEX" else self.nifty_expiry_date
+        sym = symbol.upper()
+        if sym == "SENSEX":
+            return self.sensex_expiry_date
+        if sym == "BANKNIFTY":
+            return self.banknifty_expiry_date
+        return self.nifty_expiry_date
 
     @property
     def market_snapshot_instrument_list(self) -> list[str]:
         return [item.strip() for item in self.market_snapshot_instrument_keys.split(",") if item.strip()]
 
     def optimized_profile_for(self, symbol: str) -> dict[str, float | int | str]:
-        if symbol.upper() == "SENSEX":
+        sym = symbol.upper()
+        if sym == "SENSEX":
             return {
                 "symbol": "SENSEX",
                 "mode": "runner_profile",
@@ -183,6 +220,22 @@ class Settings(BaseSettings):
                 "stopPoints": self.sensex_opt_stop_points,
                 "trailAtr": self.sensex_opt_trail_atr,
                 "entryModel": self.sensex_opt_entry_model,
+            }
+        if sym == "BANKNIFTY":
+            return {
+                "symbol": "BANKNIFTY",
+                "mode": "runner_profile",
+                "executionStyle": "RUNNER_BREAKOUT",
+                "holdBias": "extend_winners",
+                "partialExitPct": 0.55,
+                "runnerPct": 0.45,
+                "minTqs": self.banknifty_opt_min_tqs,
+                "breakoutAtr": self.banknifty_opt_breakout_atr,
+                "volumeMultiplier": self.banknifty_opt_volume_multiplier,
+                "targetPoints": self.banknifty_opt_target_points,
+                "stopPoints": self.banknifty_opt_stop_points,
+                "trailAtr": self.banknifty_opt_trail_atr,
+                "entryModel": self.banknifty_opt_entry_model,
             }
         return {
             "symbol": "NIFTY",

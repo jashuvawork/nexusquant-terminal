@@ -11,9 +11,13 @@ import {
   AiAnalytics,
   BacktestingPanel,
   InfrastructureTelemetry,
+  LiveReadinessGate,
+  MarketHeatmapPanel,
+  MorningChecklistPanel,
   PaperTradingPanel,
   PortfolioPanel,
   RiskEnginePanel,
+  RunnerOpportunityPanel,
   SessionIntelligence,
   SettingsPanel,
   StrategyRouter,
@@ -27,6 +31,8 @@ import { TradingControlButtons } from './components/TradingControlButtons';
 import { displayApiUrl, usesSameOriginApiProxy } from './config/api';
 import { useMarketStream } from './hooks/useMarketStream';
 import type { MarketSymbol } from './types';
+
+const TRADING_SYMBOLS: MarketSymbol[] = ['NIFTY', 'SENSEX', 'BANKNIFTY'];
 
 function WaitingForRealData({ status, issue }: { status: string; issue: { status: string; message: string } | null }) {
   return (
@@ -58,11 +64,21 @@ function WaitingForRealData({ status, issue }: { status: string; issue: { status
             </div>
             <div className="rounded-2xl border border-slate-700 bg-slate-950/70 p-4">
               <div className="flex items-center gap-2 text-cyan-200"><KeyRound className="h-4 w-4" /> Required checks</div>
+              <div className="mt-4 rounded-2xl border border-cyan-300/20 bg-cyan-300/8 p-4">
+                <p className="text-xs font-bold uppercase tracking-[0.22em] text-cyan-200 mb-3">One-tap token refresh</p>
+                <a
+                  href={`${displayApiUrl}/api/upstox/login`}
+                  className="block w-full rounded-xl bg-cyan-500/20 border border-cyan-400/30 py-3 text-center text-sm font-bold text-cyan-100 hover:bg-cyan-500/30 transition"
+                >
+                  ↗ Open Token Refresh Page
+                </a>
+                <p className="mt-2 text-xs text-slate-500">Bookmark or add to home screen for 1-tap morning refresh</p>
+              </div>
               <ol className="mt-4 list-decimal space-y-3 pl-5 text-sm text-slate-300">
                 <li>Open <span className="font-mono text-cyan-200">{displayApiUrl}/health</span>.</li>
                 <li>Open <span className="font-mono text-cyan-200">{displayApiUrl}/api/upstox/token/status</span>.</li>
-                <li>If token is missing, open <span className="font-mono text-cyan-200">{displayApiUrl}/api/upstox/login-url</span>.</li>
-                <li>Open <span className="font-mono text-cyan-200">{displayApiUrl}/api/deployment/status</span> and confirm the latest Upstox-only API is deployed.</li>
+                <li>If token is missing, tap button above or open <span className="font-mono text-cyan-200">{displayApiUrl}/api/upstox/login</span>.</li>
+                <li>Open <span className="font-mono text-cyan-200">{displayApiUrl}/api/deployment/status</span> to confirm deploy.</li>
               </ol>
             </div>
           </div>
@@ -86,6 +102,8 @@ function App() {
 
   const content = {
     execution: <ExecutionHud snapshot={displaySnapshot} />,
+    runner: <RunnerOpportunityPanel snapshot={displaySnapshot} />,
+    marketHeatmap: <MarketHeatmapPanel snapshot={displaySnapshot} />,
     heatmap: <HeatmapTerminal snapshot={displaySnapshot} />,
     orderflow: <OrderflowAnalytics snapshot={displaySnapshot} />,
     ai: <AiMatrix snapshot={displaySnapshot} />,
@@ -99,6 +117,8 @@ function App() {
     session: <SessionIntelligence snapshot={displaySnapshot} />,
     backtesting: <BacktestingPanel snapshot={displaySnapshot} />,
     paperTrading: <PaperTradingPanel snapshot={displaySnapshot} />,
+    liveGate: <LiveReadinessGate snapshot={displaySnapshot} />,
+    morning: <MorningChecklistPanel />,
     settings: <SettingsPanel />,
   } satisfies Record<ModuleId, ReactNode>;
 
@@ -112,10 +132,10 @@ function App() {
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
                 <p className="text-[10px] font-bold uppercase tracking-[0.34em] text-cyan-300/80">Display symbol</p>
-                <p className="mt-1 text-sm text-slate-400">Backend analyzes NIFTY and SENSEX simultaneously; this only changes the visible terminal.</p>
+                <p className="mt-1 text-sm text-slate-400">Backend analyzes NIFTY, SENSEX and BANKNIFTY simultaneously; this only changes the visible terminal.</p>
               </div>
-              <div className="flex gap-2">
-                {(['NIFTY', 'SENSEX'] as MarketSymbol[]).map((symbol) => {
+              <div className="flex gap-2 flex-wrap">
+                {TRADING_SYMBOLS.map((symbol) => {
                   const ready = Boolean(snapshots[symbol]);
                   const active = selectedSymbol === symbol;
                   return (

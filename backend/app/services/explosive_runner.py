@@ -116,13 +116,32 @@ class ExplosiveRunnerEngine:
             score += 2
             reasons.append("retest confirmed")
 
+        # Standard momentum surge
         momentum_surge = (
             premium_velocity >= momentum_premium_velocity_pct
             or (breakout >= 70 and volume_accel >= 45)
             or (premium_velocity >= 3.0 and breakout >= 65 and delta_velocity >= 35)
             or (breakout >= 62 and abs(delta_velocity) >= 58 and spread_quality >= 85)
         )
-        if premium_velocity >= momentum_premium_velocity_pct:
+        # MOMENTUM OVERRIDE: extreme velocity burst bypasses all other engine checks
+        # Triggered when premium is ACCELERATING fast — ₹48→₹65 in 3 ticks pattern
+        # This is the signal that fires BEFORE normal engines agree
+        momentum_override = (
+            premium_velocity >= 10.0  # option premium moving 10%+ in one tick
+            and volume_accel >= 40    # volume is surging
+            and spread_quality >= 60  # minimum liquidity
+            and premium > 0
+        ) or (
+            premium_velocity >= 6.0   # moderate velocity with direction confirmation
+            and volume_accel >= 70    # very strong volume
+            and (price_velocity >= 0.05 or price_velocity <= -0.05)  # underlying moving
+            and spread_quality >= 65
+        )
+        if momentum_override:
+            score += min(30, 15 + premium_velocity * 1.5)
+            reasons.append(f"MOMENTUM OVERRIDE: premium velocity {premium_velocity:.1f}% + volume surge")
+            momentum_surge = True
+        elif premium_velocity >= momentum_premium_velocity_pct:
             score += min(22, 10 + premium_velocity * 1.2)
             reasons.append(f"premium surge {premium_velocity:.1f}%")
         if price_velocity >= 0.08 and side == "CALL":
@@ -172,6 +191,13 @@ class ExplosiveRunnerEngine:
         if elite_runner:
             confidence = "HIGH"
             reasons.append("elite explosive runner: momentum, spread, delta and direction aligned")
+        elif momentum_override and momentum_aligned:
+            confidence = "HIGH"
+            elite_runner = True  # momentum override promotes to elite
+            reasons.append(f"MOMENTUM OVERRIDE ELITE: velocity {premium_velocity:.1f}% + volume + direction — bypassing normal engine gates")
+        elif momentum_override:
+            confidence = "HIGH"
+            reasons.append(f"MOMENTUM OVERRIDE: velocity {premium_velocity:.1f}% + volume surge — entering regardless of TQS/regime")
         elif score >= 85 and option_tape_override and breakout >= 62 and abs(delta_velocity) >= 58:
             confidence = "HIGH"
             reasons.append("option tape override: explosive premium momentum despite lower global TQS")
@@ -186,24 +212,47 @@ class ExplosiveRunnerEngine:
             confidence = "MEDIUM"
             reasons.append("momentum surge with directional alignment")
 
-        spread_floor = 70 if momentum_surge and momentum_aligned else 75
+        spread_floor = 60 if momentum_override else (70 if momentum_surge and momentum_aligned else 75)
         candidate = confidence in {"MEDIUM", "HIGH"} and premium > 0 and spread_quality >= spread_floor
+        if momentum_override and premium > 0:
+            candidate = True  # momentum override always a candidate
         if momentum_surge and momentum_aligned and premium > 0 and spread_quality >= 65 and score >= 68:
             candidate = True
             if confidence == "LOW":
                 confidence = "MEDIUM"
                 reasons.append("momentum runner auto-candidate")
 
-        target_pct = 45 if elite_runner else 33 if confidence == "HIGH" else 22 if confidence == "MEDIUM" else 11
-        hard_stop_pct = 10 if elite_runner else 12 if confidence == "HIGH" else 8
-        trail_pct = 24 if elite_runner else 18 if confidence == "HIGH" else 12
-        partial_pct = 0.25 if elite_runner else 0.35 if confidence == "HIGH" else 0.5
+        # Expiry day: infinite gamma — on expiry morning a 100-200% move is normal
+        # Set maximum targets for expiry day momentum options
+        if momentum_override and momentum_aligned:
+            target_pct = 60  # ₹130→₹208 open drive explosion
+            hard_stop_pct = 8
+            trail_pct = 15   # tightest trail — lock in gains immediately on volatile expiry options
+            partial_pct = 0.25
+        elif elite_runner:
+            target_pct = 45
+            hard_stop_pct = 8
+            trail_pct = 24
+            partial_pct = 0.25
+        elif momentum_override:
+            target_pct = 50
+            hard_stop_pct = 8
+            trail_pct = 18
+            partial_pct = 0.35
+        else:
+            target_pct = 33 if confidence == "HIGH" else 22 if confidence == "MEDIUM" else 11
+            hard_stop_pct = 8 if confidence == "HIGH" else 7
+            trail_pct = 18 if confidence == "HIGH" else 12
+            partial_pct = 0.35 if confidence == "HIGH" else 0.5
 
         return {
             "strategyType": "EXPLOSIVE_RUNNER",
             "candidate": candidate,
             "confidence": confidence,
             "score": round(min(score, 100), 2),
+            "momentumOverride": momentum_override,
+            "premiumVelocityPct": round(premium_velocity, 2),
+            "volumeAcceleration": round(volume_accel, 2),
             "symbol": symbol,
             "side": side,
             "strike": strike,
