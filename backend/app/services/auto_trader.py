@@ -1541,17 +1541,22 @@ class AutoTraderEngine:
             return False
         runner = candidate.get("runnerSignal") or {}
         # MOMENTUM OVERRIDE: premium velocity burst bypasses all score/elite gates
-        if runner.get("momentumOverride") and str(runner.get("confidence") or "").upper() == "HIGH":
+        confidence = str(runner.get("confidence") or "").upper()
+        score = float(runner.get("score") or candidate.get("tqs") or 0)
+        if runner.get("momentumOverride") and confidence == "HIGH":
             return True  # velocity is the signal — enter now, let trailing manage risk
+        # HIGH confidence + strong score + momentum surge = tradeable without elite flag
+        # Catches score=85, surge=True runners that just miss elite threshold (88)
+        if confidence == "HIGH" and score >= 80 and runner.get("momentumSurge"):
+            return True
         momentum_runner = self._is_momentum_aligned_runner(candidate, runner)
         if not momentum_runner and not self.settings.paper_always_trade_explosive_runners:
             return False
         if runner.get("candidate") is False and not momentum_runner:
             return False
-        score = float(runner.get("score") or candidate.get("tqs") or 0)
         if not runner.get("eliteRunner"):
             return False
-        if str(runner.get("confidence") or "").upper() != "HIGH":
+        if confidence != "HIGH":
             return False
         if score < max(self._runner_min_score(runner), float(self.settings.explosive_runner_elite_min_score), float(self.settings.paper_high_confidence_min_runner_score)):
             return False

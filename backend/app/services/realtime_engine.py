@@ -293,27 +293,26 @@ class RealTimeMarketEngine:
             try:
                 near_chain = await self.client.option_chain(instrument_key, near_expiry)
                 near_rows = self._option_chain_rows(near_chain)
+                near_today = datetime.now(IST).date()
+                try:
+                    exp_d = datetime.strptime(near_expiry, "%Y-%m-%d").date()
+                    days_left = (exp_d - near_today).days
+                except ValueError:
+                    days_left = 1
                 near_runners = self._explosive_runner_watchlist(
                     symbol=selected_symbol, expiry=near_expiry, rows=near_rows,
                     spot=spot, heatmap=heatmap, market_profile=market_profile,
                     entry_model=entry_model, tqs=tqs, chart_analysis=chart_analysis, option_bias=option_bias,
                 )
-                if near_runners:
-                    near_today = datetime.now(IST).date()
-                    for r in near_runners:
-                        try:
-                            exp_d = datetime.strptime(near_expiry, "%Y-%m-%d").date()
-                            days_left = (exp_d - near_today).days
-                        except ValueError:
-                            days_left = 1
-                        r["nearExpiry"] = True
-                        r["daysToExpiry"] = days_left
-                        r["expiryDay"] = days_left == 0  # flag expiry-day options
-                    # Expiry day: near_runners go FIRST (highest gamma = highest priority)
-                    # Other days: near_runners still prepended but lower priority
-                    runner_watchlist = near_runners + runner_watchlist
-            except Exception:
-                pass
+                for r in near_runners:
+                    r["nearExpiry"] = True
+                    r["daysToExpiry"] = days_left
+                    r["expiryDay"] = days_left == 0
+                # Always prepend near-expiry runners — highest gamma = highest priority
+                runner_watchlist = near_runners + runner_watchlist
+                data_warnings.append(f"near_expiry_scan: {near_expiry} ({days_left}d) — {len(near_rows)} contracts, {len(near_runners)} runners") if near_runners else data_warnings.append(f"near_expiry_scan: {near_expiry} ({days_left}d) — {len(near_rows)} contracts, 0 qualifying runners")
+            except Exception as near_exc:
+                data_warnings.append(f"near_expiry_scan_failed: {near_expiry} — {str(near_exc)[:80]}")
         runner_signal = runner_watchlist[0] if runner_watchlist else self._explosive_runner_disabled(selected_symbol, expiry)
         plan_signal = self._best_in_range_runner_signal(runner_watchlist)
         plan_strike = as_int(plan_signal.get("strike")) if plan_signal else atm_strike
