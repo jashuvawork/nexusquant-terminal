@@ -292,8 +292,8 @@ def background_monitor_in_schedule(now: datetime | None = None) -> bool:
 
 async def background_market_monitor() -> None:
     """Continuously evaluates runner/paper candidates even when no UI is open.
-    Runs only inside the configured IST window (default 08:30–16:00 on weekdays).
-    Paper trades open and close automatically during LIVE_MARKET hours."""
+    When schedule is disabled (default), runs 24/7. Paper trades open/close
+    automatically during LIVE_MARKET hours (09:15–15:30 IST)."""
     import logging
     log = logging.getLogger("nexusquant.monitor")
     global _market_snapshot_tick

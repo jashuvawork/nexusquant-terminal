@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     explosive_runner_premium_min: float = 25.0
     explosive_runner_premium_max: float = 185.0
     background_market_monitor_enabled: bool = True
-    background_monitor_schedule_enabled: bool = True
+    background_monitor_schedule_enabled: bool = False
     background_monitor_start_ist: str = "08:30"
     background_monitor_end_ist: str = "16:00"
     news_lookback_items: int = 20
