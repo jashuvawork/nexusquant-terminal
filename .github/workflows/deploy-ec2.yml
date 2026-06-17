@@ -69,7 +69,7 @@ jobs:
              sudo SOURCE_DIR=/tmp/nexusquant-backend /tmp/ec2-build-deploy.sh"
 
       - name: Verify public health
-        if: steps.sshkey.outputs.deploy_skip != 'true'
+        if: steps.sshkey.outputs.deploy_skip != 'true' && steps.sshconn.outputs.deploy_skip != 'true'
         run: |
           for i in $(seq 1 20); do
             code=$(curl -sS -o /tmp/health.json -w "%{http_code}" https://api.nexusquant.uk/health || true)
