@@ -47,8 +47,17 @@ jobs:
           SSH_KEY_B64: ${{ secrets.NEXUSQUANT_EC2_SSH_KEY_B64 }}
         run: bash scripts/gha-write-ec2-key.sh ec2_key
 
-      - name: Upload and build on EC2
+      - name: Test EC2 SSH
+        id: sshconn
         if: steps.sshkey.outputs.deploy_skip != 'true'
+        run: |
+          if ! ssh -i ec2_key -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=20 "${EC2_USER}@${EC2_HOST}" 'echo ok'; then
+            echo "::error::EC2 SSH auth failed — replace NEXUSQUANT_EC2_SSH_KEY_B64 (see scripts/generate-gha-deploy-key.sh)."
+            exit 1
+          fi
+
+      - name: Upload and build on EC2
+        if: steps.sshkey.outputs.deploy_skip != 'true' && steps.sshconn.outputs.deploy_skip != 'true'
         run: |
           scp -i ec2_key -o StrictHostKeyChecking=no backend.tar.gz scripts/ec2-build-deploy.sh "${EC2_USER}@${EC2_HOST}:/tmp/"
           ssh -i ec2_key -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" \
