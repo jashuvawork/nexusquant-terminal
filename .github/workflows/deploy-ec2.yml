@@ -6,11 +6,7 @@ on:
       branch:
         description: Git branch to build and deploy
         required: true
-        default: main
-      skip_if_no_ssh:
-        description: Skip (do not fail) when SSH secret is missing
-        required: false
-        default: "false"
+        default: cursor/persist-upstox-token-36ec
 
 permissions:
   contents: read
@@ -19,7 +15,6 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
-      AWS_REGION: ap-south-1
       EC2_HOST: 13.206.45.57
       EC2_USER: ubuntu
     steps:
@@ -34,43 +29,26 @@ jobs:
           SSH_KEY: ${{ secrets.NEXUSQUANT_EC2_SSH_KEY }}
           SSH_KEY_B64: ${{ secrets.NEXUSQUANT_EC2_SSH_KEY_B64 }}
         run: |
-          missing=()
           if [[ -z "${SSH_KEY}" && -z "${SSH_KEY_B64}" ]]; then
-            missing+=("NEXUSQUANT_EC2_SSH_KEY or NEXUSQUANT_EC2_SSH_KEY_B64")
+            echo "::error::Missing NEXUSQUANT_EC2_SSH_KEY or NEXUSQUANT_EC2_SSH_KEY_B64 in repo secrets."
+            exit 1
           fi
-          if [[ ${#missing[@]} -gt 0 ]]; then
-            echo "::error::Missing GitHub secrets: ${missing[*]}"
-            echo "Add an EC2 SSH private key to repo secrets. On the instance, add the matching public key to ~/.ssh/authorized_keys for ubuntu."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            if [[ "${{ inputs.skip_if_no_ssh }}" != "true" ]]; then
-              exit 1
-            fi
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
+          echo "deploy_skip=false" >> "$GITHUB_OUTPUT"
 
       - name: Package backend source
-        if: steps.prereq.outputs.skip != 'true'
         run: |
           tar --exclude='backend/.venv' --exclude='**/__pycache__' -czf backend.tar.gz backend
           ls -lh backend.tar.gz
 
       - name: Write SSH key
-        if: steps.prereq.outputs.skip != 'true'
+        id: sshkey
         env:
           SSH_KEY: ${{ secrets.NEXUSQUANT_EC2_SSH_KEY }}
           SSH_KEY_B64: ${{ secrets.NEXUSQUANT_EC2_SSH_KEY_B64 }}
-        run: |
-          if [[ -n "${SSH_KEY_B64}" ]]; then
-            printf '%s' "${SSH_KEY_B64}" | tr -d '\n' | base64 -d > ec2_key
-          else
-            printf '%s\n' "${SSH_KEY}" > ec2_key
-          fi
-          chmod 600 ec2_key
-          ssh-keygen -y -f ec2_key >/dev/null
+        run: bash scripts/gha-write-ec2-key.sh ec2_key
 
       - name: Upload and build on EC2
-        if: steps.prereq.outputs.skip != 'true'
+        if: steps.sshkey.outputs.deploy_skip != 'true'
         run: |
           scp -i ec2_key -o StrictHostKeyChecking=no backend.tar.gz scripts/ec2-build-deploy.sh "${EC2_USER}@${EC2_HOST}:/tmp/"
           ssh -i ec2_key -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" \
@@ -82,7 +60,7 @@ jobs:
              sudo SOURCE_DIR=/tmp/nexusquant-backend /tmp/ec2-build-deploy.sh"
 
       - name: Verify public health
-        if: steps.prereq.outputs.skip != 'true'
+        if: steps.sshkey.outputs.deploy_skip != 'true'
         run: |
           for i in $(seq 1 20); do
             code=$(curl -sS -o /tmp/health.json -w "%{http_code}" https://api.nexusquant.uk/health || true)
