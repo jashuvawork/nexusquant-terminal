@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from contextlib import asynccontextmanager, suppress
-from datetime import datetime
+from datetime import datetime, time
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -273,16 +273,36 @@ async def daily_market_open_reset() -> None:
         await asyncio.sleep(30)  # check every 30s
 
 
+def _parse_ist_hhmm(value: str) -> time:
+    hour_str, minute_str = value.strip().split(":", 1)
+    return time(int(hour_str), int(minute_str))
+
+
+def background_monitor_in_schedule(now: datetime | None = None) -> bool:
+    """True when background monitor should run (default 08:30–16:00 IST, Mon–Fri)."""
+    if not settings.background_monitor_schedule_enabled:
+        return True
+    current = (now or datetime.now(IST)).astimezone(IST)
+    if current.weekday() >= 5:
+        return False
+    start = _parse_ist_hhmm(settings.background_monitor_start_ist)
+    end = _parse_ist_hhmm(settings.background_monitor_end_ist)
+    return start <= current.time() <= end
+
+
 async def background_market_monitor() -> None:
     """Continuously evaluates runner/paper candidates even when no UI is open.
-    This runs 24/7 regardless of whether the website is open. Paper trades
-    open and close automatically during LIVE_MARKET hours."""
+    Runs only inside the configured IST window (default 08:30–16:00 on weekdays).
+    Paper trades open and close automatically during LIVE_MARKET hours."""
     import logging
     log = logging.getLogger("nexusquant.monitor")
     global _market_snapshot_tick
     tick_count = 0
     while True:
         try:
+            if not background_monitor_in_schedule():
+                await asyncio.sleep(60)
+                continue
             _market_snapshot_tick += max(1.0, float(settings.market_poll_seconds or 1))
             if settings.market_snapshot_monitor_enabled and _market_snapshot_tick >= max(1.0, float(settings.market_snapshot_poll_seconds or 5)):
                 _market_snapshot_tick = 0.0

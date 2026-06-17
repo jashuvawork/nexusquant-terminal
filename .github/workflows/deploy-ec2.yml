@@ -1,43 +1,22 @@
-name: NexusQuant CI
+name: Deploy EC2 API
 
 on:
-  push:
-    branches: [main, "cursor/**"]
-  pull_request:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Git branch to build and deploy
+        required: true
+        default: cursor/persist-upstox-token-36ec
+      image_tag:
+        description: Docker image tag
+        required: true
+        default: latest
+
+permissions:
+  contents: read
 
 jobs:
-  frontend:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: frontend
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - run: npm ci
-      - run: npm run build
-
-  backend:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: backend
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: python -m pip install --upgrade pip
-      - run: pip install -r requirements.txt
-      - run: python -m compileall app
-
-  deploy-ec2:
-    needs: backend
-    if: github.ref == 'refs/heads/cursor/persist-upstox-token-36ec' && github.event_name == 'push'
+  deploy:
     runs-on: ubuntu-latest
     env:
       AWS_REGION: ap-south-1
@@ -45,9 +24,11 @@ jobs:
       ACCOUNT_ID: "939198471076"
       EC2_HOST: 13.206.45.57
       EC2_USER: ubuntu
-      IMAGE_TAG: latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -60,6 +41,8 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build and push Docker image
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
           IMAGE_URI="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:${IMAGE_TAG}"
           docker build -t "${ECR_REPOSITORY}:${IMAGE_TAG}" ./backend
@@ -84,6 +67,8 @@ jobs:
           ssh-keygen -y -f ec2_key >/dev/null
 
       - name: Redeploy on EC2
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
           scp -i ec2_key -o StrictHostKeyChecking=no scripts/ec2-redeploy.sh "${EC2_USER}@${EC2_HOST}:/tmp/ec2-redeploy.sh"
           ssh -i ec2_key -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" \
