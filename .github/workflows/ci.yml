@@ -37,59 +37,61 @@ jobs:
 
   deploy-ec2:
     needs: backend
-    if: github.ref == 'refs/heads/cursor/persist-upstox-token-36ec' && github.event_name == 'push'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/cursor/'))
     runs-on: ubuntu-latest
     env:
-      AWS_REGION: ap-south-1
-      ECR_REPOSITORY: nexusquant-api
-      ACCOUNT_ID: "939198471076"
       EC2_HOST: 13.206.45.57
       EC2_USER: ubuntu
-      IMAGE_TAG: latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build and push Docker image
+      - name: Check deploy prerequisites
+        id: prereq
+        env:
+          SSH_KEY: ${{ secrets.NEXUSQUANT_EC2_SSH_KEY }}
+          SSH_KEY_B64: ${{ secrets.NEXUSQUANT_EC2_SSH_KEY_B64 }}
         run: |
-          IMAGE_URI="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:${IMAGE_TAG}"
-          docker build -t "${ECR_REPOSITORY}:${IMAGE_TAG}" ./backend
-          docker tag "${ECR_REPOSITORY}:${IMAGE_TAG}" "${IMAGE_URI}"
-          docker push "${IMAGE_URI}"
-          echo "Pushed ${IMAGE_URI}"
+          if [[ -z "${SSH_KEY}" && -z "${SSH_KEY_B64}" ]]; then
+            echo "::warning::Skipping EC2 deploy — add NEXUSQUANT_EC2_SSH_KEY (or _B64) to GitHub repo secrets."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Package backend source
+        if: steps.prereq.outputs.skip != 'true'
+        run: |
+          tar --exclude='backend/.venv' --exclude='**/__pycache__' -czf backend.tar.gz backend
+          ls -lh backend.tar.gz
 
       - name: Write SSH key
+        if: steps.prereq.outputs.skip != 'true'
         env:
           SSH_KEY: ${{ secrets.NEXUSQUANT_EC2_SSH_KEY }}
           SSH_KEY_B64: ${{ secrets.NEXUSQUANT_EC2_SSH_KEY_B64 }}
         run: |
           if [[ -n "${SSH_KEY_B64}" ]]; then
             printf '%s' "${SSH_KEY_B64}" | tr -d '\n' | base64 -d > ec2_key
-          elif [[ -n "${SSH_KEY}" ]]; then
-            printf '%s\n' "${SSH_KEY}" > ec2_key
           else
-            echo "Missing NEXUSQUANT_EC2_SSH_KEY or NEXUSQUANT_EC2_SSH_KEY_B64 secret" >&2
-            exit 1
+            printf '%s\n' "${SSH_KEY}" > ec2_key
           fi
           chmod 600 ec2_key
           ssh-keygen -y -f ec2_key >/dev/null
 
-      - name: Redeploy on EC2
+      - name: Upload and build on EC2
+        if: steps.prereq.outputs.skip != 'true'
         run: |
-          scp -i ec2_key -o StrictHostKeyChecking=no scripts/ec2-redeploy.sh "${EC2_USER}@${EC2_HOST}:/tmp/ec2-redeploy.sh"
+          scp -i ec2_key -o StrictHostKeyChecking=no backend.tar.gz scripts/ec2-build-deploy.sh "${EC2_USER}@${EC2_HOST}:/tmp/"
           ssh -i ec2_key -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" \
-            "chmod +x /tmp/ec2-redeploy.sh && sudo AWS_REGION=${AWS_REGION} ACCOUNT_ID=${ACCOUNT_ID} IMAGE_TAG=${IMAGE_TAG} /tmp/ec2-redeploy.sh"
+            "set -euo pipefail
+             rm -rf /tmp/nexusquant-backend
+             mkdir -p /tmp/nexusquant-backend
+             tar -xzf /tmp/backend.tar.gz -C /tmp --strip-components=1 backend
+             chmod +x /tmp/ec2-build-deploy.sh
+             sudo SOURCE_DIR=/tmp/nexusquant-backend /tmp/ec2-build-deploy.sh"
 
       - name: Verify public health
+        if: steps.prereq.outputs.skip != 'true'
         run: |
           for i in $(seq 1 20); do
             code=$(curl -sS -o /tmp/health.json -w "%{http_code}" https://api.nexusquant.uk/health || true)
