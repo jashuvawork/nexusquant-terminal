@@ -180,16 +180,16 @@ def paper_session_adjustments(
             f"Open drive AGGRESSIVE: TQS-8, runner-16, 20s cooldown, 1.5x size, 1.5x target — catch morning explosions."
         )
     elif bucket == "MIDDAY_CHOP":
-        min_entry_tqs = max(min_entry_tqs + 6, 84)
-        min_runner_score = max(min_runner_score + 5.0, 88.0)
-        allocation_multiplier = 0.55
-        duplicate_cooldown = max(duplicate_cooldown, 360)
-        target_multiplier = 0.9
-        stop_multiplier = 0.85
-        max_hold_seconds = min(max_hold_seconds, 120)
+        min_entry_tqs = max(min_entry_tqs + 4, 78)
+        min_runner_score = max(min_runner_score + 2.0, 82.0)
+        allocation_multiplier = 0.75
+        duplicate_cooldown = max(duplicate_cooldown, 120)
+        target_multiplier = 0.95
+        stop_multiplier = 0.9
+        max_hold_seconds = min(max_hold_seconds, 180)
         block_new_paper = True
-        block_reason = "Midday chop window: paper entries paused unless runner score >= 90 with chart alignment."
-        adjustments.append("Midday chop: block new paper trades except A+ runners; tighter stops and shorter holds.")
+        block_reason = "Midday chop window: paper entries paused unless momentum override or runner score >= 90 with alignment."
+        adjustments.append("Midday chop: momentum override bypass; A+ runners (score≥90 + alignment) allowed.")
     elif bucket == "CLOSING_MOMENTUM":
         # 14:30-15:15 IST: where the BIGGEST explosive moves happen (end-of-day gamma, institutional)
         # Lower ALL thresholds — better to miss a false signal than miss a 100%+ move

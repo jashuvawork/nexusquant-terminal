@@ -993,6 +993,10 @@ class RealTimeMarketEngine:
             premium_velocity = 0
             volume_delta = 0
         volume_delta = max(volume_delta, as_int(volume_state.get("effectiveVolume")))
+        if previous and previous.selected_volume > 0:
+            volume_accel = (volume_delta / previous.selected_volume) * 100
+        else:
+            volume_accel = volume_delta / 100
         call_bid = as_int(call_md.get("bid_qty"))
         call_ask = as_int(call_md.get("ask_qty"))
         put_bid = as_int(put_md.get("bid_qty"))
@@ -1010,7 +1014,7 @@ class RealTimeMarketEngine:
             "domImbalance": round(clamp(dom, -100, 100)),
             "liquidityShift": round(clamp(abs(dom))),
             "sweepDetection": round(clamp(100 - self._spread_quality(call_md, put_md))),
-            "volumeAcceleration": round(clamp(volume_delta / 1000)),
+            "volumeAcceleration": round(clamp(volume_accel)),
             "breakoutVelocity": round(clamp(abs(price_velocity) * 25 + abs(premium_velocity) * 20)),
         }
 
@@ -1043,6 +1047,10 @@ class RealTimeMarketEngine:
             premium_velocity = 0
             volume_delta = 0
         volume_delta = max(volume_delta, as_int(volume_state.get("effectiveVolume")))
+        if previous and previous.selected_volume > 0:
+            volume_accel = (volume_delta / previous.selected_volume) * 100
+        else:
+            volume_accel = volume_delta / 100
         bid_qty = as_int(md.get("bid_qty"))
         ask_qty = as_int(md.get("ask_qty"))
         depth_total = bid_qty + ask_qty
@@ -1059,7 +1067,7 @@ class RealTimeMarketEngine:
             "domImbalance": round(clamp(dom, -100, 100)),
             "liquidityShift": round(clamp(abs(dom))),
             "sweepDetection": round(clamp(100 - self._single_spread_quality(md))),
-            "volumeAcceleration": round(clamp(volume_delta / 1000)),
+            "volumeAcceleration": round(clamp(volume_accel)),
             "breakoutVelocity": round(clamp(abs(directional_velocity) * 25 + abs(premium_velocity) * 20)),
             "premiumVelocity": round(premium_velocity, 2),
             "priceVelocity": round(price_velocity, 3),
@@ -1267,10 +1275,20 @@ class RealTimeMarketEngine:
             if len(trades) >= limit:
                 break
             momentum_surge = bool(signal.get("momentumSurge")) and bool(signal.get("momentumAligned"))
-            min_score = float(self.settings.explosive_runner_elite_min_score if momentum_surge else self.settings.explosive_runner_min_score)
-            if (not signal.get("candidate") and not momentum_surge) or as_float(signal.get("score")) < min_score:
+            momentum_override = bool(signal.get("momentumOverride")) and str(signal.get("confidence") or "").upper() == "HIGH"
+            if momentum_override:
+                min_score = float(self.settings.explosive_runner_momentum_min_score)
+            else:
+                min_score = float(self.settings.explosive_runner_elite_min_score if momentum_surge else self.settings.explosive_runner_min_score)
+            score = as_float(signal.get("score"))
+            if score < min_score:
                 continue
-            if signal.get("confidence") != "HIGH" or not signal.get("eliteRunner"):
+            if not signal.get("candidate") and not momentum_surge and not momentum_override:
+                continue
+            # Elite path OR momentum-override burst (₹110→₹135 midday breakouts)
+            if momentum_override:
+                pass
+            elif signal.get("confidence") != "HIGH" or not signal.get("eliteRunner"):
                 continue
             premium = as_float(signal.get("premium") or signal.get("lastPremium"))
             risk_capital = trading_capital * max(0, self.settings.max_exposure_pct) / 100 if trading_capital > 0 else 0
