@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# NexusQuant background monitor IST schedule (Mon–Fri).
-# 08:30 IST = 03:00 UTC | 16:00 IST = 10:30 UTC
-# Install: sudo cp to /opt/nexusquant/scripts/ and add /etc/cron.d/nexusquant-monitor
+# Toggle NexusQuant background monitor on EC2.
+# Default production mode: enable = 24/7 monitor (schedule off).
+# Legacy scheduled window: use enable-schedule / disable-schedule.
 
 set -euo pipefail
 
@@ -15,24 +15,40 @@ set_kv() {
   echo "${key}=${value}" | sudo tee -a "$ENV_FILE" >/dev/null
 }
 
+restart_api() {
+  sudo docker restart "$CONTAINER_NAME"
+}
+
 case "$ACTION" in
   enable)
+    set_kv BACKGROUND_MARKET_MONITOR_ENABLED true
+    set_kv MARKET_SNAPSHOT_MONITOR_ENABLED true
+    set_kv BACKGROUND_MONITOR_SCHEDULE_ENABLED false
+    restart_api
+    echo "$(date -Is) enabled background monitor (24/7; trades still LIVE_MARKET 09:15-15:30 IST)"
+    ;;
+  disable)
+    set_kv BACKGROUND_MARKET_MONITOR_ENABLED false
+    set_kv MARKET_SNAPSHOT_MONITOR_ENABLED false
+    restart_api
+    echo "$(date -Is) disabled background monitor"
+    ;;
+  enable-schedule)
     set_kv BACKGROUND_MARKET_MONITOR_ENABLED true
     set_kv MARKET_SNAPSHOT_MONITOR_ENABLED true
     set_kv BACKGROUND_MONITOR_SCHEDULE_ENABLED true
     set_kv BACKGROUND_MONITOR_START_IST "08:30"
     set_kv BACKGROUND_MONITOR_END_IST "16:00"
-    sudo docker restart "$CONTAINER_NAME"
-    echo "$(date -Is) enabled background monitor (08:30 IST window)"
+    restart_api
+    echo "$(date -Is) enabled scheduled monitor (08:30-16:00 IST weekdays)"
     ;;
-  disable)
-    set_kv BACKGROUND_MARKET_MONITOR_ENABLED false
-    set_kv MARKET_SNAPSHOT_MONITOR_ENABLED false
-    sudo docker restart "$CONTAINER_NAME"
-    echo "$(date -Is) disabled background monitor (16:00 IST cutoff)"
+  disable-schedule)
+    set_kv BACKGROUND_MONITOR_SCHEDULE_ENABLED false
+    restart_api
+    echo "$(date -Is) disabled IST schedule window (monitor stays 24/7 if enabled)"
     ;;
   *)
-    echo "Usage: $0 {enable|disable}" >&2
+    echo "Usage: $0 {enable|disable|enable-schedule|disable-schedule}" >&2
     exit 1
     ;;
 esac
