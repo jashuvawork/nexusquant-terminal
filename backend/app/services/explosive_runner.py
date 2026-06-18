@@ -128,12 +128,18 @@ class ExplosiveRunnerEngine:
             or (premium_velocity >= 3.0 and breakout >= 65 and delta_velocity >= 35)
             or (breakout >= 62 and abs(delta_velocity) >= 58 and spread_quality >= 85)
         )
-        # MOMENTUM OVERRIDE: premium velocity burst — catch ₹45→₹100 explosions early
+        # MOMENTUM OVERRIDE: premium velocity burst — catch ₹45→₹100 and gradual ₹110→₹135 breakouts
         momentum_override = (
             premium_velocity >= momentum_override_velocity_pct
             and volume_accel >= momentum_override_volume_accel
             and spread_quality >= 60
             and premium > 0
+        ) or (
+            premium_velocity >= 3.0
+            and volume_accel >= 30
+            and breakout >= 55
+            and spread_quality >= 58
+            and premium >= explosion_min_premium
         ) or (
             premium_velocity >= 6.0
             and volume_accel >= max(50.0, momentum_override_volume_accel * 2)

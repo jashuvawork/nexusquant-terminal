@@ -42,61 +42,32 @@ jobs:
     env:
       EC2_HOST: 13.206.45.57
       EC2_USER: ubuntu
+      EC2_INSTANCE_ID: i-09ce535a67a0a6810
+      AWS_REGION: ap-south-1
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check deploy prerequisites
-        id: prereq
-        env:
-          SSH_KEY: ${{ secrets.NEXUSQUANT_EC2_SSH_KEY }}
-          SSH_KEY_B64: ${{ secrets.NEXUSQUANT_EC2_SSH_KEY_B64 }}
-        run: |
-          if [[ -z "${SSH_KEY}" && -z "${SSH_KEY_B64}" ]]; then
-            echo "::warning::Skipping EC2 deploy — add NEXUSQUANT_EC2_SSH_KEY (or _B64) to GitHub repo secrets."
-            echo "deploy_skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "deploy_skip=false" >> "$GITHUB_OUTPUT"
-          fi
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
 
       - name: Package backend source
-        if: steps.prereq.outputs.deploy_skip != 'true'
         run: |
           tar --exclude='backend/.venv' --exclude='**/__pycache__' -czf backend.tar.gz backend
           ls -lh backend.tar.gz
 
-      - name: Write SSH key
-        id: sshkey
-        if: steps.prereq.outputs.deploy_skip != 'true'
+      - name: Deploy to EC2
         env:
           SSH_KEY: ${{ secrets.NEXUSQUANT_EC2_SSH_KEY }}
           SSH_KEY_B64: ${{ secrets.NEXUSQUANT_EC2_SSH_KEY_B64 }}
-        run: bash scripts/gha-write-ec2-key.sh ec2_key
-
-      - name: Test EC2 SSH
-        id: sshconn
-        if: steps.prereq.outputs.deploy_skip != 'true' && steps.sshkey.outputs.deploy_skip != 'true'
         run: |
-          if ! ssh -i ec2_key -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=20 "${EC2_USER}@${EC2_HOST}" 'echo ok'; then
-            echo "::warning::EC2 SSH auth failed. Delete NEXUSQUANT_EC2_SSH_KEY_B64 and add the deploy key (see scripts/generate-gha-deploy-key.sh)."
-            echo "deploy_skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "deploy_skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Upload and build on EC2
-        if: steps.prereq.outputs.deploy_skip != 'true' && steps.sshkey.outputs.deploy_skip != 'true' && steps.sshconn.outputs.deploy_skip != 'true'
-        run: |
-          scp -i ec2_key -o StrictHostKeyChecking=no backend.tar.gz scripts/ec2-build-deploy.sh "${EC2_USER}@${EC2_HOST}:/tmp/"
-          ssh -i ec2_key -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" \
-            "set -euo pipefail
-             rm -rf /tmp/nexusquant-backend
-             mkdir -p /tmp/nexusquant-backend
-             tar -xzf /tmp/backend.tar.gz -C /tmp --strip-components=1 backend
-             chmod +x /tmp/ec2-build-deploy.sh
-             sudo SOURCE_DIR=/tmp/nexusquant-backend /tmp/ec2-build-deploy.sh"
+          chmod +x scripts/gha-ec2-deploy.sh scripts/ec2-sync-trading-env.sh scripts/gha-write-ec2-key.sh
+          bash scripts/gha-ec2-deploy.sh
 
       - name: Verify public health
-        if: steps.prereq.outputs.deploy_skip != 'true' && steps.sshkey.outputs.deploy_skip != 'true' && steps.sshconn.outputs.deploy_skip != 'true'
         run: |
           for i in $(seq 1 20); do
             code=$(curl -sS -o /tmp/health.json -w "%{http_code}" https://api.nexusquant.uk/health || true)
