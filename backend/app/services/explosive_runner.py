@@ -54,6 +54,11 @@ class ExplosiveRunnerEngine:
         chart_bias: str | None = None,
         option_direction: str | None = None,
         momentum_premium_velocity_pct: float = 5.0,
+        momentum_override_velocity_pct: float = 10.0,
+        momentum_override_volume_accel: float = 40.0,
+        explosion_velocity_pct: float = 5.0,
+        explosion_volume_accel: float = 50.0,
+        explosion_min_premium: float = 25.0,
         elite_min_score: float = 92.0,
         elite_breakout_min: float = 70.0,
         elite_delta_velocity_min: float = 55.0,
@@ -123,19 +128,23 @@ class ExplosiveRunnerEngine:
             or (premium_velocity >= 3.0 and breakout >= 65 and delta_velocity >= 35)
             or (breakout >= 62 and abs(delta_velocity) >= 58 and spread_quality >= 85)
         )
-        # MOMENTUM OVERRIDE: extreme velocity burst bypasses all other engine checks
-        # Triggered when premium is ACCELERATING fast — ₹48→₹65 in 3 ticks pattern
-        # This is the signal that fires BEFORE normal engines agree
+        # MOMENTUM OVERRIDE: premium velocity burst — catch ₹45→₹100 explosions early
         momentum_override = (
-            premium_velocity >= 10.0  # option premium moving 10%+ in one tick
-            and volume_accel >= 40    # volume is surging
-            and spread_quality >= 60  # minimum liquidity
+            premium_velocity >= momentum_override_velocity_pct
+            and volume_accel >= momentum_override_volume_accel
+            and spread_quality >= 60
             and premium > 0
         ) or (
-            premium_velocity >= 6.0   # moderate velocity with direction confirmation
-            and volume_accel >= 70    # very strong volume
-            and (price_velocity >= 0.05 or price_velocity <= -0.05)  # underlying moving
+            premium_velocity >= 6.0
+            and volume_accel >= 70
+            and (price_velocity >= 0.05 or price_velocity <= -0.05)
             and spread_quality >= 65
+        ) or (
+            premium_velocity >= explosion_velocity_pct
+            and volume_accel >= explosion_volume_accel
+            and momentum_surge
+            and spread_quality >= 58
+            and premium >= explosion_min_premium
         )
         if momentum_override:
             score += min(30, 15 + premium_velocity * 1.5)

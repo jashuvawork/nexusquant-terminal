@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     explosive_runner_scan_strikes: int = 24
     explosive_runner_min_score: float = 78.0
     explosive_runner_momentum_min_score: float = 65.0
-    explosive_runner_momentum_premium_velocity_pct: float = 4.0
+    explosive_runner_momentum_premium_velocity_pct: float = 3.0
     explosive_runner_elite_min_score: float = 88.0
     explosive_runner_elite_breakout_min: float = 62.0
     explosive_runner_elite_delta_velocity_min: float = 48.0
@@ -161,9 +161,15 @@ class Settings(BaseSettings):
     paper_min_premium_ltp: float = 80.0
     paper_high_confidence_min_runner_score: float = 88.0
     paper_high_confidence_min_tqs: int = 86
-    paper_min_entry_tqs: int = 82
+    paper_min_entry_tqs: int = 70
+    paper_momentum_min_entry_tqs: int = 55
     paper_runner_bypass_quality_gates: bool = False
-    paper_runner_max_allocation_pct: float = 12.0
+    paper_momentum_min_premium_ltp: float = 25.0
+    paper_momentum_max_entry_premium: float = 95.0
+    paper_momentum_explosion_velocity_pct: float = 5.0
+    paper_momentum_explosion_volume_accel: float = 50.0
+    paper_momentum_override_min_velocity_pct: float = 7.0
+    paper_runner_max_allocation_pct: float = 15.0
     paper_runner_target_premium_pct: float = 35.0
     paper_runner_max_target_premium_pct: float = 55.0
     paper_runner_trail_retain_pct: float = 30.0
