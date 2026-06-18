@@ -108,7 +108,12 @@ def build_daily_improvement_plan(
         allow_tier_b = False
         actions.append("Today losing — tighten to elite momentum only until recovery.")
 
-    if missed_count > 50 and rolling_pf >= target_profit_factor:
+    if missed_count > 30 and rolling_pf < 1.0 and rolling_trades >= min_trades_for_calibration:
+        allow_tier_b = True
+        min_runner_score = min(min_runner_score, 75.0)
+        min_velocity_pct = min(min_velocity_pct, 1.8)
+        actions.append(f"{missed_count} near-misses logged — allow Tier B explosions while PF recovers (score≥75, vel≥1.8%).")
+    elif missed_count > 50 and rolling_pf >= target_profit_factor:
         actions.append(f"{missed_count} near-misses logged — edge OK; selective capture preferred over blind volume.")
 
     if not actions:

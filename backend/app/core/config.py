@@ -182,6 +182,11 @@ class Settings(BaseSettings):
     paper_momentum_explosion_velocity_pct: float = 1.5
     paper_momentum_explosion_volume_accel: float = 15.0
     paper_momentum_override_min_velocity_pct: float = 1.5
+    paper_profit_explosion_bypass: bool = True
+    paper_runner_min_lots_cheap_premium: int = 1
+    paper_cheap_premium_lot_threshold: float = 80.0
+    option_velocity_window_seconds: float = 10.0
+    near_expiry_runner_emit_limit: int = 3
     paper_runner_max_allocation_pct: float = 15.0
     paper_runner_target_premium_pct: float = 35.0
     paper_runner_max_target_premium_pct: float = 55.0

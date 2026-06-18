@@ -1586,6 +1586,14 @@ class AutoTraderEngine:
         min_vel = float(gates.get("minVelocityPct") or self.settings.paper_profit_tier_b_min_velocity_pct)
         min_vol = float(gates.get("minVolumeAccel") or 25.0)
         confidence = str(runner.get("confidence") or "").upper()
+        if bucket == "OPEN_DRIVE":
+            min_vel = min(min_vel, 1.5)
+            min_vol = min(min_vol, 20.0)
+            min_score = min(min_score, 68.0)
+        elif bucket == "CLOSING_MOMENTUM":
+            min_vel = min(min_vel, 1.5)
+            min_vol = min(min_vol, 20.0)
+            min_score = min(min_score, 70.0)
 
         # A+ — momentum burst + alignment or elite tape
         if runner.get("momentumOverride") and score >= 85 and premium_velocity >= 2.5:
@@ -1611,10 +1619,42 @@ class AutoTraderEngine:
             return True
         return False
 
+    def _is_verified_explosion_entry(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
+        """Tape-confirmed explosion — velocity + volume on a live runner (e.g. ₹45 PE spike)."""
+        runner = runner or candidate.get("runnerSignal") or {}
+        if candidate.get("strategyType") != "EXPLOSIVE_RUNNER":
+            return False
+        if self._is_explosion_chase(candidate, runner):
+            return False
+        score = float(runner.get("score") or 0)
+        if score < float(self.settings.paper_max_catch_min_runner_score):
+            return False
+        metrics = self._runner_metrics(runner)
+        premium_velocity = float(runner.get("premiumVelocityPct") or metrics.get("premiumVelocity") or 0)
+        volume_accel = float(runner.get("volumeAcceleration") or metrics.get("volumeAcceleration") or 0)
+        min_vel = float(self.settings.paper_momentum_explosion_velocity_pct)
+        min_vol = float(self.settings.paper_momentum_explosion_volume_accel)
+        has_tape = premium_velocity >= min_vel and volume_accel >= min_vol
+        if has_tape:
+            return True
+        if runner.get("momentumOverride") and premium_velocity >= min_vel:
+            return True
+        return False
+
     def _runner_entry_bypass(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
         runner = runner or candidate.get("runnerSignal") or {}
         if self.settings.paper_profit_first_mode:
-            return self._is_profit_tier_entry(candidate, runner)
+            if self._is_profit_tier_entry(candidate, runner):
+                return True
+            if self.settings.paper_profit_explosion_bypass and self.settings.paper_max_catch_mode:
+                if self._is_verified_explosion_entry(candidate, runner):
+                    return True
+                if runner.get("momentumOverride") and float(runner.get("score") or 0) >= 78:
+                    metrics = self._runner_metrics(runner)
+                    pv = float(runner.get("premiumVelocityPct") or metrics.get("premiumVelocity") or 0)
+                    if pv >= float(self.settings.paper_momentum_explosion_velocity_pct):
+                        return True
+            return False
         if self._is_catchable_runner(candidate, runner):
             return True
         if self._is_momentum_explosion(candidate, runner):
@@ -2247,6 +2287,9 @@ class AutoTraderEngine:
         if quantity < lot_size:
             return None
         min_viable_lots = 3
+        cheap_threshold = float(self.settings.paper_cheap_premium_lot_threshold)
+        if premium <= cheap_threshold and (entry_bypass or momentum_explosion or momentum_override):
+            min_viable_lots = max(1, int(self.settings.paper_runner_min_lots_cheap_premium))
         if quantity < lot_size * min_viable_lots:
             return None
         charges = self._charges_estimate(premium, premium, max(1, quantity))
