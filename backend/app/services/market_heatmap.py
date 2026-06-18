@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.instrument_keys import display_symbol, index_constituent_symbols, resolve_instrument_keys
+from app.services.instrument_keys import display_symbol, index_constituent_symbols, resolve_instrument_key, resolve_instrument_keys
 from app.services.market_movers import NIFTY50_WEIGHTS, quote_item
 
 STOCK_WEIGHTS = dict(NIFTY50_WEIGHTS)
@@ -127,5 +127,5 @@ async def fetch_constituent_heatmap(index: str, client: Any) -> dict[str, Any]:
 
     result = build_constituent_heatmap(index, merged)
     if not result["available"]:
-        result["reason"] = f"Only {result['stockCount']} constituents returned (need ≥10)"
+        result["reason"] = result.get("reason") or f"Only {result['stockCount']}/{result.get('requested', 0)} constituents returned (need ≥10)"
     return result
