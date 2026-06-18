@@ -234,12 +234,9 @@ class AutoTraderEngine:
             quality = self._pre_trade_quality(candidate, session_adj, market_phase)
             if quality["blocked"]:
                 reason_text = str(quality.get("reason") or "")
-                # Position limits (max_open, same_side) are HARD limits — never bypassed
                 is_position_limit = any(s in reason_text for s in ["max open", "max capacity", "already has an open"])
-                can_bypass = quality.get("paperEligible") and not is_position_limit
+                can_bypass = self._runner_may_bypass_quality(candidate, reason_text, market_phase) and not is_position_limit
                 if can_bypass:
-                    # tradeable_runner bypasses quality gates (TQS, breadth, regime, news)
-                    # but NOT position limits (max simultaneous trades)
                     pass
                 elif self.settings.paper_trading and self.settings.shadow_trade_all_signals:
                     skipped.append({"candidate": candidate.get("id"), "reason": quality["reason"], "quality": quality})
@@ -264,7 +261,12 @@ class AutoTraderEngine:
             if risk_halt["blocked"]:
                 skipped.append({"candidate": candidate.get("id"), "reason": risk_halt["reason"], "quality": quality})
                 continue
-            if pre_trade_psychology.get("tradePermission") in {"WAIT", "BLOCK_NEW_TRADES"} and not self._is_tradeable_explosive_runner(candidate, market_phase):
+            runner_sig = (candidate.get("runnerSignal") or {})
+            momentum_override = bool(runner_sig.get("momentumOverride") and str(runner_sig.get("confidence") or "").upper() == "HIGH")
+            if pre_trade_psychology.get("tradePermission") == "BLOCK_NEW_TRADES" and not momentum_override:
+                skipped.append({"candidate": candidate.get("id"), "reason": "psychology gate: BLOCK_NEW_TRADES", "quality": quality})
+                continue
+            if pre_trade_psychology.get("tradePermission") == "WAIT" and not momentum_override:
                 skipped.append({"candidate": candidate.get("id"), "reason": f"psychology gate: {pre_trade_psychology.get('tradePermission')}", "quality": quality})
                 continue
             if self.settings.paper_trading or not self.settings.enable_live_trading:
@@ -1539,6 +1541,39 @@ class AutoTraderEngine:
             base = float(self.settings.explosive_runner_min_score)
         return max(65.0, base - bias)
 
+    def _is_hard_quality_block(self, reason_text: str) -> bool:
+        """Blocks that must never be bypassed — even for explosive runners."""
+        lowered = reason_text.lower()
+        markers = (
+            "cooldown",
+            "chart analysis says wait",
+            "chart trend conflict",
+            "ai quality predictor rejected",
+            "below high-confidence minimum",
+            "chop filter",
+            "breadth does not confirm",
+            "max open",
+            "max capacity",
+            "tqs ",
+            "tqs below",
+            "runner score below",
+            "side underperforming",
+            "missing premium",
+            "missing effective volume",
+            "spread/slippage cost too high",
+        )
+        return any(marker in lowered for marker in markers)
+
+    def _runner_may_bypass_quality(self, candidate: dict[str, Any], reason_text: str, market_phase: str | None = None) -> bool:
+        if not self.settings.paper_runner_bypass_quality_gates:
+            return False
+        if self._is_hard_quality_block(reason_text):
+            return False
+        runner = candidate.get("runnerSignal") or {}
+        if runner.get("momentumOverride") and str(runner.get("confidence") or "").upper() == "HIGH":
+            return True
+        return self._is_tradeable_explosive_runner(candidate, market_phase)
+
     def _is_tradeable_explosive_runner(self, candidate: dict[str, Any], market_phase: str | None = None) -> bool:
         if not self.settings.explosive_runner_enabled:
             return False
@@ -1845,7 +1880,7 @@ class AutoTraderEngine:
                 reasons.append("spread/slippage cost too high for 5-point scalp")
         return {
             "blocked": bool(reasons),
-            "paperEligible": not bool(reasons) or tradeable_runner,
+            "paperEligible": not bool(reasons),
             "reason": ", ".join(reasons) if reasons else "quality accepted",
             "spreadCost": round(spread_cost, 2),
             "slippageEstimate": round(slippage, 2),
@@ -1866,6 +1901,14 @@ class AutoTraderEngine:
     ) -> PaperTrade | None:
         session_adj = session_adj or {}
         tradeable_runner = self._is_tradeable_explosive_runner(candidate, market_phase)
+        runner_sig = candidate.get("runnerSignal") or {}
+        momentum_override = bool(runner_sig.get("momentumOverride") and str(runner_sig.get("confidence") or "").upper() == "HIGH")
+        entry_tqs = int(candidate.get("tqs") or 0)
+        min_entry_tqs = int(self.settings.paper_min_entry_tqs or self.settings.paper_high_confidence_min_tqs)
+        if entry_tqs < min_entry_tqs and not momentum_override:
+            return None
+        if quality.get("blocked") and not momentum_override:
+            return None
         trade_id = str(candidate.get("id") or uuid4())
         if trade_id in self.open_paper:
             return None
@@ -1887,7 +1930,7 @@ class AutoTraderEngine:
             alloc_boost = 1.5 if runner_sig_inner.get("momentumOverride") else 1.0
             allocation_pct = float(self.settings.paper_trade_allocation_pct) * float(session_adj.get("allocationPctMultiplier") or 1.0) * alloc_boost
             if tradeable_runner:
-                allocation_pct = max(allocation_pct, float(self.settings.paper_trade_allocation_pct))
+                allocation_pct = min(allocation_pct, float(self.settings.paper_runner_max_allocation_pct))
             target_allocation = capital * max(0.0, allocation_pct) / 100 if capital > 0 else max(0.0, available_capital)
             min_allocation_pct = float(self.settings.paper_min_trade_allocation_pct)
             if tradeable_runner:
@@ -2004,11 +2047,13 @@ class AutoTraderEngine:
                 reason = "elite runner target profit hit" if is_runner else "target profit hit"
             elif is_runner and age >= max_hold_seconds:
                 if current > trade.entry_price + 2.0:
-                    pass  # any profitable runner at max hold — let trail or stop exit handle it
+                    pass
                 elif current >= trade.entry_price + target_points * 0.35:
                     reason = "elite runner max hold profit lock"
                 else:
                     reason = "runner time stop"
+            elif is_runner and age >= int(self.settings.paper_runner_min_hold_seconds) and current <= trade.entry_price - max(1.0, stop_points * 0.5):
+                reason = "runner early decay stop"
             elif trade.breakeven_armed and current <= trade.entry_price + 2.0 and (not is_runner or age >= runner_min_hold):
                 reason = "breakeven protection after +8 move"
             elif current <= trade.entry_price - stop_points:
@@ -2202,7 +2247,7 @@ class AutoTraderEngine:
             reason = "psychology defensive stop"
         elif state == "CAUTIOUS":
             adjusted_stop = min(adjusted_stop, max(2.5, stop_points * 0.85))
-            # CAUTIOUS: tighten stop slightly but preserve full hold time so targets can be reached
+            max_hold = min(max_hold, int(self.settings.paper_runner_max_hold_seconds))
             reason = "psychology cautious stop"
         return round(adjusted_stop, 2), max_hold, reason
 
