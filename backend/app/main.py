@@ -19,7 +19,7 @@ from app.services.auto_trader import AutoTraderEngine
 from app.services.event_journal import EventJournal
 from app.services.institutional_readiness import InstitutionalReadinessEngine
 from app.services.market_movers import summarize_market_movers
-from app.services.instrument_keys import resolve_config_instrument_list
+from app.services.instrument_keys import expanded_market_snapshot_instruments
 from app.services.realtime_engine import MarketConfigurationError, RealTimeMarketEngine
 from app.services.risk_engine import RiskEngine
 from app.services.session import IST, MarketPhase, current_session_state
@@ -333,7 +333,7 @@ async def background_market_monitor() -> None:
 
 async def refresh_market_snapshot_cache() -> dict:
     global MARKET_SNAPSHOT_CACHE
-    instruments = resolve_config_instrument_list(settings.market_snapshot_instrument_list)
+    instruments = expanded_market_snapshot_instruments(settings.market_snapshot_instrument_list)
     if not instruments:
         MARKET_SNAPSHOT_CACHE = {"available": False, "reason": "MARKET_SNAPSHOT_INSTRUMENT_KEYS is empty"}
         return MARKET_SNAPSHOT_CACHE

@@ -20,7 +20,7 @@ from app.services.institutional_readiness import InstitutionalReadinessEngine
 from app.services.ltp_range_analyzer import LtpRangeAnalyzer
 from app.services.market_movers import quote_item, summarize_market_movers
 from app.services.market_heatmap import fetch_constituent_heatmap
-from app.services.instrument_keys import resolve_config_instrument_list
+from app.services.instrument_keys import expanded_market_snapshot_instruments, resolve_config_instrument_list
 from app.services.news_engine import NewsEngine
 from app.services.news_provider import NewsProvider
 from app.services.realtime_engine import MarketConfigurationError, RealTimeMarketEngine
@@ -236,7 +236,7 @@ async def market_snapshots(engine: RealTimeMarketEngine = Depends(get_market_eng
             candidates.append({"symbol": symbol, **trade})
     market_snapshot: dict[str, Any] = {"available": False, "reason": "not_loaded"}
     try:
-        instruments = resolve_config_instrument_list(settings.market_snapshot_instrument_list)
+        instruments = expanded_market_snapshot_instruments(settings.market_snapshot_instrument_list)
         if instruments:
             client = get_upstox(settings, get_upstox_auth(settings))
             try:
@@ -420,7 +420,7 @@ async def market_heatmap(
 
 @router.get("/market/movers")
 async def market_movers(settings: Settings = Depends(get_settings), client: UpstoxClient = Depends(get_upstox)) -> dict:
-    instruments = resolve_config_instrument_list(settings.market_snapshot_instrument_list)
+    instruments = expanded_market_snapshot_instruments(settings.market_snapshot_instrument_list)
     if not instruments:
         raise HTTPException(status_code=400, detail="MARKET_SNAPSHOT_INSTRUMENT_KEYS is empty.")
     try:

@@ -37,6 +37,17 @@ def resolve_instrument_keys(symbols: list[str]) -> list[str]:
     return keys
 
 
+def expanded_market_snapshot_instruments(instruments: list[str]) -> list[str]:
+    """Ensure NIFTY50 equity ISIN keys are included for stock-level breadth."""
+    merged = list(resolve_config_instrument_list(instruments))
+    seen = set(merged)
+    for key in resolve_instrument_keys(index_constituent_symbols("NIFTY")):
+        if key not in seen:
+            merged.append(key)
+            seen.add(key)
+    return merged
+
+
 def resolve_config_instrument_list(instruments: list[str]) -> list[str]:
     """Map legacy NSE_EQ|SYMBOL entries to Upstox ISIN instrument keys."""
     resolved: list[str] = []
