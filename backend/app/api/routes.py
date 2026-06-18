@@ -18,7 +18,7 @@ from app.services.event_journal import EventJournal
 from app.services.historical_trainer import HistoricalTrainer
 from app.services.institutional_readiness import InstitutionalReadinessEngine
 from app.services.ltp_range_analyzer import LtpRangeAnalyzer
-from app.services.market_movers import summarize_market_movers
+from app.services.market_movers import quote_item, summarize_market_movers
 from app.services.news_engine import NewsEngine
 from app.services.news_provider import NewsProvider
 from app.services.realtime_engine import MarketConfigurationError, RealTimeMarketEngine
@@ -321,20 +321,17 @@ def _parse_stock_ltp(raw_data: dict) -> list[dict]:
     """Parse Upstox LTP or full-quote response into heatmap items."""
     items = []
     for key, val in raw_data.items():
+        parsed = quote_item(key, val or {})
         sym = key.split("|")[-1].split(":")[-1]
-        ltp = float(val.get("last_price") or val.get("lastPrice") or val.get("ltp") or 0)
-        prev = float(val.get("close") or val.get("ohlc", {}).get("close") or val.get("previous_close") or 0)
-        change_pct = round((ltp - prev) / prev * 100, 2) if prev else 0.0
-        vol = int(val.get("volume") or val.get("volume_traded") or 0)
         items.append({
             "symbol": sym,
             "instrumentKey": key,
-            "ltp": ltp,
-            "prevClose": prev,
-            "changePct": change_pct,
-            "volume": vol,
+            "ltp": parsed["lastPrice"],
+            "prevClose": parsed["previousClose"],
+            "changePct": parsed["changePct"],
+            "volume": parsed["volume"],
             "weight": STOCK_WEIGHTS.get(sym, 0.3),
-            "tone": "bullish" if change_pct > 0.5 else "bearish" if change_pct < -0.5 else "neutral",
+            "tone": "bullish" if parsed["changePct"] > 0.5 else "bearish" if parsed["changePct"] < -0.5 else "neutral",
         })
     return sorted(items, key=lambda x: x["weight"], reverse=True)
 
@@ -369,13 +366,17 @@ async def market_heatmap(
         if raw3:
             sector_items = []
             for key, val in raw3.items():
+                parsed = quote_item(key, val or {})
                 sym = key.split("|")[-1].split(":")[-1]
-                ltp = float(val.get("last_price") or val.get("ltp") or 0)
-                prev = float(val.get("ohlc", {}).get("close") or val.get("close") or val.get("previous_close") or 0)
-                change_pct = round((ltp - prev) / prev * 100, 2) if prev else 0.0
+                change_pct = float(parsed["changePct"])
                 sector_items.append({
-                    "symbol": sym.replace("Nifty ", ""), "instrumentKey": key, "ltp": ltp,
-                    "prevClose": prev, "changePct": change_pct, "volume": 0, "weight": 3.0,
+                    "symbol": sym.replace("Nifty ", ""),
+                    "instrumentKey": key,
+                    "ltp": parsed["lastPrice"],
+                    "prevClose": parsed["previousClose"],
+                    "changePct": change_pct,
+                    "volume": parsed["volume"],
+                    "weight": 3.0,
                     "tone": "bullish" if change_pct > 0 else "bearish" if change_pct < 0 else "neutral",
                 })
             items = sorted(sector_items, key=lambda x: abs(x["changePct"]), reverse=True)

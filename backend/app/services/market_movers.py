@@ -24,9 +24,22 @@ AUTO_STOCKS = {"MARUTI", "TATAMOTORS", "M&M", "HEROMOTOCO", "BAJAJ-AUTO", "EICHE
 def quote_item(instrument_key: str, payload: dict[str, Any]) -> dict[str, Any]:
     last_price = float(payload.get("last_price") or payload.get("ltp") or 0)
     ohlc = payload.get("ohlc") or {}
-    previous_close = float(ohlc.get("close") or payload.get("close") or payload.get("prev_close") or 0)
-    net_change = float(payload.get("net_change") or (last_price - previous_close if previous_close else 0))
-    change_pct = round((net_change / previous_close) * 100, 3) if previous_close else 0
+    prev_ohlc = payload.get("prev_ohlc") or {}
+    net_change = float(payload.get("net_change") or 0)
+    # Upstox: ohlc.close is today's session close (equals LTP when flat) — not previous day.
+    previous_close = float(
+        prev_ohlc.get("close")
+        or payload.get("prev_close")
+        or payload.get("previous_close")
+        or 0
+    )
+    if not previous_close and net_change and last_price:
+        previous_close = last_price - net_change
+    if not previous_close:
+        previous_close = float(ohlc.get("close") or payload.get("close") or 0)
+    if not net_change and previous_close and last_price:
+        net_change = last_price - previous_close
+    change_pct = round((net_change / previous_close) * 100, 3) if previous_close else 0.0
     volume = int(float(payload.get("volume") or payload.get("volume_traded") or 0))
     average_price = float(payload.get("average_price") or payload.get("avg_price") or last_price or 0)
     return {

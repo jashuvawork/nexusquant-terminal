@@ -947,14 +947,15 @@ export function MarketHeatmapPanel(_props: { snapshot: TerminalSnapshot }) {
           {stocks.map(stock => {
             const size = Math.max(48, Math.round((stock.weight / maxWeight) * 96));
             const pct = stock.changePct;
-            const bg = pct > 2 ? 'bg-emerald-500' : pct > 0.5 ? 'bg-emerald-700/80' : pct > 0 ? 'bg-emerald-900/60' : pct < -2 ? 'bg-rose-500' : pct < -0.5 ? 'bg-rose-700/80' : 'bg-rose-900/60';
+            const bg = pct > 2 ? 'bg-emerald-500' : pct > 0.5 ? 'bg-emerald-700/80' : pct > 0 ? 'bg-emerald-900/60' : pct < -2 ? 'bg-rose-500' : pct < -0.5 ? 'bg-rose-700/80' : pct < 0 ? 'bg-rose-900/60' : 'bg-slate-700/80';
             const textC = Math.abs(pct) > 0.5 ? 'text-white' : 'text-slate-300';
+            const pctColor = pct > 0 ? 'text-emerald-200' : pct < 0 ? 'text-rose-200' : 'text-slate-300';
             return (
               <div key={stock.symbol} title={`${stock.symbol}: ₹${stock.ltp} (${pct > 0 ? '+' : ''}${pct}%)`}
                 className={`${bg} rounded-lg flex flex-col items-center justify-center cursor-default transition-all hover:opacity-90 border border-white/10`}
                 style={{ width: size, height: size, minWidth: 44, minHeight: 44 }}>
                 <p className={`font-black text-[9px] leading-none ${textC} px-1 text-center`}>{stock.symbol}</p>
-                <p className={`font-bold text-[10px] mt-0.5 ${pct >= 0 ? 'text-emerald-200' : 'text-rose-200'}`}>{pct > 0 ? '+' : ''}{pct.toFixed(1)}%</p>
+                <p className={`font-bold text-[10px] mt-0.5 ${pctColor}`}>{pct > 0 ? '+' : ''}{pct.toFixed(1)}%</p>
               </div>
             );
           })}
