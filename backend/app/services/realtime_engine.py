@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -110,6 +111,7 @@ class RealTimeMarketEngine:
         self.trading_control = trading_control or TradingControl(settings.redis_url)
         self.previous: dict[str, PreviousTick] = {}
         self.previous_options: dict[str, PreviousTick] = {}
+        self.option_price_history: dict[str, deque[tuple[datetime, float, int]]] = {}
         self._snapshot_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._expiry_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._contract_meta: dict[str, dict[str, Any]] = {}
@@ -308,11 +310,10 @@ class RealTimeMarketEngine:
                     r["nearExpiry"] = True
                     r["daysToExpiry"] = days_left
                     r["expiryDay"] = days_left == 0
-                # Only take TOP 1 near-expiry runner (best score) per symbol
-                # This prevents the watchlist from being flooded with near-expiry candidates
-                # causing multiple simultaneous near-expiry trades from the same symbol
+                # Top near-expiry runners by score — multiple strikes can explode together on expiry day
+                near_emit_limit = max(1, int(self.settings.near_expiry_runner_emit_limit))
                 near_runners_sorted = sorted(near_runners, key=lambda r: float(r.get("score") or 0), reverse=True)
-                runner_watchlist = near_runners_sorted[:1] + runner_watchlist
+                runner_watchlist = near_runners_sorted[:near_emit_limit] + runner_watchlist
                 data_warnings.append(f"near_expiry_scan: {near_expiry} ({days_left}d) — {len(near_rows)} contracts, {len(near_runners)} runners") if near_runners else data_warnings.append(f"near_expiry_scan: {near_expiry} ({days_left}d) — {len(near_rows)} contracts, 0 qualifying runners")
             except Exception as near_exc:
                 data_warnings.append(f"near_expiry_scan_failed: {near_expiry} — {str(near_exc)[:80]}")
@@ -1033,6 +1034,22 @@ class RealTimeMarketEngine:
             "volumeAvailable": effective > 0,
         }
 
+    def _rolling_premium_velocity(self, option_key: str, ltp: float, volume: int) -> float:
+        """Windowed % change — catches explosions missed on first poll tick."""
+        window = max(3.0, float(self.settings.option_velocity_window_seconds))
+        ring = self.option_price_history.setdefault(option_key, deque(maxlen=60))
+        now = datetime.now(timezone.utc)
+        ring.append((now, ltp, volume))
+        cutoff = now - timedelta(seconds=window)
+        while ring and ring[0][0] < cutoff:
+            ring.popleft()
+        if len(ring) < 2 or ltp <= 0:
+            return 0.0
+        oldest_ltp = ring[0][1]
+        if oldest_ltp <= 0:
+            return 0.0
+        return round(((ltp - oldest_ltp) / oldest_ltp) * 100, 2)
+
     def _single_option_orderflow(self, symbol: str, spot: float, side: str, instrument_key: str | None, md: dict[str, Any], volume_state: dict[str, Any]) -> dict[str, Any]:
         option_key = instrument_key or f"{symbol}:{side}:{md.get('ltp')}:{md.get('volume')}"
         previous = self.previous_options.get(option_key)
@@ -1046,6 +1063,8 @@ class RealTimeMarketEngine:
             price_velocity = 0
             premium_velocity = 0
             volume_delta = 0
+        rolling_velocity = self._rolling_premium_velocity(option_key, selected_ltp, selected_volume)
+        premium_velocity = max(premium_velocity, rolling_velocity)
         volume_delta = max(volume_delta, as_int(volume_state.get("effectiveVolume")))
         if previous and previous.selected_volume > 0:
             volume_accel = (volume_delta / previous.selected_volume) * 100
@@ -1277,7 +1296,19 @@ class RealTimeMarketEngine:
         catch_min = float(self.settings.paper_max_catch_min_runner_score)
         premium_min = float(self.settings.explosive_runner_premium_min)
         premium_max = float(self.settings.paper_momentum_max_entry_premium)
-        for signal in runner_watchlist:
+
+        def _emit_rank(signal: dict[str, Any]) -> tuple:
+            orderflow = signal.get("orderflow") or {}
+            pv = as_float(signal.get("premiumVelocityPct") or orderflow.get("premiumVelocity"))
+            return (
+                bool(signal.get("momentumOverride")),
+                bool(signal.get("momentumSurge")),
+                pv,
+                as_float(signal.get("score")),
+            )
+
+        ranked_watchlist = sorted(runner_watchlist, key=_emit_rank, reverse=True)
+        for signal in ranked_watchlist:
             if len(trades) >= limit:
                 break
             score = as_float(signal.get("score"))
