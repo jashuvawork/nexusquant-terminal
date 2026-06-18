@@ -1178,6 +1178,12 @@ async def auto_trader_performance_analysis(engine: AutoTraderEngine = Depends(ge
     return engine.performance_analysis()
 
 
+@router.get("/auto-trader/daily-improvement-plan")
+async def auto_trader_daily_improvement_plan(engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
+  """Rolling calibration plan: probability estimates, tier gates, and daily actions for higher PF."""
+  return engine._daily_improvement_plan()
+
+
 @router.get("/auto-trader/missed-runners")
 async def auto_trader_missed_runners(engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
     """Near-miss runner signals — high-score runners that were blocked. Diagnose missed moves here."""

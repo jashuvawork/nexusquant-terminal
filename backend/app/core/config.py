@@ -157,6 +157,14 @@ class Settings(BaseSettings):
     paper_daily_target_lock_enabled: bool = True
     paper_trading: bool = True
     paper_session_adjustments_enabled: bool = True
+    paper_profit_first_mode: bool = True
+    paper_profit_tier_a_min_runner_score: float = 85.0
+    paper_profit_tier_a_min_velocity_pct: float = 2.5
+    paper_profit_tier_b_min_runner_score: float = 72.0
+    paper_profit_tier_b_min_velocity_pct: float = 2.0
+    paper_rolling_calibration_trades: int = 8
+    paper_target_profit_factor: float = 1.5
+    paper_target_win_rate_pct: float = 45.0
     paper_max_catch_mode: bool = True
     paper_max_catch_min_runner_score: float = 52.0
     paper_max_catch_runner_emit_limit: int = 8

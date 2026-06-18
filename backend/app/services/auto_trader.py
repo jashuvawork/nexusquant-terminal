@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from app.core.config import Settings
 from app.services.ai_learning import ContinuousAILearner
+from app.services.daily_profit_strategy import build_daily_improvement_plan
 from app.services.paper_session_manager import PaperSessionManager
 from app.services.risk_profiles import paper_session_adjustments
 from app.services.session import IST, MarketPhase
@@ -179,6 +180,8 @@ class AutoTraderEngine:
         self.lifecycle_events = AutoTraderEngine._shared_lifecycle_events
         self._latest_market_snapshot: dict[str, Any] = {}
         self._latest_news_state: dict[str, Any] = {}
+        self._daily_plan_cache: dict[str, Any] | None = None
+        self._daily_plan_day: str | None = None
         self._load_replay_file()
         self._load_paper_trades_file()
 
@@ -397,6 +400,7 @@ class AutoTraderEngine:
             "liveReadiness": self._live_readiness(rolling_proof),
             "recentPostmortems": recent_postmortems,
             "breadthReadiness": self._breadth_readiness(),
+            "dailyImprovementPlan": self._daily_improvement_plan(),
             "institutionalAggressionProfiles": self._institutional_profile_recommendations(by_bucket, by_symbol, by_side),
             "rulesApplied": [
                 "Use day-level paper PnL for profit factor; current-session report is separate.",
@@ -1516,8 +1520,101 @@ class AutoTraderEngine:
             return True
         return score >= 65
 
+    def _daily_improvement_plan(self) -> dict[str, Any]:
+        trading_day = datetime.now(IST).date().isoformat()
+        if self._daily_plan_cache and self._daily_plan_day == trading_day:
+            return self._daily_plan_cache
+        today_trades = self._today_closed_trades()
+        today_summary = self._summarize_trades(today_trades)
+        rolling = self._rolling_proof(limit=self.settings.paper_rolling_calibration_trades)
+        by_side = self._group_trade_summary(list(self.closed_paper)[-self.settings.paper_rolling_calibration_trades :], lambda t: t.side or "UNKNOWN")
+        by_bucket = self._group_trade_summary(today_trades, lambda t: self._trade_bucket(t))
+        by_symbol = self._group_trade_summary(today_trades, lambda t: t.symbol or "UNKNOWN")
+        missed_count = len(AutoTraderEngine._shared_missed_runners)
+        plan = build_daily_improvement_plan(
+            today_summary=today_summary,
+            rolling_summary=rolling,
+            by_side=by_side,
+            by_bucket=by_bucket,
+            by_symbol=by_symbol,
+            missed_count=missed_count,
+            target_profit_factor=float(self.settings.paper_target_profit_factor),
+            target_win_rate_pct=float(self.settings.paper_target_win_rate_pct),
+            min_trades_for_calibration=int(self.settings.paper_rolling_calibration_trades),
+        )
+        self._daily_plan_cache = plan
+        self._daily_plan_day = trading_day
+        return plan
+
+    def _profit_tier_label(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> str | None:
+        runner = runner or candidate.get("runnerSignal") or {}
+        if not self._is_profit_tier_entry(candidate, runner):
+            return None
+        score = float(runner.get("score") or 0)
+        metrics = self._runner_metrics(runner)
+        pv = float(runner.get("premiumVelocityPct") or metrics.get("premiumVelocity") or 0)
+        if runner.get("momentumOverride") and score >= 85 and pv >= 2.5:
+            return "A+"
+        if runner.get("eliteRunner") and score >= 88:
+            return "A+"
+        if score >= float(self.settings.paper_profit_tier_a_min_runner_score) and pv >= float(self.settings.paper_profit_tier_a_min_velocity_pct):
+            return "A"
+        return "B"
+
+    def _is_profit_tier_entry(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
+        """Profit-first entry: high win-rate setups only; tiers tighten automatically when PF drops."""
+        runner = runner or candidate.get("runnerSignal") or {}
+        if candidate.get("strategyType") != "EXPLOSIVE_RUNNER":
+            return False
+        premium = float(candidate.get("lastPremium") or runner.get("premium") or 0)
+        if premium <= 0 or self._is_explosion_chase(candidate, runner):
+            return False
+        plan = self._daily_improvement_plan()
+        gates = plan.get("gates") or {}
+        side = str(candidate.get("side") or "")
+        if side in (gates.get("blockedSides") or []):
+            return False
+        bucket = str((self._paper_session_settings({})).get("sessionBucket") or "")
+        if bucket in (gates.get("blockedBuckets") or []):
+            if not (runner.get("momentumOverride") and float(runner.get("score") or 0) >= 85):
+                return False
+        score = float(runner.get("score") or 0)
+        metrics = self._runner_metrics(runner)
+        premium_velocity = float(runner.get("premiumVelocityPct") or metrics.get("premiumVelocity") or 0)
+        volume_accel = float(runner.get("volumeAcceleration") or metrics.get("volumeAcceleration") or 0)
+        min_score = float(gates.get("minRunnerScore") or self.settings.paper_profit_tier_b_min_runner_score)
+        min_vel = float(gates.get("minVelocityPct") or self.settings.paper_profit_tier_b_min_velocity_pct)
+        min_vol = float(gates.get("minVolumeAccel") or 25.0)
+        confidence = str(runner.get("confidence") or "").upper()
+
+        # A+ — momentum burst + alignment or elite tape
+        if runner.get("momentumOverride") and score >= 85 and premium_velocity >= 2.5:
+            if runner.get("momentumAligned") or volume_accel >= 30:
+                return True
+        if runner.get("eliteRunner") and confidence == "HIGH" and score >= 88 and premium_velocity >= 2.0:
+            return True
+
+        # A — surge with direction
+        if score >= min_score and premium_velocity >= min_vel and volume_accel >= min_vol:
+            if runner.get("momentumOverride") or (runner.get("momentumSurge") and runner.get("momentumAligned")):
+                return True
+            if confidence == "HIGH" and score >= float(self.settings.paper_profit_tier_a_min_runner_score):
+                return True
+
+        # B — wider capture when rolling PF supports it
+        if gates.get("allowTierB") and score >= float(self.settings.paper_profit_tier_b_min_runner_score):
+            if premium_velocity >= 1.5 and (runner.get("momentumSurge") or volume_accel >= 20):
+                return True
+
+        # C — max-catch fallback only when proven profitable
+        if gates.get("allowTierC") and self._is_catchable_runner(candidate, runner):
+            return True
+        return False
+
     def _runner_entry_bypass(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
         runner = runner or candidate.get("runnerSignal") or {}
+        if self.settings.paper_profit_first_mode:
+            return self._is_profit_tier_entry(candidate, runner)
         if self._is_catchable_runner(candidate, runner):
             return True
         if self._is_momentum_explosion(candidate, runner):
@@ -2015,6 +2112,10 @@ class AutoTraderEngine:
         side_gate = self._side_performance_gate(candidate)
         if side_gate:
             reasons.append(side_gate)
+        plan = self._daily_improvement_plan()
+        blocked_sides = plan.get("gates", {}).get("blockedSides") or []
+        if str(candidate.get("side") or "") in blocked_sides:
+            reasons.append(f"daily calibration blocked {candidate.get('side')} side (underperforming)")
         symbol = str(candidate.get("symbol") or "")
         breadth = self._breadth_confirmation(side, symbol=symbol)
         momentum_explosion = self._is_momentum_explosion(candidate, runner)
