@@ -9,6 +9,25 @@ from app.services.market_movers import NIFTY50_WEIGHTS, quote_item
 STOCK_WEIGHTS = dict(NIFTY50_WEIGHTS)
 
 
+def _index_quote_payload(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Index Upstox quote rows by instrument_token, trading_symbol, and response key."""
+    indexed: dict[str, dict[str, Any]] = {}
+    for key, value in (raw or {}).items():
+        val = value or {}
+        for alias in {key, key.replace(":", "|"), key.replace("|", ":")}:
+            if alias:
+                indexed[alias] = val
+        token = str(val.get("instrument_token") or "")
+        if token:
+            indexed[token] = val
+            indexed[token.replace(":", "|")] = val
+            indexed[token.replace("|", ":")] = val
+        sym = str(val.get("trading_symbol") or val.get("symbol") or "").strip().upper()
+        if sym and sym not in {"NA", "N/A"}:
+            indexed[sym] = val
+    return indexed
+
+
 def _tone(change_pct: float) -> str:
     if change_pct > 0.5:
         return "bullish"
@@ -53,20 +72,18 @@ def build_constituent_heatmap(index: str, quote_payload: dict[str, Any]) -> dict
     idx = index.upper()
     symbols = index_constituent_symbols(idx)
     keys = resolve_instrument_keys(symbols)
-    raw = quote_payload.get("data") or {}
-
-    # Upstox may return keys with ':' instead of '|'
-    normalized: dict[str, dict[str, Any]] = {}
-    for key, value in raw.items():
-        normalized[key.replace(":", "|")] = value or {}
-        normalized[key] = value or {}
+    normalized = _index_quote_payload(quote_payload.get("data") or {})
 
     items: list[dict[str, Any]] = []
     for symbol in symbols:
         instrument_key = resolve_instrument_key(symbol)
         if not instrument_key:
             continue
-        payload = normalized.get(instrument_key) or normalized.get(instrument_key.replace("|", ":"))
+        payload = (
+            normalized.get(instrument_key)
+            or normalized.get(instrument_key.replace("|", ":"))
+            or normalized.get(symbol.upper())
+        )
         if not payload:
             continue
         weight = float(STOCK_WEIGHTS.get(symbol, 0.3))
