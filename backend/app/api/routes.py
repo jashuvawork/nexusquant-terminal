@@ -240,7 +240,7 @@ async def market_snapshots(engine: RealTimeMarketEngine = Depends(get_market_eng
         if instruments:
             client = get_upstox(settings, get_upstox_auth(settings))
             try:
-                quote_payload = await client.full_market_quote(instruments)
+                quote_payload = await client.full_market_quote_batched(instruments)
             except Exception:
                 instruments = ["NSE_INDEX|Nifty 50", "BSE_INDEX|SENSEX"]
                 quote_payload = await client.full_market_quote(instruments)
@@ -425,7 +425,7 @@ async def market_movers(settings: Settings = Depends(get_settings), client: Upst
         raise HTTPException(status_code=400, detail="MARKET_SNAPSHOT_INSTRUMENT_KEYS is empty.")
     try:
         try:
-            payload = await client.full_market_quote(instruments)
+            payload = await client.full_market_quote_batched(instruments)
         except UpstoxDataError:
             instruments = ["NSE_INDEX|Nifty 50", "BSE_INDEX|SENSEX"]
             payload = await client.full_market_quote(instruments)

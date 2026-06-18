@@ -118,13 +118,7 @@ async def fetch_constituent_heatmap(index: str, client: Any) -> dict[str, Any]:
     if not keys:
         return {"index": index.upper(), "available": False, "reason": "No instrument keys resolved for constituents", "stocks": []}
 
-    # Upstox allows up to 500 keys per quote request; batch if needed
-    batches = [keys[i : i + 100] for i in range(0, len(keys), 100)]
-    merged: dict[str, Any] = {"data": {}}
-    for batch in batches:
-        payload = await client.full_market_quote(batch)
-        merged["data"].update(payload.get("data") or {})
-
+    merged = await client.full_market_quote_batched(keys)
     result = build_constituent_heatmap(index, merged)
     if not result["available"]:
         result["reason"] = result.get("reason") or f"Only {result['stockCount']}/{result.get('requested', 0)} constituents returned (need ≥10)"

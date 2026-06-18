@@ -338,7 +338,7 @@ async def refresh_market_snapshot_cache() -> dict:
         MARKET_SNAPSHOT_CACHE = {"available": False, "reason": "MARKET_SNAPSHOT_INSTRUMENT_KEYS is empty"}
         return MARKET_SNAPSHOT_CACHE
     try:
-        payload = await upstox_client.full_market_quote(instruments)
+        payload = await upstox_client.full_market_quote_batched(instruments)
         MARKET_SNAPSHOT_CACHE = {"available": True, **summarize_market_movers(instruments, payload)}
     except Exception as exc:
         fallback = ["NSE_INDEX|Nifty 50", "BSE_INDEX|SENSEX"]
