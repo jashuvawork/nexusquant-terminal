@@ -143,6 +143,7 @@ def paper_session_adjustments(
     open_drive_profit_primary_pct: float = 33.0,
     open_drive_profit_stop_pct: float = 33.0,
     open_drive_allocation_boost: float = 1.85,
+    max_catch_mode: bool = False,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Time-of-day paper trading gates aligned with Indian market session buckets."""
@@ -162,6 +163,14 @@ def paper_session_adjustments(
     profit_secondary_pct: float | None = None
     profit_primary_pct: float | None = None
     session_profit_stop_pct: float | None = None
+
+    if max_catch_mode:
+        min_entry_tqs = min(min_entry_tqs, 45)
+        min_runner_score = min(min_runner_score, 52.0)
+        duplicate_cooldown = min(duplicate_cooldown, 15)
+        block_new_paper = False
+        block_reason = None
+        adjustments.append("Max-catch mode: session blocks disabled, 15s cooldown, runner floor 52.")
 
     if bucket == "OPEN_DRIVE":
         # 9:15-10:30 IST: where the BIGGEST morning explosions happen

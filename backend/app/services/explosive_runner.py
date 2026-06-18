@@ -58,6 +58,7 @@ class ExplosiveRunnerEngine:
         momentum_override_volume_accel: float = 25.0,
         explosion_velocity_pct: float = 5.0,
         explosion_volume_accel: float = 35.0,
+        max_catch_mode: bool = False,
         explosion_min_premium: float = 25.0,
         elite_min_score: float = 92.0,
         elite_breakout_min: float = 70.0,
@@ -121,19 +122,28 @@ class ExplosiveRunnerEngine:
             score += 2
             reasons.append("retest confirmed")
 
-        # Standard momentum surge
+        # Standard momentum surge — max-catch uses 1.5% velocity floor
+        surge_vel = 1.5 if max_catch_mode else momentum_premium_velocity_pct
         momentum_surge = (
-            premium_velocity >= momentum_premium_velocity_pct
-            or (breakout >= 70 and volume_accel >= 45)
-            or (premium_velocity >= 3.0 and breakout >= 65 and delta_velocity >= 35)
-            or (breakout >= 62 and abs(delta_velocity) >= 58 and spread_quality >= 85)
+            premium_velocity >= surge_vel
+            or (breakout >= 55 and volume_accel >= 20)
+            or (premium_velocity >= 1.5 and breakout >= 50 and delta_velocity >= 25)
+            or (breakout >= 58 and abs(delta_velocity) >= 45 and spread_quality >= 75)
         )
-        # MOMENTUM OVERRIDE: premium velocity burst — catch ₹45→₹100 and gradual ₹110→₹135 breakouts
+        # MOMENTUM OVERRIDE: catch explosions early and gradual breakouts
+        override_vel = 1.5 if max_catch_mode else momentum_override_velocity_pct
+        override_vol = 15.0 if max_catch_mode else momentum_override_volume_accel
         momentum_override = (
-            premium_velocity >= momentum_override_velocity_pct
-            and volume_accel >= momentum_override_volume_accel
-            and spread_quality >= 60
+            premium_velocity >= override_vel
+            and volume_accel >= override_vol
+            and spread_quality >= 50
             and premium > 0
+        ) or (
+            premium_velocity >= 1.5
+            and volume_accel >= 15
+            and breakout >= 45
+            and spread_quality >= 50
+            and premium >= explosion_min_premium
         ) or (
             premium_velocity >= 3.0
             and volume_accel >= 30
@@ -149,7 +159,7 @@ class ExplosiveRunnerEngine:
             premium_velocity >= explosion_velocity_pct
             and volume_accel >= explosion_volume_accel
             and momentum_surge
-            and spread_quality >= 58
+            and spread_quality >= 50
             and premium >= explosion_min_premium
         )
         if momentum_override:
@@ -185,7 +195,7 @@ class ExplosiveRunnerEngine:
                 reasons.append("bearish momentum alignment")
         else:
             directional_bias = "NEUTRAL"
-            momentum_aligned = False
+            momentum_aligned = momentum_surge or momentum_override if max_catch_mode else False
 
         missing_ideal = [item for item in self.IDEAL_DATA if not (item == "historical option premium candles" and self.option_premium_history_available)]
         ideal_available = ["historical option premium candles"] if self.option_premium_history_available else []
@@ -213,6 +223,9 @@ class ExplosiveRunnerEngine:
         elif momentum_override:
             confidence = "HIGH"
             reasons.append(f"MOMENTUM OVERRIDE: velocity {premium_velocity:.1f}% + volume surge — entering regardless of TQS/regime")
+        elif max_catch_mode and momentum_surge and score >= 52:
+            confidence = "MEDIUM" if score < 70 else "HIGH"
+            reasons.append("max-catch: momentum surge qualifies runner")
         elif score >= 85 and option_tape_override and breakout >= 62 and abs(delta_velocity) >= 58:
             confidence = "HIGH"
             reasons.append("option tape override: explosive premium momentum despite lower global TQS")
@@ -227,10 +240,15 @@ class ExplosiveRunnerEngine:
             confidence = "MEDIUM"
             reasons.append("momentum surge with directional alignment")
 
-        spread_floor = 60 if momentum_override else (70 if momentum_surge and momentum_aligned else 75)
+        spread_floor = 50 if max_catch_mode else (60 if momentum_override else (70 if momentum_surge and momentum_aligned else 75))
         candidate = confidence in {"MEDIUM", "HIGH"} and premium > 0 and spread_quality >= spread_floor
         if momentum_override and premium > 0:
-            candidate = True  # momentum override always a candidate
+            candidate = True
+        if max_catch_mode and momentum_surge and premium > 0 and spread_quality >= 48 and score >= 52:
+            candidate = True
+            if confidence == "LOW":
+                confidence = "MEDIUM"
+                reasons.append("max-catch runner auto-candidate")  # momentum override always a candidate
         if momentum_surge and momentum_aligned and premium > 0 and spread_quality >= 65 and score >= 68:
             candidate = True
             if confidence == "LOW":
