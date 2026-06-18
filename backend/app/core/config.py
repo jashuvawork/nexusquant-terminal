@@ -168,9 +168,9 @@ class Settings(BaseSettings):
     paper_momentum_max_entry_premium: float = 140.0
     paper_momentum_chase_premium_floor: float = 125.0
     paper_momentum_chase_max_velocity_pct: float = 2.5
-    paper_momentum_explosion_velocity_pct: float = 5.0
-    paper_momentum_explosion_volume_accel: float = 35.0
-    paper_momentum_override_min_velocity_pct: float = 7.0
+    paper_momentum_explosion_velocity_pct: float = 3.0
+    paper_momentum_explosion_volume_accel: float = 30.0
+    paper_momentum_override_min_velocity_pct: float = 3.0
     paper_runner_max_allocation_pct: float = 15.0
     paper_runner_target_premium_pct: float = 35.0
     paper_runner_max_target_premium_pct: float = 55.0

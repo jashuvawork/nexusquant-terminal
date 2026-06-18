@@ -251,7 +251,7 @@ class AutoTraderEngine:
                 reason_text = str(quality.get("reason") or "")
                 is_position_limit = any(s in reason_text.lower() for s in ["max open", "max capacity", "already has an open", "hard cap"])
                 is_chase = "chase blocked" in reason_text.lower()
-                explosion_entry = self._is_momentum_explosion(candidate)
+                explosion_entry = self._is_momentum_explosion(candidate) or self._is_strong_runner_entry(candidate)
                 can_bypass = (
                     (explosion_entry and not is_position_limit and not is_chase)
                     or (self._runner_may_bypass_quality(candidate, reason_text, market_phase) and not is_position_limit)
@@ -1484,6 +1484,18 @@ class AutoTraderEngine:
         result["newsTradingImplication"] = news.get("tradingImplication")
         return result
 
+    def _is_strong_runner_entry(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
+        """HIGH-confidence elite or momentum burst — bypass chop/breadth/AI gates."""
+        runner = runner or candidate.get("runnerSignal") or {}
+        if candidate.get("strategyType") != "EXPLOSIVE_RUNNER":
+            return False
+        if str(runner.get("confidence") or "").upper() != "HIGH":
+            return False
+        score = float(runner.get("score") or 0)
+        if runner.get("momentumOverride") or self._is_momentum_explosion(candidate, runner):
+            return True
+        return bool(runner.get("eliteRunner") and score >= 80)
+
     def _runner_metrics(self, runner: dict[str, Any]) -> dict[str, Any]:
         return runner.get("metrics") or {}
 
@@ -1536,6 +1548,16 @@ class AutoTraderEngine:
                 return False, f"explosion chase blocked: premium ₹{premium:.0f} above max entry ₹{max_entry:.0f}"
             if premium < min_momentum_ltp:
                 return False, f"explosion premium ₹{premium:.0f} below minimum ₹{min_momentum_ltp:.0f}"
+            return True, ""
+        runner_score = float(runner.get("score") or candidate.get("tqs") or 0)
+        if (
+            candidate.get("strategyType") == "EXPLOSIVE_RUNNER"
+            and str(runner.get("confidence") or "").upper() == "HIGH"
+            and runner.get("eliteRunner")
+            and runner_score >= 80
+        ):
+            if self._is_explosion_chase(candidate, runner):
+                return False, f"explosion chase blocked: premium ₹{premium:.0f} above max entry ₹{max_entry:.0f}"
             return True, ""
         min_ltp = float(self.settings.paper_min_premium_ltp or 0)
         if min_ltp > 0 and premium < min_ltp:
@@ -1699,6 +1721,8 @@ class AutoTraderEngine:
 
     def _session_entry_allowed(self, candidate: dict[str, Any], session_adj: dict[str, Any], market_phase: str | None = None) -> bool:
         if self._is_tradeable_explosive_runner(candidate, market_phase):
+            return True
+        if self._is_strong_runner_entry(candidate):
             return True
         runner = candidate.get("runnerSignal") or {}
         if runner.get("momentumOverride") and str(runner.get("confidence") or "").upper() == "HIGH":
@@ -1925,9 +1949,10 @@ class AutoTraderEngine:
         side = str(candidate.get("side") or "")
         tradeable_runner = self._is_tradeable_explosive_runner(candidate, market_phase)
         momentum_runner = self._is_momentum_aligned_runner(candidate, runner)
+        strong_runner = self._is_strong_runner_entry(candidate, runner)
         if premium <= 0:
             reasons.append("missing premium")
-        if candidate.get("chopBlocked") and not tradeable_runner:
+        if candidate.get("chopBlocked") and not tradeable_runner and not strong_runner:
             reasons.append("chop filter blocked")
         correlation_gate = self._entry_correlation_gate(candidate, session_adj)
         if correlation_gate:
@@ -1938,7 +1963,7 @@ class AutoTraderEngine:
         symbol = str(candidate.get("symbol") or "")
         breadth = self._breadth_confirmation(side, symbol=symbol)
         momentum_explosion = self._is_momentum_explosion(candidate, runner)
-        runner_momentum_override = bool(runner.get("momentumOverride")) or momentum_explosion
+        runner_momentum_override = bool(runner.get("momentumOverride")) or momentum_explosion or strong_runner
         if self._is_explosion_chase(candidate, runner) and runner.get("momentumOverride"):
             reasons.append(
                 f"explosion chase blocked: premium ₹{premium:.0f} above max entry ₹{self.settings.paper_momentum_max_entry_premium:.0f}"
@@ -1950,10 +1975,10 @@ class AutoTraderEngine:
         elif breadth.get("available") and not breadth.get("aligned") and tradeable_runner:
             pass  # elite runners bypass stale breadth; runner tape score is more current
         high_conf_ok, high_conf_reason = self._passes_high_confidence_gate(candidate, runner)
-        if not high_conf_ok and not momentum_explosion:
+        if not high_conf_ok and not momentum_explosion and not strong_runner:
             reasons.append(high_conf_reason)
         ai_prediction = self._ai_trade_quality_prediction(candidate, premium=premium, required_move=required_move, session_adj=session_adj, market_phase=market_phase)
-        if not ai_prediction["passed"] and not momentum_explosion and not runner.get("momentumOverride"):
+        if not ai_prediction["passed"] and not momentum_explosion and not runner.get("momentumOverride") and not strong_runner:
             reasons.append(
                 "AI quality predictor rejected: "
                 f"win {ai_prediction['winProbabilityPct']}%, RR {ai_prediction['riskReward']}, confidence {ai_prediction['confidencePct']}%"
@@ -1968,7 +1993,7 @@ class AutoTraderEngine:
                 reasons.append(f"TQS below session threshold ({min_entry_tqs})")
             if candidate.get("effectiveVolume", 0) <= 0:
                 reasons.append("missing effective volume")
-            if not momentum_runner and not momentum_explosion:
+            if not momentum_runner and not momentum_explosion and not strong_runner:
                 if chart_bias in {"CALL", "PUT"} and side in {"CALL", "PUT"} and side != chart_bias:
                     reasons.append(f"chart trend conflict: {chart_bias} bias vs {side} trade")
                 if chart_bias == "WAIT":
