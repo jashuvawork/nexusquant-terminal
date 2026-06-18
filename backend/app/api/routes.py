@@ -19,6 +19,8 @@ from app.services.historical_trainer import HistoricalTrainer
 from app.services.institutional_readiness import InstitutionalReadinessEngine
 from app.services.ltp_range_analyzer import LtpRangeAnalyzer
 from app.services.market_movers import quote_item, summarize_market_movers
+from app.services.market_heatmap import fetch_constituent_heatmap
+from app.services.instrument_keys import resolve_config_instrument_list
 from app.services.news_engine import NewsEngine
 from app.services.news_provider import NewsProvider
 from app.services.realtime_engine import MarketConfigurationError, RealTimeMarketEngine
@@ -234,7 +236,7 @@ async def market_snapshots(engine: RealTimeMarketEngine = Depends(get_market_eng
             candidates.append({"symbol": symbol, **trade})
     market_snapshot: dict[str, Any] = {"available": False, "reason": "not_loaded"}
     try:
-        instruments = settings.market_snapshot_instrument_list
+        instruments = resolve_config_instrument_list(settings.market_snapshot_instrument_list)
         if instruments:
             client = get_upstox(settings, get_upstox_auth(settings))
             try:
@@ -343,27 +345,35 @@ async def market_heatmap(
     client: UpstoxClient = Depends(get_upstox),
 ) -> dict:
     """Constituent stock heatmap for NIFTY, SENSEX, or BANKNIFTY.
-    Returns price change % and weight for each constituent stock."""
+    Returns price change %, VWAP, high/low, volume and index weight per stock."""
     idx = index.upper()
-    stock_keys = {"BANKNIFTY": BANKNIFTY_STOCKS, "SENSEX": SENSEX30_STOCKS}.get(idx, NIFTY50_STOCKS)
     items: list[dict] = []
     error: str | None = None
+    source = "upstox_constituent_equity"
 
-    # Upstox equity instrument keys (NSE_EQ|SYMBOL) require the numeric exchange token
-    # from the Upstox instrument master, not the trading symbol — skipping direct stock lookup.
-    # Using sector index heatmap instead (reliable, always works with current subscription).
     try:
-        sector_keys = [k for k in settings.market_snapshot_instrument_list if "INDEX" in k.upper()][:20]
-        if not sector_keys:
-            sector_keys = [
-                "NSE_INDEX|Nifty 50", "NSE_INDEX|Nifty Bank", "NSE_INDEX|Nifty IT",
-                "NSE_INDEX|Nifty Auto", "NSE_INDEX|Nifty FMCG", "NSE_INDEX|Nifty Pharma",
-                "NSE_INDEX|Nifty Metal", "NSE_INDEX|Nifty PSU Bank", "NSE_INDEX|Nifty Energy",
-                "NSE_INDEX|India VIX", "BSE_INDEX|SENSEX",
-            ]
-        resp3 = await client.full_market_quote(sector_keys)
-        raw3 = resp3.get("data") or {}
-        if raw3:
+        equity_result = await fetch_constituent_heatmap(idx, client)
+        if equity_result.get("available"):
+            return equity_result
+        error = equity_result.get("reason")
+        items = equity_result.get("stocks") or []
+    except Exception as exc:
+        error = str(exc)
+
+    # Sector-index fallback when equity quotes are unavailable
+    if len(items) < 10:
+        source = "upstox_sector_index_fallback"
+        try:
+            sector_keys = [k for k in settings.market_snapshot_instrument_list if "INDEX" in k.upper()][:20]
+            if not sector_keys:
+                sector_keys = [
+                    "NSE_INDEX|Nifty 50", "NSE_INDEX|Nifty Bank", "NSE_INDEX|Nifty IT",
+                    "NSE_INDEX|Nifty Auto", "NSE_INDEX|Nifty FMCG", "NSE_INDEX|Nifty Pharma",
+                    "NSE_INDEX|Nifty Metal", "NSE_INDEX|Nifty PSU Bank", "NSE_INDEX|Nifty Energy",
+                    "NSE_INDEX|India VIX", "BSE_INDEX|SENSEX",
+                ]
+            resp3 = await client.full_market_quote(sector_keys)
+            raw3 = resp3.get("data") or {}
             sector_items = []
             for key, val in raw3.items():
                 parsed = quote_item(key, val or {})
@@ -379,13 +389,14 @@ async def market_heatmap(
                     "weight": 3.0,
                     "tone": "bullish" if change_pct > 0 else "bearish" if change_pct < 0 else "neutral",
                 })
-            items = sorted(sector_items, key=lambda x: abs(x["changePct"]), reverse=True)
-            error = None
-    except Exception as exc3:
-        error = str(exc3)
+            if sector_items:
+                items = sorted(sector_items, key=lambda x: abs(x["changePct"]), reverse=True)
+                error = None
+        except Exception as exc3:
+            error = error or str(exc3)
 
     if not items:
-        return {"index": idx, "available": False, "reason": error or "No data returned by Upstox", "stocks": []}
+        return {"index": idx, "available": False, "reason": error or "No data returned by Upstox", "stocks": [], "source": source}
 
     advancing = sum(1 for i in items if i["changePct"] > 0)
     declining = sum(1 for i in items if i["changePct"] < 0)
@@ -397,6 +408,7 @@ async def market_heatmap(
     return {
         "index": idx,
         "available": True,
+        "source": source,
         "stockCount": len(items),
         "advancing": advancing,
         "declining": declining,
@@ -408,7 +420,7 @@ async def market_heatmap(
 
 @router.get("/market/movers")
 async def market_movers(settings: Settings = Depends(get_settings), client: UpstoxClient = Depends(get_upstox)) -> dict:
-    instruments = settings.market_snapshot_instrument_list
+    instruments = resolve_config_instrument_list(settings.market_snapshot_instrument_list)
     if not instruments:
         raise HTTPException(status_code=400, detail="MARKET_SNAPSHOT_INSTRUMENT_KEYS is empty.")
     try:

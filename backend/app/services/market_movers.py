@@ -42,9 +42,10 @@ def quote_item(instrument_key: str, payload: dict[str, Any]) -> dict[str, Any]:
     change_pct = round((net_change / previous_close) * 100, 3) if previous_close else 0.0
     volume = int(float(payload.get("volume") or payload.get("volume_traded") or 0))
     average_price = float(payload.get("average_price") or payload.get("avg_price") or last_price or 0)
+    symbol = _symbol_from_key(instrument_key, payload)
     return {
         "instrumentKey": instrument_key,
-        "symbol": payload.get("symbol") or payload.get("trading_symbol") or instrument_key,
+        "symbol": symbol,
         "lastPrice": last_price,
         "previousClose": previous_close,
         "netChange": round(net_change, 3),
@@ -55,8 +56,13 @@ def quote_item(instrument_key: str, payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _symbol_from_key(key: str) -> str:
-    return key.split("|")[-1] if "|" in key else key
+def _symbol_from_key(key: str, payload: dict[str, Any] | None = None) -> str:
+    payload = payload or {}
+    for field in ("trading_symbol", "symbol"):
+        value = str(payload.get(field) or "").strip().upper()
+        if value and value not in {"NA", "N/A"}:
+            return value
+    return key.split("|")[-1].split(":")[-1]
 
 
 def summarize_market_movers(instruments: list[str], quote_payload: dict[str, Any]) -> dict[str, Any]:
@@ -65,7 +71,7 @@ def summarize_market_movers(instruments: list[str], quote_payload: dict[str, Any
 
     # Upstox response replaces | with : in keys (e.g. NSE_INDEX:Nifty 50)
     indices = [i for i in items if "INDEX" in i["instrumentKey"].upper()]
-    stocks = [i for i in items if "INDEX" not in i["instrumentKey"].upper() and "NSE_EQ" not in i["instrumentKey"].upper()]
+    stocks = [i for i in items if "NSE_EQ" in i["instrumentKey"].upper() or "BSE_EQ" in i["instrumentKey"].upper()]
 
     gainers = sorted(items, key=lambda i: i["changePct"], reverse=True)
     losers = sorted(items, key=lambda i: i["changePct"])
@@ -92,8 +98,8 @@ def summarize_market_movers(instruments: list[str], quote_payload: dict[str, Any
     weighted_score = round((weighted_up / weighted_total) * 100, 2) if weighted_total else breadth_score
 
     # Known-weight adjusted breadth (NIFTY50_WEIGHTS)
-    weight_up = sum(NIFTY50_WEIGHTS.get(_symbol_from_key(i["instrumentKey"]), 0.3) for i in stocks if i["changePct"] > 0)
-    weight_dn = sum(NIFTY50_WEIGHTS.get(_symbol_from_key(i["instrumentKey"]), 0.3) for i in stocks if i["changePct"] < 0)
+    weight_up = sum(NIFTY50_WEIGHTS.get(str(i.get("symbol") or _symbol_from_key(i["instrumentKey"])), 0.3) for i in stocks if i["changePct"] > 0)
+    weight_dn = sum(NIFTY50_WEIGHTS.get(str(i.get("symbol") or _symbol_from_key(i["instrumentKey"])), 0.3) for i in stocks if i["changePct"] < 0)
     weight_total = weight_up + weight_dn
     weight_score = round((weight_up / weight_total) * 100, 2) if weight_total else breadth_score
 
@@ -103,7 +109,7 @@ def summarize_market_movers(instruments: list[str], quote_payload: dict[str, Any
 
     # Sector breakdown (banking, IT, auto)
     def _sector_score(ticker_set: set[str]) -> dict[str, Any]:
-        sector = [i for i in stocks if _symbol_from_key(i["instrumentKey"]) in ticker_set]
+        sector = [i for i in stocks if str(i.get("symbol") or _symbol_from_key(i["instrumentKey"])) in ticker_set]
         adv = sum(1 for i in sector if i["changePct"] > 0)
         dec = sum(1 for i in sector if i["changePct"] < 0)
         tot = adv + dec
@@ -121,7 +127,7 @@ def summarize_market_movers(instruments: list[str], quote_payload: dict[str, Any
     def _top_movers() -> list[dict[str, Any]]:
         weighted = []
         for item in stocks:
-            sym = _symbol_from_key(item["instrumentKey"])
+            sym = str(item.get("symbol") or _symbol_from_key(item["instrumentKey"]))
             w = NIFTY50_WEIGHTS.get(sym, 0.0)
             if w > 0:
                 weighted.append({**item, "indexWeight": w, "weightedImpact": round(item["changePct"] * w / 100, 4)})
