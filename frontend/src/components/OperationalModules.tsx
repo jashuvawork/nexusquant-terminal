@@ -877,9 +877,10 @@ export function SettingsPanel() {
 interface HeatmapStock {
   symbol: string; instrumentKey: string; ltp: number; prevClose: number;
   changePct: number; volume: number; weight: number; tone: string;
+  vwap?: number; high?: number; low?: number; volumeLakhs?: number; tradedValueCr?: number;
 }
 interface HeatmapData {
-  index: string; available: boolean; reason?: string; stockCount?: number;
+  index: string; available: boolean; reason?: string; source?: string; stockCount?: number;
   advancing?: number; declining?: number; breadthScore?: number; breadthBias?: string;
   stocks?: HeatmapStock[];
 }
@@ -910,7 +911,7 @@ export function MarketHeatmapPanel(_props: { snapshot: TerminalSnapshot }) {
   const maxWeight = Math.max(...stocks.map(s => s.weight), 1);
 
   return (
-    <Card title="Market Heatmap" eyebrow="Constituent stock performance — weight-sized tiles, color by % change">
+    <Card title="Market Heatmap" eyebrow="NIFTY 50 constituents — weight-sized tiles, NSE-style quote detail on hover">
       <div className="flex gap-2 mb-4">
         {(['NIFTY', 'SENSEX', 'BANKNIFTY'] as const).map(idx => (
           <button key={idx} type="button" onClick={() => setIndex(idx)}
@@ -950,8 +951,16 @@ export function MarketHeatmapPanel(_props: { snapshot: TerminalSnapshot }) {
             const bg = pct > 2 ? 'bg-emerald-500' : pct > 0.5 ? 'bg-emerald-700/80' : pct > 0 ? 'bg-emerald-900/60' : pct < -2 ? 'bg-rose-500' : pct < -0.5 ? 'bg-rose-700/80' : pct < 0 ? 'bg-rose-900/60' : 'bg-slate-700/80';
             const textC = Math.abs(pct) > 0.5 ? 'text-white' : 'text-slate-300';
             const pctColor = pct > 0 ? 'text-emerald-200' : pct < 0 ? 'text-rose-200' : 'text-slate-300';
+            const tip = [
+              `${stock.symbol}: ₹${stock.ltp.toLocaleString('en-IN')} (${pct > 0 ? '+' : ''}${pct.toFixed(2)}%)`,
+              stock.vwap ? `VWAP ₹${stock.vwap.toLocaleString('en-IN')}` : null,
+              stock.high && stock.low ? `H ${stock.high.toLocaleString('en-IN')} / L ${stock.low.toLocaleString('en-IN')}` : null,
+              stock.volumeLakhs ? `Vol ${stock.volumeLakhs.toFixed(2)}L` : stock.volume ? `Vol ${stock.volume.toLocaleString('en-IN')}` : null,
+              stock.tradedValueCr ? `Value ₹${stock.tradedValueCr.toFixed(2)} Cr` : null,
+              `Weight ${stock.weight.toFixed(1)}%`,
+            ].filter(Boolean).join(' · ');
             return (
-              <div key={stock.symbol} title={`${stock.symbol}: ₹${stock.ltp} (${pct > 0 ? '+' : ''}${pct}%)`}
+              <div key={stock.symbol} title={tip}
                 className={`${bg} rounded-lg flex flex-col items-center justify-center cursor-default transition-all hover:opacity-90 border border-white/10`}
                 style={{ width: size, height: size, minWidth: 44, minHeight: 44 }}>
                 <p className={`font-black text-[9px] leading-none ${textC} px-1 text-center`}>{stock.symbol}</p>
@@ -962,7 +971,11 @@ export function MarketHeatmapPanel(_props: { snapshot: TerminalSnapshot }) {
         </div>
       )}
 
-      <p className="mt-3 text-[10px] text-slate-600">Tile size = index weight. Green = advancing, Red = declining. Data via Upstox LTP API.</p>
+      <p className="mt-3 text-[10px] text-slate-600">
+        {data?.source === 'upstox_constituent_equity'
+          ? 'Real NIFTY/SENSEX/BANKNIFTY constituents via Upstox. Tile size = index weight. Hover for VWAP, high/low, volume.'
+          : 'Sector index fallback — equity quotes unavailable. Tile size = sector weight proxy.'}
+      </p>
     </Card>
   );
 }

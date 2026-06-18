@@ -126,6 +126,18 @@ class UpstoxClient:
                 params={"instrument_key": ",".join(instrument_keys)},
             )
 
+    async def full_market_quote_batched(self, instrument_keys: list[str], batch_size: int = 100) -> dict[str, Any]:
+        """Quote up to 500 keys per request; batch when list is large."""
+        if not instrument_keys:
+            return {"status": "success", "data": {}}
+        if len(instrument_keys) <= batch_size:
+            return await self.full_market_quote(instrument_keys)
+        merged: dict[str, Any] = {"status": "success", "data": {}}
+        for start in range(0, len(instrument_keys), batch_size):
+            payload = await self.full_market_quote(instrument_keys[start : start + batch_size])
+            merged["data"].update(payload.get("data") or {})
+        return merged
+
 
     async def option_contracts(self, instrument_key: str, expiry_date: str | None = None) -> dict[str, Any]:
         params: dict[str, Any] = {"instrument_key": instrument_key}
