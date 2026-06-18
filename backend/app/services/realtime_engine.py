@@ -1148,6 +1148,7 @@ class RealTimeMarketEngine:
                     explosion_velocity_pct=float(self.settings.paper_momentum_explosion_velocity_pct),
                     explosion_volume_accel=float(self.settings.paper_momentum_explosion_volume_accel),
                     explosion_min_premium=float(self.settings.paper_momentum_min_premium_ltp),
+                    max_catch_mode=bool(self.settings.paper_max_catch_mode),
                     elite_min_score=float(self.settings.explosive_runner_elite_min_score),
                     elite_breakout_min=float(self.settings.explosive_runner_elite_breakout_min),
                     elite_delta_velocity_min=float(self.settings.explosive_runner_elite_delta_velocity_min),
@@ -1270,26 +1271,40 @@ class RealTimeMarketEngine:
         chart_analysis: dict[str, Any] | None = None,
         limit: int = 3,
     ) -> list[dict[str, Any]]:
+        if self.settings.paper_max_catch_mode:
+            limit = int(self.settings.paper_max_catch_runner_emit_limit)
         trades: list[dict[str, Any]] = []
+        catch_min = float(self.settings.paper_max_catch_min_runner_score)
+        premium_min = float(self.settings.explosive_runner_premium_min)
+        premium_max = float(self.settings.paper_momentum_max_entry_premium)
         for signal in runner_watchlist:
             if len(trades) >= limit:
                 break
-            momentum_surge = bool(signal.get("momentumSurge")) and bool(signal.get("momentumAligned"))
-            momentum_override = bool(signal.get("momentumOverride")) and str(signal.get("confidence") or "").upper() == "HIGH"
-            if momentum_override:
-                min_score = float(self.settings.explosive_runner_momentum_min_score)
-            else:
-                min_score = float(self.settings.explosive_runner_elite_min_score if momentum_surge else self.settings.explosive_runner_min_score)
             score = as_float(signal.get("score"))
-            if score < min_score:
-                continue
-            if not signal.get("candidate") and not momentum_surge and not momentum_override:
-                continue
-            # Elite path OR momentum-override burst (₹110→₹135 midday breakouts)
-            if momentum_override:
-                pass
-            elif signal.get("confidence") != "HIGH" or not signal.get("eliteRunner"):
-                continue
+            momentum_surge = bool(signal.get("momentumSurge"))
+            momentum_override = bool(signal.get("momentumOverride"))
+            confidence = str(signal.get("confidence") or "").upper()
+            if self.settings.paper_max_catch_mode:
+                premium = as_float(signal.get("premium") or signal.get("lastPremium"))
+                if score < catch_min or premium <= 0 or not (premium_min <= premium <= premium_max):
+                    continue
+                if not (signal.get("candidate") or momentum_surge or momentum_override or score >= 58):
+                    continue
+            else:
+                momentum_surge = momentum_surge and bool(signal.get("momentumAligned"))
+                momentum_override = momentum_override and confidence == "HIGH"
+                if momentum_override:
+                    min_score = float(self.settings.explosive_runner_momentum_min_score)
+                else:
+                    min_score = float(self.settings.explosive_runner_elite_min_score if momentum_surge else self.settings.explosive_runner_min_score)
+                if score < min_score:
+                    continue
+                if not signal.get("candidate") and not momentum_surge and not momentum_override:
+                    continue
+                if momentum_override:
+                    pass
+                elif confidence != "HIGH" or not signal.get("eliteRunner"):
+                    continue
             premium = as_float(signal.get("premium") or signal.get("lastPremium"))
             risk_capital = trading_capital * max(0, self.settings.max_exposure_pct) / 100 if trading_capital > 0 else 0
             paper_allocation_cap = trading_capital * max(0.0, float(self.settings.paper_trade_allocation_pct)) / 100 if trading_capital > 0 else 0

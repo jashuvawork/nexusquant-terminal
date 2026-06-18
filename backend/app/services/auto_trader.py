@@ -223,6 +223,7 @@ class AutoTraderEngine:
             is_runner_burst = bool(
                 runner_sig.get("momentumOverride")
                 or self._is_momentum_explosion(candidate, runner_sig)
+                or self._is_catchable_runner(candidate, runner_sig)
             )
             if cached_snapshot and not is_runner_burst:
                 skipped.append({"candidate": signal_id, "reason": "cached snapshot; paper open skipped to avoid duplicate training sample"})
@@ -251,7 +252,7 @@ class AutoTraderEngine:
                 reason_text = str(quality.get("reason") or "")
                 is_position_limit = any(s in reason_text.lower() for s in ["max open", "max capacity", "already has an open", "hard cap"])
                 is_chase = "chase blocked" in reason_text.lower()
-                explosion_entry = self._is_momentum_explosion(candidate) or self._is_strong_runner_entry(candidate)
+                explosion_entry = self._runner_entry_bypass(candidate)
                 can_bypass = (
                     (explosion_entry and not is_position_limit and not is_chase)
                     or (self._runner_may_bypass_quality(candidate, reason_text, market_phase) and not is_position_limit)
@@ -282,7 +283,8 @@ class AutoTraderEngine:
                 skipped.append({"candidate": candidate.get("id"), "reason": risk_halt["reason"], "quality": quality})
                 continue
             runner_sig = (candidate.get("runnerSignal") or {})
-            momentum_override = bool(runner_sig.get("momentumOverride") and str(runner_sig.get("confidence") or "").upper() == "HIGH")
+            entry_bypass = self._runner_entry_bypass(candidate, runner_sig)
+            momentum_override = bool(runner_sig.get("momentumOverride") and str(runner_sig.get("confidence") or "").upper() == "HIGH") or entry_bypass
             if pre_trade_psychology.get("tradePermission") == "BLOCK_NEW_TRADES" and not momentum_override:
                 skipped.append({"candidate": candidate.get("id"), "reason": "psychology gate: BLOCK_NEW_TRADES", "quality": quality})
                 continue
@@ -1464,6 +1466,7 @@ class AutoTraderEngine:
             open_drive_profit_primary_pct=float(self.settings.open_drive_profit_target_primary_pct),
             open_drive_profit_stop_pct=float(self.settings.open_drive_profit_stop_pct),
             open_drive_allocation_boost=float(self.settings.open_drive_allocation_multiplier),
+            max_catch_mode=bool(self.settings.paper_max_catch_mode),
         )
         news = self._latest_news_state or {}
         impact = news.get("impact") or {}
@@ -1483,6 +1486,43 @@ class AutoTraderEngine:
         result["newsEventRisk"] = news.get("eventRisk", "LOW")
         result["newsTradingImplication"] = news.get("tradingImplication")
         return result
+
+    def _is_catchable_runner(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
+        """Max-catch mode: enter on any in-range runner with tape activity (target >90% capture)."""
+        if not self.settings.paper_max_catch_mode:
+            return False
+        runner = runner or candidate.get("runnerSignal") or {}
+        if candidate.get("strategyType") != "EXPLOSIVE_RUNNER":
+            return False
+        score = float(runner.get("score") or candidate.get("tqs") or 0)
+        if score < float(self.settings.paper_max_catch_min_runner_score):
+            return False
+        premium = float(candidate.get("lastPremium") or runner.get("premium") or 0)
+        if premium < float(self.settings.explosive_runner_premium_min):
+            return False
+        if premium > float(self.settings.paper_momentum_max_entry_premium):
+            return False
+        metrics = self._runner_metrics(runner)
+        premium_velocity = float(runner.get("premiumVelocityPct") or metrics.get("premiumVelocity") or 0)
+        volume_accel = float(runner.get("volumeAcceleration") or metrics.get("volumeAcceleration") or 0)
+        effective_volume = float(candidate.get("effectiveVolume") or 0)
+        if runner.get("momentumOverride") or runner.get("momentumSurge"):
+            return True
+        if premium_velocity >= float(self.settings.paper_momentum_explosion_velocity_pct):
+            return True
+        if volume_accel >= float(self.settings.paper_momentum_explosion_volume_accel):
+            return True
+        if effective_volume > 0 and score >= 58:
+            return True
+        return score >= 65
+
+    def _runner_entry_bypass(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
+        runner = runner or candidate.get("runnerSignal") or {}
+        if self._is_catchable_runner(candidate, runner):
+            return True
+        if self._is_momentum_explosion(candidate, runner):
+            return True
+        return self._is_strong_runner_entry(candidate, runner)
 
     def _is_strong_runner_entry(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
         """HIGH-confidence elite or momentum burst — bypass chop/breadth/AI gates."""
@@ -1518,10 +1558,6 @@ class AutoTraderEngine:
     def _is_momentum_explosion(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
         """Premium velocity + volume burst — e.g. ₹45→₹100 with volume spike on 1m chart."""
         runner = runner or candidate.get("runnerSignal") or {}
-        if not runner.get("momentumOverride"):
-            return False
-        if str(runner.get("confidence") or "").upper() != "HIGH":
-            return False
         metrics = self._runner_metrics(runner)
         premium_velocity = float(runner.get("premiumVelocityPct") or metrics.get("premiumVelocity") or 0)
         volume_accel = float(runner.get("volumeAcceleration") or metrics.get("volumeAcceleration") or 0)
@@ -1530,16 +1566,25 @@ class AutoTraderEngine:
         min_vol = float(self.settings.paper_momentum_explosion_volume_accel)
         min_premium = float(self.settings.paper_momentum_min_premium_ltp)
         max_premium = float(self.settings.paper_momentum_max_entry_premium)
-        return (
-            premium_velocity >= min_vel
-            and volume_accel >= min_vol
-            and min_premium <= premium <= max_premium
-        )
+        if not (min_premium <= premium <= max_premium):
+            return False
+        if self.settings.paper_max_catch_mode:
+            return premium_velocity >= min_vel or volume_accel >= min_vol
+        if not runner.get("momentumOverride"):
+            return False
+        if str(runner.get("confidence") or "").upper() != "HIGH":
+            return False
+        return premium_velocity >= min_vel and volume_accel >= min_vol
 
     def _passes_high_confidence_gate(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> tuple[bool, str]:
+        runner = runner or candidate.get("runnerSignal") or {}
+        if self.settings.paper_max_catch_mode and self._runner_entry_bypass(candidate, runner):
+            premium = float(candidate.get("lastPremium") or runner.get("premium") or 0)
+            if self._is_explosion_chase(candidate, runner):
+                return False, f"chase blocked: premium ₹{premium:.0f}"
+            return True, ""
         if not self.settings.paper_high_confidence_only:
             return True, ""
-        runner = runner or candidate.get("runnerSignal") or {}
         premium = float(candidate.get("lastPremium") or runner.get("premium") or runner.get("lastPremium") or 0)
         max_entry = float(self.settings.paper_momentum_max_entry_premium)
         min_momentum_ltp = float(self.settings.paper_momentum_min_premium_ltp)
@@ -1660,6 +1705,12 @@ class AutoTraderEngine:
         return any(marker in lowered for marker in markers)
 
     def _runner_may_bypass_quality(self, candidate: dict[str, Any], reason_text: str, market_phase: str | None = None) -> bool:
+        if self._is_catchable_runner(candidate):
+            lowered = reason_text.lower()
+            hard_only = ("missing premium", "max open", "hard cap", "max capacity", "already has an open")
+            if any(marker in lowered for marker in hard_only):
+                return False
+            return True
         if not self.settings.paper_runner_bypass_quality_gates:
             return False
         if self._is_hard_quality_block(reason_text):
@@ -1678,6 +1729,8 @@ class AutoTraderEngine:
         if candidate.get("strategyType") != "EXPLOSIVE_RUNNER":
             return False
         runner = candidate.get("runnerSignal") or {}
+        if self.settings.paper_max_catch_mode and self._is_catchable_runner(candidate, runner):
+            return True
         # MOMENTUM OVERRIDE: premium velocity burst bypasses all score/elite gates
         confidence = str(runner.get("confidence") or "").upper()
         score = float(runner.get("score") or candidate.get("tqs") or 0)
@@ -1722,7 +1775,7 @@ class AutoTraderEngine:
     def _session_entry_allowed(self, candidate: dict[str, Any], session_adj: dict[str, Any], market_phase: str | None = None) -> bool:
         if self._is_tradeable_explosive_runner(candidate, market_phase):
             return True
-        if self._is_strong_runner_entry(candidate):
+        if self._runner_entry_bypass(candidate):
             return True
         runner = candidate.get("runnerSignal") or {}
         if runner.get("momentumOverride") and str(runner.get("confidence") or "").upper() == "HIGH":
@@ -1903,6 +1956,8 @@ class AutoTraderEngine:
                 score += 12.0
         if runner.get("momentumOverride"):
             score = max(score, 70.0)  # momentum override always passes AI predictor
+        if self.settings.paper_max_catch_mode and self._is_catchable_runner(candidate, runner):
+            score = max(score, 78.0)
 
         expected_move = max(required_move * 2.0, float((runner.get("maxPointsPlan") or {}).get("targetPremiumPct") or 0) * premium / 100)
         if is_runner:
@@ -1949,7 +2004,7 @@ class AutoTraderEngine:
         side = str(candidate.get("side") or "")
         tradeable_runner = self._is_tradeable_explosive_runner(candidate, market_phase)
         momentum_runner = self._is_momentum_aligned_runner(candidate, runner)
-        strong_runner = self._is_strong_runner_entry(candidate, runner)
+        strong_runner = self._runner_entry_bypass(candidate, runner)
         if premium <= 0:
             reasons.append("missing premium")
         if candidate.get("chopBlocked") and not tradeable_runner and not strong_runner:
@@ -2030,17 +2085,20 @@ class AutoTraderEngine:
         tradeable_runner = self._is_tradeable_explosive_runner(candidate, market_phase)
         runner_sig = candidate.get("runnerSignal") or {}
         momentum_override = bool(runner_sig.get("momentumOverride") and str(runner_sig.get("confidence") or "").upper() == "HIGH")
+        entry_bypass = self._runner_entry_bypass(candidate, runner_sig)
         momentum_explosion = self._is_momentum_explosion(candidate, runner_sig)
         entry_tqs = int(candidate.get("tqs") or 0)
-        if momentum_explosion:
+        if entry_bypass:
+            min_entry_tqs = int(self.settings.paper_momentum_min_entry_tqs)
+        elif momentum_explosion:
             min_entry_tqs = int(self.settings.paper_momentum_min_entry_tqs)
         else:
             min_entry_tqs = int(self.settings.paper_min_entry_tqs or self.settings.paper_high_confidence_min_tqs)
-        if entry_tqs < min_entry_tqs and not momentum_override:
+        if entry_tqs < min_entry_tqs and not momentum_override and not entry_bypass:
             return None
-        if self._is_explosion_chase(candidate, runner_sig):
+        if self._is_explosion_chase(candidate, runner_sig) and not self.settings.paper_max_catch_mode:
             return None
-        if quality.get("blocked") and not momentum_explosion and not momentum_override:
+        if quality.get("blocked") and not entry_bypass and not momentum_explosion and not momentum_override:
             return None
         trade_id = str(candidate.get("id") or uuid4())
         if trade_id in self.open_paper:
