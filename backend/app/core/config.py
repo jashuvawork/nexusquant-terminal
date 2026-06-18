@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     finnhub_api_key: str | None = None
     news_provider: str = "finnhub"
     upstox_news_enabled: bool = False
-    snapshot_cache_seconds: float = 5.0
+    snapshot_cache_seconds: float = 2.0
     account_snapshot_cache_seconds: float = 30.0
     expiry_cache_seconds: float = 3600.0
     market_snapshot_instrument_keys: str = (
@@ -165,9 +165,11 @@ class Settings(BaseSettings):
     paper_momentum_min_entry_tqs: int = 55
     paper_runner_bypass_quality_gates: bool = False
     paper_momentum_min_premium_ltp: float = 25.0
-    paper_momentum_max_entry_premium: float = 95.0
+    paper_momentum_max_entry_premium: float = 140.0
+    paper_momentum_chase_premium_floor: float = 125.0
+    paper_momentum_chase_max_velocity_pct: float = 2.5
     paper_momentum_explosion_velocity_pct: float = 5.0
-    paper_momentum_explosion_volume_accel: float = 50.0
+    paper_momentum_explosion_volume_accel: float = 35.0
     paper_momentum_override_min_velocity_pct: float = 7.0
     paper_runner_max_allocation_pct: float = 15.0
     paper_runner_target_premium_pct: float = 35.0

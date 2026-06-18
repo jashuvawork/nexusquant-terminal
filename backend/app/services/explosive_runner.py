@@ -55,9 +55,9 @@ class ExplosiveRunnerEngine:
         option_direction: str | None = None,
         momentum_premium_velocity_pct: float = 5.0,
         momentum_override_velocity_pct: float = 10.0,
-        momentum_override_volume_accel: float = 40.0,
+        momentum_override_volume_accel: float = 25.0,
         explosion_velocity_pct: float = 5.0,
-        explosion_volume_accel: float = 50.0,
+        explosion_volume_accel: float = 35.0,
         explosion_min_premium: float = 25.0,
         elite_min_score: float = 92.0,
         elite_breakout_min: float = 70.0,
@@ -136,7 +136,7 @@ class ExplosiveRunnerEngine:
             and premium > 0
         ) or (
             premium_velocity >= 6.0
-            and volume_accel >= 70
+            and volume_accel >= max(50.0, momentum_override_volume_accel * 2)
             and (price_velocity >= 0.05 or price_velocity <= -0.05)
             and spread_quality >= 65
         ) or (

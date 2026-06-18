@@ -219,17 +219,32 @@ class AutoTraderEngine:
             signal_events.append(event)
             self.lifecycle_events.append(event)
             signal_id = str(candidate.get("id") or "")
-            if cached_snapshot:
+            runner_sig = (candidate.get("runnerSignal") or {})
+            is_runner_burst = bool(
+                runner_sig.get("momentumOverride")
+                or self._is_momentum_explosion(candidate, runner_sig)
+            )
+            if cached_snapshot and not is_runner_burst:
                 skipped.append({"candidate": signal_id, "reason": "cached snapshot; paper open skipped to avoid duplicate training sample"})
                 continue
             # Momentum override uses shorter cooldown (20s) to catch continuation moves
-            runner_sig = (candidate.get("runnerSignal") or {})
             effective_cooldown = 20 if runner_sig.get("momentumOverride") else signal_cooldown_seconds
             if self._recent_signal_active(signal_id, effective_cooldown):
                 skipped.append({"candidate": signal_id, "reason": "duplicate signal cooldown active"})
                 continue
             if session_adj.get("blockNewPaperTrades") and not self._session_entry_allowed(candidate, session_adj, market_phase):
-                skipped.append({"candidate": candidate.get("id"), "reason": session_adj.get("blockReason") or "session gate blocked"})
+                skip_reason = session_adj.get("blockReason") or "session gate blocked"
+                skipped.append({"candidate": candidate.get("id"), "reason": skip_reason})
+                runner_s = (candidate.get("runnerSignal") or {})
+                if runner_s.get("score", 0) >= 65 or runner_s.get("momentumOverride"):
+                    AutoTraderEngine._shared_missed_runners.append({
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "symbol": candidate.get("symbol"), "side": candidate.get("side"),
+                        "strike": candidate.get("strike"), "premium": candidate.get("lastPremium"),
+                        "runnerScore": runner_s.get("score"), "momentumOverride": runner_s.get("momentumOverride"),
+                        "premiumVelocity": runner_s.get("premiumVelocityPct"), "reason": skip_reason,
+                        "gate": "session",
+                    })
                 continue
             quality = self._pre_trade_quality(candidate, session_adj, market_phase)
             if quality["blocked"]:
@@ -1473,9 +1488,20 @@ class AutoTraderEngine:
         return runner.get("metrics") or {}
 
     def _is_explosion_chase(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
+        """Block late chase entries — not valid premiums like ₹110 CE before a breakout."""
         runner = runner or candidate.get("runnerSignal") or {}
         premium = float(candidate.get("lastPremium") or runner.get("premium") or 0)
-        return premium > float(self.settings.paper_momentum_max_entry_premium)
+        max_entry = float(self.settings.paper_momentum_max_entry_premium)
+        if premium > max_entry:
+            return True
+        metrics = self._runner_metrics(runner)
+        premium_velocity = float(runner.get("premiumVelocityPct") or metrics.get("premiumVelocity") or 0)
+        chase_floor = float(self.settings.paper_momentum_chase_premium_floor)
+        chase_velocity = float(self.settings.paper_momentum_chase_max_velocity_pct)
+        # High premium + momentum fading = chasing the tail of the move
+        if premium >= chase_floor and premium_velocity < chase_velocity:
+            return True
+        return False
 
     def _is_momentum_explosion(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
         """Premium velocity + volume burst — e.g. ₹45→₹100 with volume spike on 1m chart."""
@@ -1673,6 +1699,19 @@ class AutoTraderEngine:
 
     def _session_entry_allowed(self, candidate: dict[str, Any], session_adj: dict[str, Any], market_phase: str | None = None) -> bool:
         if self._is_tradeable_explosive_runner(candidate, market_phase):
+            return True
+        runner = candidate.get("runnerSignal") or {}
+        if runner.get("momentumOverride") and str(runner.get("confidence") or "").upper() == "HIGH":
+            return True
+        if self._is_momentum_explosion(candidate, runner):
+            return True
+        bypass_score = float(session_adj.get("middayRunnerBypassScore") or 90)
+        if (
+            session_adj.get("sessionBucket") == "MIDDAY_CHOP"
+            and float(runner.get("score") or 0) >= bypass_score
+            and runner.get("momentumSurge")
+            and runner.get("momentumAligned")
+        ):
             return True
         if not session_adj.get("blockNewPaperTrades"):
             return True
