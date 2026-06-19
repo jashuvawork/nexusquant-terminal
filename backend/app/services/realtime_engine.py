@@ -117,6 +117,24 @@ class RealTimeMarketEngine:
         self._contract_meta: dict[str, dict[str, Any]] = {}
         self._account_cache: tuple[float, tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]] | None = None
 
+    def stale_snapshot(self, symbol: str, *, max_age_seconds: float = 90.0) -> dict[str, Any] | None:
+        """Return last good snapshot when Upstox rate-limits (429) so the UI keeps working."""
+        cached = self._snapshot_cache.get(symbol.upper())
+        if not cached:
+            return None
+        age_seconds = monotonic() - cached[0]
+        if age_seconds > max_age_seconds:
+            return None
+        payload = deepcopy(cached[1])
+        payload["cacheStatus"] = {
+            "source": "stale_cache_upstox_429",
+            "ageSeconds": round(age_seconds, 2),
+            "ttlSeconds": self.settings.snapshot_cache_seconds,
+        }
+        payload.setdefault("dataWarnings", []).append("Serving cached snapshot because Upstox rate-limited requests.")
+        payload.setdefault("infra", {})["cacheAgeSeconds"] = round(age_seconds, 2)
+        return payload
+
     async def snapshot(self, symbol: str | None = None) -> dict[str, Any]:
         processing_started = perf_counter()
         selected_symbol = (symbol or self.settings.primary_symbol).upper()
@@ -329,6 +347,9 @@ class RealTimeMarketEngine:
         trading_control_status = await self.trading_control.status()
         capital_status = await self.trading_control.capital_status()
         trading_capital = capital_status.get("tradingCapital") or self.settings.trading_capital_default
+        dual_capital = bool(self.settings.paper_dual_capital_enabled)
+        scalp_capital = float(self.settings.paper_scalping_capital or trading_capital) if dual_capital else float(trading_capital or 0)
+        explosive_capital = float(self.settings.paper_explosive_capital or trading_capital) if dual_capital else float(trading_capital or 0)
         auto_trading_stopped = bool(trading_control_status.get("autoTradingStopped"))
         atr_points = self._atr_points(candles_list)
         adaptive_exit = self._adaptive_exit_engine(plan_ltp, plan_side, orderflow, spread_quality, volume_state, greeks, pressure_mode, risk_decision.safe_mode, atr_points, optimized_profile)
@@ -379,7 +400,7 @@ class RealTimeMarketEngine:
             execution_allowed=execution_allowed,
             trade_mode=trade_mode,
             safe_mode=risk_decision.safe_mode,
-            trading_capital=float(trading_capital or 0),
+            trading_capital=scalp_capital,
             chop_filter=chop_filter,
             volume_state=volume_state,
             entry_model=entry_model,
@@ -387,19 +408,22 @@ class RealTimeMarketEngine:
             runner_signal=runner_signal,
             chart_analysis=chart_analysis,
         )
+        scalp_keys = {str(t.get("instrumentKey") or "") for t in suggested_trades if t.get("instrumentKey")}
         suggested_trades.extend(
             self._runner_suggested_trades(
                 runner_watchlist=runner_watchlist,
                 trade_mode=trade_mode,
                 execution_allowed=execution_allowed,
-                trading_capital=float(trading_capital or 0),
+                trading_capital=explosive_capital,
                 option_bias=option_bias,
                 safe_mode=risk_decision.safe_mode,
                 optimized_profile=optimized_profile,
                 chart_analysis=chart_analysis,
-                limit=3,
+                limit=1,
+                exclude_instrument_keys=scalp_keys,
             )
         )
+        suggested_trades = self._dedupe_suggested_trades(suggested_trades)
 
         payload = {
             "type": "snapshot",
@@ -412,7 +436,13 @@ class RealTimeMarketEngine:
             "aggressiveMode": self.settings.aggressive_mode,
             "autoTradingStopped": auto_trading_stopped,
             "tradingControl": trading_control_status,
-            "tradingCapital": {**capital_status, "tradingCapital": float(trading_capital or 0)},
+            "tradingCapital": {
+                **capital_status,
+                "tradingCapital": float(trading_capital or 0),
+                "dualCapitalEnabled": dual_capital,
+                "scalpingCapital": scalp_capital,
+                "explosiveCapital": explosive_capital,
+            },
             "tradeMode": trade_mode,
             "qualityFilters": {"chopFilter": chop_filter, "volumeState": volume_state},
             "pressureMode": pressure_mode,
@@ -1277,6 +1307,46 @@ class RealTimeMarketEngine:
             "metrics": {},
         }
 
+    def _dedupe_suggested_trades(self, trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not self.settings.paper_suggested_trade_dedupe:
+            return trades
+        priority = {"EXECUTION_READY": 3, "SUGGEST_ONLY": 2, "RUNNER_PAPER_WATCH": 1}
+        by_key: dict[str, dict[str, Any]] = {}
+        for trade in trades:
+            key = str(trade.get("instrumentKey") or trade.get("id") or "")
+            if not key:
+                continue
+            existing = by_key.get(key)
+            if not existing:
+                by_key[key] = trade
+                continue
+            new_pri = priority.get(str(trade.get("action") or ""), 0)
+            old_pri = priority.get(str(existing.get("action") or ""), 0)
+            prefer_new = new_pri > old_pri
+            if new_pri == old_pri and str(trade.get("strategyType") or "").upper() == "SCALP":
+                prefer_new = True
+            if prefer_new:
+                by_key[key] = trade
+        return list(by_key.values())
+
+    def _passes_ultra_elite_runner_signal(self, signal: dict[str, Any]) -> bool:
+        if str(signal.get("confidence") or "").upper() != "HIGH":
+            return False
+        if not signal.get("eliteRunner") or not signal.get("momentumAligned"):
+            return False
+        score = as_float(signal.get("score"))
+        if score < float(self.settings.paper_ultra_elite_min_runner_score):
+            return False
+        orderflow = signal.get("orderflow") or {}
+        pv = as_float(signal.get("premiumVelocityPct") or orderflow.get("premiumVelocity"))
+        vol = as_float(signal.get("volumeAcceleration") or (signal.get("volumeState") or {}).get("volumeAcceleration"))
+        if pv < float(self.settings.paper_ultra_elite_min_velocity_pct):
+            return False
+        if vol < float(self.settings.paper_ultra_elite_min_volume_accel):
+            return False
+        premium = as_float(signal.get("premium") or signal.get("lastPremium"))
+        return premium > 0 and float(self.settings.explosive_runner_premium_min) <= premium <= float(self.settings.paper_momentum_max_entry_premium)
+
     def _runner_suggested_trades(
         self,
         *,
@@ -1288,8 +1358,12 @@ class RealTimeMarketEngine:
         safe_mode: bool,
         optimized_profile: dict[str, Any],
         chart_analysis: dict[str, Any] | None = None,
-        limit: int = 3,
+        limit: int = 1,
+        exclude_instrument_keys: set[str] | None = None,
     ) -> list[dict[str, Any]]:
+        if self.settings.paper_elite_runner_only:
+            limit = 1
+        exclude_instrument_keys = exclude_instrument_keys or set()
         if self.settings.paper_max_catch_mode:
             limit = int(self.settings.paper_max_catch_runner_emit_limit)
         trades: list[dict[str, Any]] = []
@@ -1311,11 +1385,17 @@ class RealTimeMarketEngine:
         for signal in ranked_watchlist:
             if len(trades) >= limit:
                 break
+            instrument_key = str(signal.get("instrumentKey") or "")
+            if instrument_key and instrument_key in exclude_instrument_keys:
+                continue
             score = as_float(signal.get("score"))
             momentum_surge = bool(signal.get("momentumSurge"))
             momentum_override = bool(signal.get("momentumOverride"))
             confidence = str(signal.get("confidence") or "").upper()
-            if self.settings.paper_max_catch_mode:
+            if self.settings.paper_elite_runner_only:
+                if not self._passes_ultra_elite_runner_signal(signal):
+                    continue
+            elif self.settings.paper_max_catch_mode and not self.settings.paper_elite_runner_only:
                 premium = as_float(signal.get("premium") or signal.get("lastPremium"))
                 if score < catch_min or premium <= 0 or not (premium_min <= premium <= premium_max):
                     continue
@@ -1332,9 +1412,7 @@ class RealTimeMarketEngine:
                     continue
                 if not signal.get("candidate") and not momentum_surge and not momentum_override:
                     continue
-                if momentum_override:
-                    pass
-                elif confidence != "HIGH" or not signal.get("eliteRunner"):
+                if not signal.get("eliteRunner") or confidence != "HIGH":
                     continue
             premium = as_float(signal.get("premium") or signal.get("lastPremium"))
             risk_capital = trading_capital * max(0, self.settings.max_exposure_pct) / 100 if trading_capital > 0 else 0
@@ -1865,6 +1943,15 @@ class RealTimeMarketEngine:
         position = self._lot_sized_position(instrument, premium, risk_capital)
         quantity_estimate = int(position["quantity"])
         allocation_pct = round(((quantity_estimate * premium) / trading_capital) * 100, 2) if trading_capital > 0 and premium > 0 else 0
+        scalp_profile = {
+            **optimized_profile,
+            "executionStyle": "HIGH_WIN_SCALP",
+            "targetPoints": min(float(optimized_profile.get("targetPoints") or self.settings.paper_target_points), float(self.settings.paper_quick_profit_points) + 4.0),
+            "stopPoints": min(float(optimized_profile.get("stopPoints") or self.settings.paper_stop_points), float(self.settings.paper_stop_points)),
+            "partialExitPct": 0.65,
+            "runnerPct": 0.35,
+            "holdBias": "quick_scalp_profit_lock",
+        }
         return [
             {
                 "id": f"{symbol}-{expiry}-{strike}-{side}",
@@ -1889,8 +1976,8 @@ class RealTimeMarketEngine:
                 "volumeSource": volume_state.get("source"),
                 "effectiveVolume": volume_state.get("effectiveVolume", 0),
                 "entryModel": entry_model,
-                "optimizedProfile": optimized_profile,
-                "strategyType": "EXPLOSIVE_RUNNER" if (runner_signal or {}).get("candidate") else "SCALP",
+                "optimizedProfile": scalp_profile,
+                "strategyType": "SCALP",
                 "runnerSignal": runner_signal,
                 "tqs": tqs,
                 "confidence": confidence,

@@ -58,6 +58,8 @@ class PaperTrade:
     opened_at: str
     mode: str
     strategy_type: str = "SCALP"
+    capital_pool: str = ""
+    exit_mode: str = "AUTO"
     paper_session_id: str = ""
     target_points: float = 0.0
     stop_points: float = 0.0
@@ -101,6 +103,8 @@ class PaperTrade:
             opened_at=str(payload.get("openedAt") or datetime.now(timezone.utc).isoformat()),
             mode=str(payload.get("mode") or "paper"),
             strategy_type=str(payload.get("strategyType") or "SCALP"),
+            capital_pool=str(payload.get("capitalPool") or ""),
+            exit_mode=str(payload.get("exitMode") or "AUTO"),
             paper_session_id=str(payload.get("paperSessionId") or ""),
             target_points=float(payload.get("targetPoints") or 0),
             stop_points=float(payload.get("stopPoints") or 0),
@@ -134,6 +138,8 @@ class PaperTrade:
             "openedAt": self.opened_at,
             "mode": self.mode,
             "strategyType": self.strategy_type,
+            "capitalPool": self.capital_pool,
+            "exitMode": self.exit_mode,
             "paperSessionId": self.paper_session_id,
             "targetPoints": round(self.target_points, 2),
             "stopPoints": round(self.stop_points, 2),
@@ -218,6 +224,11 @@ class AutoTraderEngine:
         signal_events = []
         skipped = []
         for candidate in candidates:
+            prepared = self._prepare_execution_candidate(candidate)
+            if prepared is None:
+                skipped.append({"candidate": candidate.get("id"), "reason": "runner below ultra-elite; scalping gates not met"})
+                continue
+            candidate = prepared
             event = self._signal_event(candidate, payload)
             signal_events.append(event)
             self.lifecycle_events.append(event)
@@ -255,13 +266,17 @@ class AutoTraderEngine:
                 reason_text = str(quality.get("reason") or "")
                 is_position_limit = any(s in reason_text.lower() for s in ["max open", "max capacity", "already has an open", "hard cap"])
                 is_chase = "chase blocked" in reason_text.lower()
+                is_hard_block = self._is_hard_quality_block(reason_text)
                 explosion_entry = self._runner_entry_bypass(candidate)
                 can_bypass = (
-                    (explosion_entry and not is_position_limit and not is_chase)
-                    or (self._runner_may_bypass_quality(candidate, reason_text, market_phase) and not is_position_limit)
+                    not is_hard_block
+                    and (
+                        (explosion_entry and not is_position_limit and not is_chase)
+                        or (self._runner_may_bypass_quality(candidate, reason_text, market_phase) and not is_position_limit)
+                    )
                 )
                 if can_bypass:
-                    pass
+                    quality = {**quality, "blocked": False, "paperEligible": True, "reason": f"runner quality bypass ({reason_text})"}
                 elif self.settings.paper_trading and self.settings.shadow_trade_all_signals:
                     skipped.append({"candidate": candidate.get("id"), "reason": quality["reason"], "quality": quality})
                     quality = {**quality, "shadowOverride": True, "reason": f"SHADOW despite: {quality['reason']}"}
@@ -305,11 +320,26 @@ class AutoTraderEngine:
                 skipped.append({"candidate": candidate.get("id"), "reason": f"psychology gate: {pre_trade_psychology.get('tradePermission')}", "quality": quality})
                 continue
             if self.settings.paper_trading or not self.settings.enable_live_trading:
-                # HARD CAP: never exceed paper_max_open_trades regardless of any gate
+                strategy_type = str(candidate.get("strategyType") or "SCALP")
+                pool = self._capital_pool_for(strategy_type)
+                pool_open = self._open_trades_in_pool(pool)
+                pool_max = self._max_open_for_pool(pool)
+                if pool_open >= pool_max:
+                    skipped.append({"candidate": candidate.get("id"), "reason": f"{pool} pool full: {pool_open}/{pool_max} trades open"})
+                    continue
                 if len(self.open_paper) >= int(self.settings.paper_max_open_trades):
                     skipped.append({"candidate": candidate.get("id"), "reason": f"HARD CAP: {len(self.open_paper)}/{self.settings.paper_max_open_trades} trades already open"})
                     continue
-                opened = self._open_paper_trade(candidate, quality, self._available_capital(trading_capital), trading_capital, session_adj, market_phase)
+                pool_capital = self._pool_capital(pool, trading_capital)
+                opened = self._open_paper_trade(
+                    candidate,
+                    quality,
+                    self._available_capital_for_strategy(strategy_type, trading_capital),
+                    pool_capital,
+                    session_adj,
+                    market_phase,
+                    capital_pool=pool,
+                )
                 if opened:
                     signal_events.append(opened.lifecycle[-1])
         online_learning = await self.learner.update_from_tick(payload, exits, "live" if self.settings.enable_live_trading and not self.settings.paper_trading else "paper")
@@ -334,7 +364,10 @@ class AutoTraderEngine:
                 "exitsThisTick": exits,
             },
             "slippageModel": self._slippage_summary(candidates),
-            "positionSizing": self._position_sizing_summary(candidates, capital.get("tradingCapital", 0)),
+            "positionSizing": {
+                **self._position_sizing_summary(candidates, capital.get("tradingCapital", 0)),
+                "capitalPools": self._capital_pools_summary(capital.get("tradingCapital", 0)),
+            },
             "sessionAdjustments": session_adj,
             "profitLock": profit_lock,
             "paperRiskHalt": risk_halt,
@@ -348,11 +381,15 @@ class AutoTraderEngine:
         }
 
     def status(self) -> dict[str, Any]:
+        capital = float(self.settings.trading_capital_default or 0)
         return {
             "paperTrading": self.settings.paper_trading,
             "shadowTradeAllSignals": self.settings.shadow_trade_all_signals,
             "paperTradingRespectsStop": self.settings.paper_trading_respects_stop,
             "liveTradingEnabled": self.settings.enable_live_trading,
+            "capitalPools": self._capital_pools_summary(capital),
+            "dualCapitalEnabled": self.settings.paper_dual_capital_enabled,
+            "adaptiveExitEnabled": self.settings.paper_ai_adaptive_exit_enabled,
             "openPaperTrades": [trade.to_dict() for trade in self.open_paper.values()],
             "closedPaperTrades": [trade.to_dict() for trade in list(self.closed_paper)[-25:]],
             "orderLifecycle": [event.__dict__ for event in list(self.lifecycle_events)[-50:]],
@@ -1501,10 +1538,102 @@ class AutoTraderEngine:
         result["newsTradingImplication"] = news.get("tradingImplication")
         return result
 
+    def _elite_runner_only_mode(self) -> bool:
+        return bool(self.settings.paper_elite_runner_only or self.settings.paper_high_confidence_only)
+
+    def _is_ultra_elite_runner_entry(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
+        """Ultra-high-profile runner: elite + aligned tape + score≥92 + strong velocity/volume."""
+        runner = runner or candidate.get("runnerSignal") or {}
+        if candidate.get("strategyType") != "EXPLOSIVE_RUNNER":
+            return False
+        if self._is_explosion_chase(candidate, runner):
+            return False
+        if str(runner.get("confidence") or "").upper() != "HIGH":
+            return False
+        if not runner.get("eliteRunner"):
+            return False
+        if not runner.get("momentumAligned"):
+            return False
+        score = float(runner.get("score") or candidate.get("tqs") or 0)
+        min_score = float(self.settings.paper_ultra_elite_min_runner_score)
+        if score < min_score:
+            return False
+        metrics = self._runner_metrics(runner)
+        premium_velocity = float(runner.get("premiumVelocityPct") or metrics.get("premiumVelocity") or 0)
+        volume_accel = float(runner.get("volumeAcceleration") or metrics.get("volumeAcceleration") or 0)
+        if premium_velocity < float(self.settings.paper_ultra_elite_min_velocity_pct):
+            return False
+        if volume_accel < float(self.settings.paper_ultra_elite_min_volume_accel):
+            return False
+        premium = float(candidate.get("lastPremium") or runner.get("premium") or 0)
+        if premium <= 0:
+            return False
+        premium_min = float(self.settings.paper_min_premium_ltp or self.settings.explosive_runner_premium_min)
+        premium_max = float(self.settings.explosive_runner_premium_max)
+        return premium_min <= premium <= premium_max
+
+    def _is_elite_runner_entry(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
+        """High-profile runner gate — ultra-elite when elite-only mode is active."""
+        if self._elite_runner_only_mode():
+            return self._is_ultra_elite_runner_entry(candidate, runner)
+        runner = runner or candidate.get("runnerSignal") or {}
+        if candidate.get("strategyType") != "EXPLOSIVE_RUNNER":
+            return False
+        if self._is_explosion_chase(candidate, runner):
+            return False
+        if str(runner.get("confidence") or "").upper() != "HIGH":
+            return False
+        if not runner.get("eliteRunner"):
+            return False
+        score = float(runner.get("score") or candidate.get("tqs") or 0)
+        min_score = float(self.settings.paper_high_confidence_min_runner_score)
+        if score < min_score:
+            return False
+        metrics = self._runner_metrics(runner)
+        premium_velocity = float(runner.get("premiumVelocityPct") or metrics.get("premiumVelocity") or 0)
+        if premium_velocity < float(self.settings.paper_profit_tier_a_min_velocity_pct):
+            return False
+        premium = float(candidate.get("lastPremium") or runner.get("premium") or 0)
+        if premium <= 0:
+            return False
+        premium_min = float(self.settings.paper_min_premium_ltp or self.settings.explosive_runner_premium_min)
+        premium_max = float(self.settings.explosive_runner_premium_max)
+        return premium_min <= premium <= premium_max
+
+    def _is_scalp_candidate(self, candidate: dict[str, Any]) -> bool:
+        if candidate.get("chopBlocked"):
+            return False
+        premium = float(candidate.get("lastPremium") or 0)
+        if premium <= 0:
+            return False
+        tqs = int(candidate.get("tqs") or 0)
+        return tqs >= int(self.settings.paper_scalping_min_entry_tqs)
+
+    def _prepare_execution_candidate(self, candidate: dict[str, Any]) -> dict[str, Any] | None:
+        """Route weak runners to scalping; only ultra-elite stays explosive."""
+        strategy = str(candidate.get("strategyType") or "SCALP").upper()
+        runner = candidate.get("runnerSignal") or {}
+        if strategy != "EXPLOSIVE_RUNNER":
+            return candidate
+        if self._is_ultra_elite_runner_entry(candidate, runner):
+            return candidate
+        if self.settings.paper_prefer_scalping and self._is_scalp_candidate(candidate):
+            scalp = dict(candidate)
+            scalp["strategyType"] = "SCALP"
+            profile = dict(scalp.get("optimizedProfile") or {})
+            profile["executionStyle"] = "HIGH_WIN_SCALP"
+            profile["targetPoints"] = min(float(profile.get("targetPoints") or self.settings.paper_target_points), float(self.settings.paper_quick_profit_points) + 4.0)
+            profile["stopPoints"] = min(float(profile.get("stopPoints") or self.settings.paper_stop_points), float(self.settings.paper_stop_points))
+            scalp["optimizedProfile"] = profile
+            return scalp
+        return None
+
     def _is_catchable_runner(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
-        """Max-catch mode: enter on any in-range runner with tape activity (target >90% capture)."""
+        """Max-catch mode: enter on in-range runners with tape activity."""
         if not self.settings.paper_max_catch_mode:
             return False
+        if self._elite_runner_only_mode():
+            return self._is_elite_runner_entry(candidate, runner)
         runner = runner or candidate.get("runnerSignal") or {}
         if candidate.get("strategyType") != "EXPLOSIVE_RUNNER":
             return False
@@ -1592,6 +1721,8 @@ class AutoTraderEngine:
         runner = runner or candidate.get("runnerSignal") or {}
         if candidate.get("strategyType") != "EXPLOSIVE_RUNNER":
             return False
+        if self._elite_runner_only_mode():
+            return self._is_elite_runner_entry(candidate, runner)
         premium = float(candidate.get("lastPremium") or runner.get("premium") or 0)
         if premium <= 0 or self._is_explosion_chase(candidate, runner):
             return False
@@ -1669,6 +1800,8 @@ class AutoTraderEngine:
 
     def _runner_entry_bypass(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
         runner = runner or candidate.get("runnerSignal") or {}
+        if self._elite_runner_only_mode():
+            return self._is_elite_runner_entry(candidate, runner)
         loss_guard = self._intraday_loss_guard()
         if loss_guard.get("eliteOnly"):
             if not self._is_profit_tier_entry(candidate, runner):
@@ -1697,16 +1830,8 @@ class AutoTraderEngine:
         return self._is_strong_runner_entry(candidate, runner)
 
     def _is_strong_runner_entry(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
-        """HIGH-confidence elite or momentum burst — bypass chop/breadth/AI gates."""
-        runner = runner or candidate.get("runnerSignal") or {}
-        if candidate.get("strategyType") != "EXPLOSIVE_RUNNER":
-            return False
-        if str(runner.get("confidence") or "").upper() != "HIGH":
-            return False
-        score = float(runner.get("score") or 0)
-        if runner.get("momentumOverride") or self._is_momentum_explosion(candidate, runner):
-            return True
-        return bool(runner.get("eliteRunner") and score >= 80)
+        """HIGH-confidence elite — bypass chop/breadth/AI gates."""
+        return self._is_elite_runner_entry(candidate, runner)
 
     def _runner_metrics(self, runner: dict[str, Any]) -> dict[str, Any]:
         return runner.get("metrics") or {}
@@ -1757,6 +1882,14 @@ class AutoTraderEngine:
             return True, ""
         if not self.settings.paper_high_confidence_only:
             return True, ""
+        if self._elite_runner_only_mode() and candidate.get("strategyType") == "EXPLOSIVE_RUNNER":
+            if self._is_elite_runner_entry(candidate, runner):
+                return True, ""
+            score = float(runner.get("score") or candidate.get("tqs") or 0)
+            return False, (
+                f"elite runner required: confidence={runner.get('confidence')} "
+                f"elite={bool(runner.get('eliteRunner'))} score={score:.0f}"
+            )
         premium = float(candidate.get("lastPremium") or runner.get("premium") or runner.get("lastPremium") or 0)
         max_entry = float(self.settings.paper_momentum_max_entry_premium)
         min_momentum_ltp = float(self.settings.paper_momentum_min_premium_ltp)
@@ -1901,6 +2034,8 @@ class AutoTraderEngine:
         if candidate.get("strategyType") != "EXPLOSIVE_RUNNER":
             return False
         runner = candidate.get("runnerSignal") or {}
+        if self._elite_runner_only_mode():
+            return self._is_elite_runner_entry(candidate, runner)
         if self.settings.paper_max_catch_mode and self._is_catchable_runner(candidate, runner):
             return True
         # MOMENTUM OVERRIDE: premium velocity burst bypasses all score/elite gates
@@ -1947,6 +2082,8 @@ class AutoTraderEngine:
     def _session_entry_allowed(self, candidate: dict[str, Any], session_adj: dict[str, Any], market_phase: str | None = None) -> bool:
         if self._is_tradeable_explosive_runner(candidate, market_phase):
             return True
+        if self._elite_runner_only_mode():
+            return False
         if self._runner_entry_bypass(candidate):
             return True
         runner = candidate.get("runnerSignal") or {}
@@ -2222,6 +2359,8 @@ class AutoTraderEngine:
                 reasons.append("missing effective volume")
         else:
             min_entry_tqs = int(session_adj.get("minEntryTqs") or max(int(self.settings.nifty_opt_min_tqs), int(self.settings.sensex_opt_min_tqs)))
+            if candidate.get("strategyType") != "EXPLOSIVE_RUNNER" and self.settings.paper_dual_capital_enabled:
+                min_entry_tqs = min(min_entry_tqs, int(self.settings.paper_scalping_min_entry_tqs))
             if candidate.get("tqs", 0) < min_entry_tqs:
                 reasons.append(f"TQS below session threshold ({min_entry_tqs})")
             if candidate.get("effectiveVolume", 0) <= 0:
@@ -2232,7 +2371,9 @@ class AutoTraderEngine:
                 if chart_bias == "WAIT":
                     reasons.append("chart analysis says wait")
             min_runner_score = float(session_adj.get("minRunnerScore") or self.settings.explosive_runner_min_score)
-            if momentum_runner:
+            if self._elite_runner_only_mode():
+                min_runner_score = max(min_runner_score, float(self.settings.paper_high_confidence_min_runner_score))
+            elif momentum_runner:
                 min_runner_score = min(min_runner_score, float(self.settings.explosive_runner_momentum_min_score))
             if candidate.get("strategyType") == "EXPLOSIVE_RUNNER" and runner_score < min_runner_score:
                 reasons.append(f"runner score below session threshold ({min_runner_score:g})")
@@ -2250,6 +2391,22 @@ class AutoTraderEngine:
             "aiPrediction": ai_prediction,
         }
 
+    def _quick_profit_sizing_active(self, candidate: dict[str, Any], pool: str, strategy_type: str) -> bool:
+        if not self.settings.paper_quick_profit_enabled:
+            return False
+        if pool == "scalping" or strategy_type == "SCALP":
+            return True
+        return bool(self.settings.paper_quick_profit_size_runners and strategy_type == "EXPLOSIVE_RUNNER")
+
+    def _sizing_per_unit_risk(self, risk_plan: dict[str, float], quality: dict[str, Any], *, quick_profit: bool) -> float:
+        charges_per_unit = float(quality.get("chargesPerUnit") or 0)
+        spread_slip = float(quality.get("spreadCost") or 0) + float(quality.get("slippageEstimate") or 0)
+        if quick_profit:
+            unit_risk = float(self.settings.paper_quick_profit_risk_unit_points)
+        else:
+            unit_risk = float(risk_plan["stopPoints"])
+        return max(0.05, unit_risk + spread_slip + charges_per_unit)
+
     def _open_paper_trade(
         self,
         candidate: dict[str, Any],
@@ -2258,6 +2415,7 @@ class AutoTraderEngine:
         trading_capital: float | None = None,
         session_adj: dict[str, Any] | None = None,
         market_phase: str | None = None,
+        capital_pool: str | None = None,
     ) -> PaperTrade | None:
         session_adj = session_adj or {}
         tradeable_runner = self._is_tradeable_explosive_runner(candidate, market_phase)
@@ -2265,11 +2423,13 @@ class AutoTraderEngine:
         momentum_override = bool(runner_sig.get("momentumOverride") and str(runner_sig.get("confidence") or "").upper() == "HIGH")
         entry_bypass = self._runner_entry_bypass(candidate, runner_sig)
         momentum_explosion = self._is_momentum_explosion(candidate, runner_sig)
+        strategy_type = str(candidate.get("strategyType") or "SCALP")
+        pool = capital_pool or self._capital_pool_for(strategy_type)
         entry_tqs = int(candidate.get("tqs") or 0)
-        if entry_bypass:
+        if entry_bypass or momentum_explosion:
             min_entry_tqs = int(self.settings.paper_momentum_min_entry_tqs)
-        elif momentum_explosion:
-            min_entry_tqs = int(self.settings.paper_momentum_min_entry_tqs)
+        elif not self._is_explosive_strategy(strategy_type) and self.settings.paper_dual_capital_enabled:
+            min_entry_tqs = int(self.settings.paper_scalping_min_entry_tqs)
         else:
             min_entry_tqs = int(self.settings.paper_min_entry_tqs or self.settings.paper_high_confidence_min_tqs)
         if entry_tqs < min_entry_tqs and not momentum_override and not entry_bypass:
@@ -2293,13 +2453,18 @@ class AutoTraderEngine:
         lot_size = max(1, int(candidate.get("lotSize") or 1))
         desired_quantity = int(candidate.get("quantityEstimate") or lot_size)
         risk_plan = self._paper_risk_plan(candidate, quality, premium, session_adj)
+        quick_sizing = self._quick_profit_sizing_active(candidate, pool, strategy_type)
         if available_capital is not None and premium > 0:
             capital = max(0.0, float(trading_capital or 0))
             runner_sig_inner = candidate.get("runnerSignal") or {}
             alloc_boost = 1.5 if runner_sig_inner.get("momentumOverride") else 1.0
-            allocation_pct = float(self.settings.paper_trade_allocation_pct) * float(session_adj.get("allocationPctMultiplier") or 1.0) * alloc_boost
-            if tradeable_runner:
+            if quick_sizing:
+                alloc_boost *= float(self.settings.paper_quick_profit_allocation_boost)
+            allocation_pct = self._allocation_pct_for_pool(pool, session_adj) * alloc_boost
+            if tradeable_runner and not quick_sizing:
                 allocation_pct = min(allocation_pct, float(self.settings.paper_runner_max_allocation_pct))
+            elif tradeable_runner and quick_sizing:
+                allocation_pct = min(allocation_pct, float(self.settings.paper_runner_max_allocation_pct) * float(self.settings.paper_quick_profit_allocation_boost))
             target_allocation = capital * max(0.0, allocation_pct) / 100 if capital > 0 else max(0.0, available_capital)
             min_allocation_pct = float(self.settings.paper_min_trade_allocation_pct)
             if tradeable_runner:
@@ -2307,16 +2472,23 @@ class AutoTraderEngine:
             min_allocation = capital * max(0.0, min_allocation_pct) / 100 if capital > 0 else 0.0
             usable_capital = min(max(0.0, available_capital), target_allocation)
             affordable_lots = int(usable_capital // (premium * lot_size))
-            max_trade_loss_amount = float(self.settings.paper_max_trade_loss_amount or 0)
+            max_trade_loss_amount = float(self.settings.paper_quick_profit_risk_budget_amount if quick_sizing else (self.settings.paper_max_trade_loss_amount or 0))
             max_trade_loss_pct = float(self.settings.paper_max_trade_loss_pct or 0)
             pct_risk_amount = capital * max_trade_loss_pct / 100 if capital > 0 and max_trade_loss_pct > 0 else 0
             risk_budget = min([value for value in [max_trade_loss_amount, pct_risk_amount] if value > 0], default=0)
-            per_unit_risk = max(
-                0.05,
-                float(risk_plan["stopPoints"]) + float(quality.get("spreadCost") or 0) + float(quality.get("slippageEstimate") or 0) + float(quality.get("chargesPerUnit") or 0),
-            )
+            per_unit_risk = self._sizing_per_unit_risk(risk_plan, quality, quick_profit=quick_sizing)
             risk_lots = int(risk_budget // (per_unit_risk * lot_size)) if risk_budget > 0 else affordable_lots
-            quantity = min(desired_quantity, affordable_lots * lot_size, risk_lots * lot_size)
+            max_lots_cap = int(self.settings.paper_quick_profit_max_lots) if quick_sizing else affordable_lots
+            affordable_lots = min(affordable_lots, max_lots_cap)
+            risk_lots = min(risk_lots, max_lots_cap)
+            if quick_sizing:
+                min_lots = int(self.settings.paper_quick_profit_min_lots)
+                target_lots = int(self.settings.paper_quick_profit_target_lots)
+                allowed_lots = min(affordable_lots, risk_lots, max_lots_cap)
+                final_lots = min(allowed_lots, max(min_lots, min(target_lots, allowed_lots)))
+                quantity = final_lots * lot_size
+            else:
+                quantity = min(desired_quantity, affordable_lots * lot_size, risk_lots * lot_size)
             if risk_budget <= 0 and quantity * premium < min_allocation:
                 return None
         else:
@@ -2324,6 +2496,8 @@ class AutoTraderEngine:
         if quantity < lot_size:
             return None
         min_viable_lots = 3
+        if quick_sizing:
+            min_viable_lots = int(self.settings.paper_quick_profit_min_lots)
         cheap_threshold = float(self.settings.paper_cheap_premium_lot_threshold)
         if premium <= cheap_threshold and (entry_bypass or momentum_explosion or momentum_override):
             min_viable_lots = max(1, int(self.settings.paper_runner_min_lots_cheap_premium))
@@ -2345,7 +2519,9 @@ class AutoTraderEngine:
             charges_estimate=float(quality.get("chargesEstimate") or charges),
             opened_at=datetime.now(timezone.utc).isoformat(),
             mode=str(candidate.get("mode")),
-            strategy_type=str(candidate.get("strategyType") or "SCALP"),
+            strategy_type=strategy_type,
+            capital_pool=pool,
+            exit_mode="SCALP_LOCK" if (strategy_type == "EXPLOSIVE_RUNNER" and self.settings.paper_runner_start_scalp_lock) else "AUTO",
             paper_session_id=self.paper_sessions.current_id(),
             target_points=risk_plan["targetPoints"],
             stop_points=risk_plan["stopPoints"],
@@ -2392,12 +2568,34 @@ class AutoTraderEngine:
             stop_points, max_hold_seconds, psych_exit_reason = self._psychology_exit_adjustments(stop_points, psychology, session_max_hold)
             style = str(profile.get("executionStyle") or "GENERIC")
             is_runner = trade.strategy_type == "EXPLOSIVE_RUNNER"
-            if is_runner or style == "RUNNER_BREAKOUT":
-                target_points = max(target_points, self.settings.paper_target_points * 1.5)
+            exit_mode = trade.exit_mode or "AUTO"
+            if is_runner:
+                if exit_mode == "AUTO":
+                    computed = self._adaptive_exit_mode(trade, candidate, age)
+                    if computed == "SCALP_LOCK":
+                        trade.exit_mode = "SCALP_LOCK"
+                        exit_mode = "SCALP_LOCK"
+                        trade.lifecycle.append(
+                            LifecycleEvent(
+                                "MODIFIED",
+                                datetime.now(timezone.utc).isoformat(),
+                                "AI exit mode -> SCALP_LOCK (momentum fade; lock profit via scalp trail)",
+                                {"exitMode": "SCALP_LOCK", "bestPrice": trade.best_price},
+                            )
+                        )
+                    else:
+                        exit_mode = "RUNNER"
+                else:
+                    exit_mode = trade.exit_mode
+            scalp_lock = exit_mode == "SCALP_LOCK" or (not is_runner and style == "HIGH_WIN_SCALP") or (not is_runner and trade.strategy_type == "SCALP")
+            if is_runner and exit_mode != "SCALP_LOCK":
+                target_points = max(target_points, self.settings.paper_target_points * 1.25)
                 max_hold_seconds = max(max_hold_seconds, int(self.settings.paper_runner_max_hold_seconds))
-                breakeven_shift = max(breakeven_shift, target_points * 0.45)
-            elif style == "HIGH_WIN_SCALP":
-                target_points = max(target_points, self.settings.paper_target_points)
+                breakeven_shift = max(breakeven_shift, min(target_points * 0.35, float(self.settings.paper_breakeven_shift_points) + 2.0))
+            elif scalp_lock or style == "HIGH_WIN_SCALP":
+                target_points = min(target_points, max(self.settings.paper_target_points, 8.0))
+                max_hold_seconds = min(max_hold_seconds, int(self.settings.max_paper_trade_seconds))
+                breakeven_shift = min(breakeven_shift, max(4.0, target_points * 0.5))
             if not trade.breakeven_armed and trade.best_price >= trade.entry_price + breakeven_shift:
                 trade.breakeven_armed = True
                 trade.lifecycle.append(LifecycleEvent("MODIFIED", datetime.now(timezone.utc).isoformat(), "breakeven stop armed", {"breakevenAt": trade.entry_price, "bestPrice": trade.best_price}))
@@ -2406,33 +2604,46 @@ class AutoTraderEngine:
                 trade.lifecycle.append(LifecycleEvent("PARTIAL_FILL", datetime.now(timezone.utc).isoformat(), "partial exit threshold reached in paper model", {"partialExitAt": round(partial_exit_at, 2), "bestPrice": trade.best_price}))
             runner_min_hold = int(self.settings.paper_runner_min_hold_seconds)
             target_price = trade.entry_price + target_points
-            scalp_trail = max(2.0, target_points * 0.35)
-            trail_pts = float(trade.trail_points or (target_points * 0.22 if is_runner else scalp_trail))
-            trail_arm_at = max(partial_exit_at, target_points * 0.25)
+            best_gain = max(0.0, (trade.best_price or trade.entry_price) - trade.entry_price)
+            unrealized = current - trade.entry_price
+            scalp_trail = max(1.0, min(3.5, best_gain * 0.35)) if scalp_lock else max(2.0, target_points * 0.35)
+            trail_pts = float(trade.trail_points or (target_points * 0.18 if is_runner and not scalp_lock else scalp_trail))
+            trail_arm_at = max(2.0, min(partial_exit_at, target_points * 0.2)) if scalp_lock else max(partial_exit_at, target_points * 0.25)
             in_profitable_trail = trade.best_price >= trade.entry_price + trail_arm_at
-            if in_profitable_trail and current <= trade.best_price - trail_pts:
+            reason = self._quick_profit_exit_reason(trade, current, age)
+            if not reason and scalp_lock and in_profitable_trail and current <= trade.best_price - trail_pts:
+                reason = "AI adaptive scalp profit lock"
+            elif not reason and in_profitable_trail and current <= trade.best_price - trail_pts:
                 reason = "elite runner trailing max-points lock" if is_runner else "trailing profit lock"
-            elif is_runner and trade.best_price >= target_price and trade.best_price > target_price + trail_pts * 0.25:
+            elif not reason and is_runner and trade.best_price >= target_price and trade.best_price > target_price + trail_pts * 0.25:
                 if current <= trade.best_price - trail_pts:
                     reason = "elite runner trailing max-points lock"
-            elif current >= target_price:
-                reason = "elite runner target profit hit" if is_runner else "target profit hit"
-            elif is_runner and age >= max_hold_seconds:
-                if current > trade.entry_price + 2.0:
-                    pass
+            elif not reason and scalp_lock and current >= trade.entry_price + max(3.0, target_points * 0.5):
+                reason = "AI adaptive scalp target hit"
+            elif not reason and current >= target_price:
+                reason = "elite runner target profit hit" if is_runner and not scalp_lock else "target profit hit"
+            elif not reason and is_runner and not scalp_lock and age >= max_hold_seconds:
+                if current >= trade.entry_price + max(float(self.settings.paper_micro_scalp_min_gain), 2.0):
+                    reason = "runner max hold profit lock"
                 elif current >= trade.entry_price + target_points * 0.35:
                     reason = "elite runner max hold profit lock"
                 else:
                     reason = "runner time stop"
-            elif is_runner and age >= int(self.settings.paper_runner_min_hold_seconds) and current <= trade.entry_price - max(1.0, stop_points * 0.5):
-                reason = "runner early decay stop"
-            elif trade.breakeven_armed and current <= trade.entry_price + 2.0 and (not is_runner or age >= runner_min_hold):
-                reason = "breakeven protection after +8 move"
-            elif current <= trade.entry_price - stop_points:
+            elif not reason and is_runner and not scalp_lock and age >= int(self.settings.paper_runner_min_hold_seconds) and current <= trade.entry_price - max(1.0, stop_points * 0.5):
+                if unrealized < max(1.5, float(self.settings.paper_micro_scalp_min_gain) * 0.5) and best_gain < float(self.settings.paper_micro_scalp_min_gain):
+                    reason = "runner early decay stop"
+            elif not reason and scalp_lock and age >= min(max_hold_seconds, 120) and current > trade.entry_price + 1.0:
+                reason = "AI adaptive scalp time lock"
+            elif not reason and trade.breakeven_armed and current <= trade.entry_price + 1.5 and (not is_runner or age >= runner_min_hold):
+                reason = "breakeven protection after profit move"
+            elif not reason and current <= trade.entry_price - stop_points:
                 reason = psych_exit_reason or "momentum decay or delta reversal stop"
-            elif age >= max_hold_seconds:
-                reason = "psychology shortened time stop" if max_hold_seconds < self.settings.max_paper_trade_seconds else "time stop"
-            elif self._should_chop_exit(trade, candidate, age):
+            elif not reason and age >= max_hold_seconds:
+                if unrealized >= max(2.0, float(self.settings.paper_micro_scalp_min_gain)):
+                    reason = "time stop profit lock"
+                else:
+                    reason = "psychology shortened time stop" if max_hold_seconds < self.settings.max_paper_trade_seconds else "time stop"
+            elif not reason and self._should_chop_exit(trade, candidate, age):
                 reason = "liquidity rejection / chop filter exit"
             if reason:
                 trade.status = "EXITED"
@@ -2537,9 +2748,134 @@ class AutoTraderEngine:
         min_hold = max(0, int(self.settings.paper_min_hold_before_chop_exit_seconds))
         return age_seconds >= min_hold
 
+    def _is_explosive_strategy(self, strategy_type: str | None) -> bool:
+        return str(strategy_type or "").upper() == "EXPLOSIVE_RUNNER"
+
+    def _capital_pool_for(self, strategy_type: str | None) -> str:
+        return "explosive" if self._is_explosive_strategy(strategy_type) else "scalping"
+
+    def _pool_capital(self, pool: str, trading_capital: float | None = None) -> float:
+        if not self.settings.paper_dual_capital_enabled:
+            return float(trading_capital or self.settings.trading_capital_default or 0)
+        if pool == "explosive":
+            return float(self.settings.paper_explosive_capital or 0)
+        return float(self.settings.paper_scalping_capital or 0)
+
+    def _capital_pools_summary(self, trading_capital: float | None = None) -> dict[str, Any]:
+        total = float(trading_capital or self.settings.trading_capital_default or 0)
+        if not self.settings.paper_dual_capital_enabled:
+            return {
+                "enabled": False,
+                "totalCapital": total,
+                "scalping": {"capital": total, "used": self._used_capital_in_pool("scalping"), "openTrades": self._open_trades_in_pool("scalping")},
+                "explosive": {"capital": total, "used": self._used_capital_in_pool("explosive"), "openTrades": self._open_trades_in_pool("explosive")},
+            }
+        scalp_cap = float(self.settings.paper_scalping_capital or 0)
+        explosive_cap = float(self.settings.paper_explosive_capital or 0)
+        return {
+            "enabled": True,
+            "totalCapital": round(scalp_cap + explosive_cap, 2),
+            "scalping": {
+                "capital": scalp_cap,
+                "used": round(self._used_capital_in_pool("scalping"), 2),
+                "available": round(max(0.0, scalp_cap - self._used_capital_in_pool("scalping")), 2),
+                "openTrades": self._open_trades_in_pool("scalping"),
+                "maxOpenTrades": int(self.settings.paper_scalping_max_open_trades),
+                "allocationPct": float(self.settings.paper_scalping_allocation_pct),
+            },
+            "explosive": {
+                "capital": explosive_cap,
+                "used": round(self._used_capital_in_pool("explosive"), 2),
+                "available": round(max(0.0, explosive_cap - self._used_capital_in_pool("explosive")), 2),
+                "openTrades": self._open_trades_in_pool("explosive"),
+                "maxOpenTrades": int(self.settings.paper_explosive_max_open_trades),
+                "allocationPct": float(self.settings.paper_explosive_allocation_pct),
+            },
+        }
+
+    def _used_capital_in_pool(self, pool: str) -> float:
+        return sum(
+            max(0.0, trade.entry_price) * max(0, trade.quantity)
+            for trade in self.open_paper.values()
+            if self._capital_pool_for(trade.strategy_type) == pool
+        )
+
+    def _open_trades_in_pool(self, pool: str) -> int:
+        return sum(1 for trade in self.open_paper.values() if self._capital_pool_for(trade.strategy_type) == pool)
+
+    def _max_open_for_pool(self, pool: str) -> int:
+        if not self.settings.paper_dual_capital_enabled:
+            return int(self.settings.paper_max_open_trades)
+        if pool == "explosive":
+            return int(self.settings.paper_explosive_max_open_trades)
+        return int(self.settings.paper_scalping_max_open_trades)
+
+    def _allocation_pct_for_pool(self, pool: str, session_adj: dict[str, Any] | None = None) -> float:
+        session_adj = session_adj or {}
+        multiplier = float(session_adj.get("allocationPctMultiplier") or 1.0)
+        if not self.settings.paper_dual_capital_enabled:
+            return float(self.settings.paper_trade_allocation_pct) * multiplier
+        base = float(self.settings.paper_explosive_allocation_pct if pool == "explosive" else self.settings.paper_scalping_allocation_pct)
+        return base * multiplier
+
     def _available_capital(self, trading_capital: float) -> float:
+        if self.settings.paper_dual_capital_enabled:
+            scalp = max(0.0, self._pool_capital("scalping", trading_capital) - self._used_capital_in_pool("scalping"))
+            explosive = max(0.0, self._pool_capital("explosive", trading_capital) - self._used_capital_in_pool("explosive"))
+            return scalp + explosive
         used = sum(max(0.0, trade.entry_price) * max(0, trade.quantity) for trade in self.open_paper.values())
         return max(0.0, float(trading_capital or 0) - used)
+
+    def _available_capital_for_strategy(self, strategy_type: str, trading_capital: float) -> float:
+        pool = self._capital_pool_for(strategy_type)
+        pool_cap = self._pool_capital(pool, trading_capital)
+        return max(0.0, pool_cap - self._used_capital_in_pool(pool))
+
+    def _adaptive_exit_mode(self, trade: PaperTrade, candidate: dict[str, Any], age: float) -> str:
+        if not self.settings.paper_ai_adaptive_exit_enabled or not self._is_explosive_strategy(trade.strategy_type):
+            return "RUNNER" if self._is_explosive_strategy(trade.strategy_type) else "SCALP"
+        runner = (candidate or {}).get("runnerSignal") or {}
+        metrics = runner.get("metrics") or {}
+        premium_velocity = float(runner.get("premiumVelocityPct") or metrics.get("premiumVelocity") or 0)
+        runner_score = float(runner.get("score") or 0)
+        best_gain = max(0.0, (trade.best_price or trade.entry_price) - trade.entry_price)
+        min_gain = float(self.settings.paper_adaptive_scalp_lock_min_gain_points)
+        fade_vel = float(self.settings.paper_adaptive_momentum_fade_velocity_pct)
+        had_profit = best_gain >= max(min_gain, trade.target_points * 0.12)
+        momentum_fading = premium_velocity < fade_vel
+        score_decay = runner_score < 55 and had_profit
+        current = float(candidate.get("lastPremium") or candidate.get("premium") or 0)
+        unrealized = current - trade.entry_price
+        giveback = had_profit and best_gain > 0 and unrealized < best_gain * (1.0 - float(self.settings.paper_micro_scalp_giveback_pct))
+        quick_age = age >= float(self.settings.paper_runner_quick_lock_seconds)
+        if had_profit and (momentum_fading or score_decay or giveback or quick_age):
+            return "SCALP_LOCK"
+        return "RUNNER"
+
+    def _quick_profit_exit_reason(self, trade: PaperTrade, current: float, age: float) -> str | None:
+        """Book small profits quickly instead of waiting for wide runner targets."""
+        if not self.settings.paper_quick_profit_enabled:
+            return None
+        entry = float(trade.entry_price)
+        best = float(trade.best_price or entry)
+        best_gain = max(0.0, best - entry)
+        unrealized = current - entry
+        min_move = float(self.settings.min_required_move_points) + 0.5
+        micro_min = max(float(self.settings.paper_micro_scalp_min_gain), min_move)
+        micro_trail = max(1.0, float(self.settings.paper_micro_scalp_trail_points))
+        quick_target = max(micro_min, float(self.settings.paper_quick_profit_points))
+        giveback_floor = 1.0 - float(self.settings.paper_micro_scalp_giveback_pct)
+        if current >= entry + quick_target:
+            return "quick profit target hit"
+        if best_gain >= micro_min:
+            if current <= best - micro_trail:
+                return "micro scalp profit lock"
+            if unrealized >= min_move and unrealized < best_gain * giveback_floor:
+                return "micro scalp giveback lock"
+        if age >= float(self.settings.paper_runner_quick_lock_seconds) and unrealized >= min_move:
+            if current <= best - micro_trail or unrealized < best_gain * giveback_floor:
+                return "time-based quick profit lock"
+        return None
 
     def _paper_risk_halt(self, trading_capital: float | None = None, session_adj: dict[str, Any] | None = None) -> dict[str, Any]:
         session_adj = session_adj or {}

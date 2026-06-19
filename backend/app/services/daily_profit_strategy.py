@@ -57,10 +57,10 @@ def build_daily_improvement_plan(
         pf_est = max(0.2, rolling_pf)
         phase = "DEFENSIVE"
 
-    min_runner_score = 72.0
-    min_velocity_pct = 2.0
-    min_volume_accel = 25.0
-    allow_tier_b = True
+    min_runner_score = 92.0
+    min_velocity_pct = 3.0
+    min_volume_accel = 30.0
+    allow_tier_b = False
     allow_tier_c = False
     blocked_sides: list[str] = []
     blocked_buckets: list[str] = []
@@ -81,11 +81,11 @@ def build_daily_improvement_plan(
             allow_tier_c = False
             actions.append(f"Rolling PF {rolling_pf:.2f} below target {target_profit_factor} — A/A+ only.")
         else:
-            min_runner_score = 70.0
-            min_velocity_pct = 1.8
-            allow_tier_b = True
-            allow_tier_c = rolling_wr >= 40
-            actions.append(f"Edge proven (PF {rolling_pf:.2f}) — allow wider A-tier capture.")
+            min_runner_score = 88.0
+            min_velocity_pct = 2.5
+            allow_tier_b = False
+            allow_tier_c = False
+            actions.append(f"Edge proven (PF {rolling_pf:.2f}) — elite runners only (score≥88).")
 
         if rolling_wr < 35:
             min_runner_score = max(min_runner_score, 78.0)
@@ -119,10 +119,7 @@ def build_daily_improvement_plan(
     if missed_count > 30 and rolling_pf >= target_profit_factor:
         actions.append(f"{missed_count} near-misses logged — edge OK; selective capture preferred over blind volume.")
     elif missed_count > 30 and rolling_pf >= 1.0 and rolling_trades >= min_trades_for_calibration:
-        allow_tier_b = True
-        min_runner_score = min(min_runner_score, 75.0)
-        min_velocity_pct = min(min_velocity_pct, 1.8)
-        actions.append(f"{missed_count} near-misses logged — allow Tier B only while rolling PF >= 1.0.")
+        actions.append(f"{missed_count} near-misses logged — elite-only mode; no tier loosening.")
 
     if not actions:
         actions.append("Collect more paper trades (target 8+) for full daily calibration.")
