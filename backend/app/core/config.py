@@ -121,8 +121,8 @@ class Settings(BaseSettings):
     paper_explosive_capital: float = 350000.0
     paper_scalping_max_open_trades: int = 2
     paper_explosive_max_open_trades: int = 2
-    paper_scalping_allocation_pct: float = 15.0
-    paper_explosive_allocation_pct: float = 12.0
+    paper_scalping_allocation_pct: float = 22.0
+    paper_explosive_allocation_pct: float = 18.0
     paper_scalping_min_entry_tqs: int = 55
     paper_ai_adaptive_exit_enabled: bool = True
     paper_adaptive_scalp_lock_min_gain_points: float = 3.0
@@ -133,6 +133,13 @@ class Settings(BaseSettings):
     paper_micro_scalp_trail_points: float = 1.25
     paper_micro_scalp_giveback_pct: float = 0.4
     paper_runner_quick_lock_seconds: float = 40.0
+    paper_quick_profit_min_lots: int = 6
+    paper_quick_profit_target_lots: int = 10
+    paper_quick_profit_max_lots: int = 15
+    paper_quick_profit_allocation_boost: float = 1.8
+    paper_quick_profit_risk_unit_points: float = 3.5
+    paper_quick_profit_risk_budget_amount: float = 15000.0
+    paper_quick_profit_size_runners: bool = True
     paper_same_side_entry_cooldown_seconds: int = 900
     paper_same_side_loss_cooldown_seconds: int = 1800
     paper_ai_min_win_probability_pct: float = 65.0
@@ -204,7 +211,7 @@ class Settings(BaseSettings):
     paper_cheap_premium_lot_threshold: float = 80.0
     option_velocity_window_seconds: float = 10.0
     near_expiry_runner_emit_limit: int = 3
-    paper_runner_max_allocation_pct: float = 15.0
+    paper_runner_max_allocation_pct: float = 22.0
     paper_runner_target_premium_pct: float = 35.0
     paper_runner_max_target_premium_pct: float = 55.0
     paper_runner_trail_retain_pct: float = 45.0

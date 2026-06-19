@@ -2280,6 +2280,22 @@ class AutoTraderEngine:
             "aiPrediction": ai_prediction,
         }
 
+    def _quick_profit_sizing_active(self, candidate: dict[str, Any], pool: str, strategy_type: str) -> bool:
+        if not self.settings.paper_quick_profit_enabled:
+            return False
+        if pool == "scalping" or strategy_type == "SCALP":
+            return True
+        return bool(self.settings.paper_quick_profit_size_runners and strategy_type == "EXPLOSIVE_RUNNER")
+
+    def _sizing_per_unit_risk(self, risk_plan: dict[str, float], quality: dict[str, Any], *, quick_profit: bool) -> float:
+        charges_per_unit = float(quality.get("chargesPerUnit") or 0)
+        spread_slip = float(quality.get("spreadCost") or 0) + float(quality.get("slippageEstimate") or 0)
+        if quick_profit:
+            unit_risk = float(self.settings.paper_quick_profit_risk_unit_points)
+        else:
+            unit_risk = float(risk_plan["stopPoints"])
+        return max(0.05, unit_risk + spread_slip + charges_per_unit)
+
     def _open_paper_trade(
         self,
         candidate: dict[str, Any],
@@ -2326,13 +2342,18 @@ class AutoTraderEngine:
         lot_size = max(1, int(candidate.get("lotSize") or 1))
         desired_quantity = int(candidate.get("quantityEstimate") or lot_size)
         risk_plan = self._paper_risk_plan(candidate, quality, premium, session_adj)
+        quick_sizing = self._quick_profit_sizing_active(candidate, pool, strategy_type)
         if available_capital is not None and premium > 0:
             capital = max(0.0, float(trading_capital or 0))
             runner_sig_inner = candidate.get("runnerSignal") or {}
             alloc_boost = 1.5 if runner_sig_inner.get("momentumOverride") else 1.0
+            if quick_sizing:
+                alloc_boost *= float(self.settings.paper_quick_profit_allocation_boost)
             allocation_pct = self._allocation_pct_for_pool(pool, session_adj) * alloc_boost
-            if tradeable_runner:
+            if tradeable_runner and not quick_sizing:
                 allocation_pct = min(allocation_pct, float(self.settings.paper_runner_max_allocation_pct))
+            elif tradeable_runner and quick_sizing:
+                allocation_pct = min(allocation_pct, float(self.settings.paper_runner_max_allocation_pct) * float(self.settings.paper_quick_profit_allocation_boost))
             target_allocation = capital * max(0.0, allocation_pct) / 100 if capital > 0 else max(0.0, available_capital)
             min_allocation_pct = float(self.settings.paper_min_trade_allocation_pct)
             if tradeable_runner:
@@ -2340,16 +2361,23 @@ class AutoTraderEngine:
             min_allocation = capital * max(0.0, min_allocation_pct) / 100 if capital > 0 else 0.0
             usable_capital = min(max(0.0, available_capital), target_allocation)
             affordable_lots = int(usable_capital // (premium * lot_size))
-            max_trade_loss_amount = float(self.settings.paper_max_trade_loss_amount or 0)
+            max_trade_loss_amount = float(self.settings.paper_quick_profit_risk_budget_amount if quick_sizing else (self.settings.paper_max_trade_loss_amount or 0))
             max_trade_loss_pct = float(self.settings.paper_max_trade_loss_pct or 0)
             pct_risk_amount = capital * max_trade_loss_pct / 100 if capital > 0 and max_trade_loss_pct > 0 else 0
             risk_budget = min([value for value in [max_trade_loss_amount, pct_risk_amount] if value > 0], default=0)
-            per_unit_risk = max(
-                0.05,
-                float(risk_plan["stopPoints"]) + float(quality.get("spreadCost") or 0) + float(quality.get("slippageEstimate") or 0) + float(quality.get("chargesPerUnit") or 0),
-            )
+            per_unit_risk = self._sizing_per_unit_risk(risk_plan, quality, quick_profit=quick_sizing)
             risk_lots = int(risk_budget // (per_unit_risk * lot_size)) if risk_budget > 0 else affordable_lots
-            quantity = min(desired_quantity, affordable_lots * lot_size, risk_lots * lot_size)
+            max_lots_cap = int(self.settings.paper_quick_profit_max_lots) if quick_sizing else affordable_lots
+            affordable_lots = min(affordable_lots, max_lots_cap)
+            risk_lots = min(risk_lots, max_lots_cap)
+            if quick_sizing:
+                min_lots = int(self.settings.paper_quick_profit_min_lots)
+                target_lots = int(self.settings.paper_quick_profit_target_lots)
+                allowed_lots = min(affordable_lots, risk_lots, max_lots_cap)
+                final_lots = min(allowed_lots, max(min_lots, min(target_lots, allowed_lots)))
+                quantity = final_lots * lot_size
+            else:
+                quantity = min(desired_quantity, affordable_lots * lot_size, risk_lots * lot_size)
             if risk_budget <= 0 and quantity * premium < min_allocation:
                 return None
         else:
@@ -2357,6 +2385,8 @@ class AutoTraderEngine:
         if quantity < lot_size:
             return None
         min_viable_lots = 3
+        if quick_sizing:
+            min_viable_lots = int(self.settings.paper_quick_profit_min_lots)
         cheap_threshold = float(self.settings.paper_cheap_premium_lot_threshold)
         if premium <= cheap_threshold and (entry_bypass or momentum_explosion or momentum_override):
             min_viable_lots = max(1, int(self.settings.paper_runner_min_lots_cheap_premium))
