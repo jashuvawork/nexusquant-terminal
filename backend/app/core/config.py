@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     finnhub_api_key: str | None = None
     news_provider: str = "finnhub"
     upstox_news_enabled: bool = False
-    snapshot_cache_seconds: float = 0.0
+    snapshot_cache_seconds: float = 10.0
     account_snapshot_cache_seconds: float = 30.0
     expiry_cache_seconds: float = 3600.0
     market_snapshot_instrument_keys: str = (
@@ -208,7 +208,7 @@ class Settings(BaseSettings):
     paper_min_hold_before_chop_exit_seconds: int = 45
     paper_trading_respects_stop: bool = False
     shadow_trade_all_signals: bool = False
-    market_poll_seconds: float = 1.0
+    market_poll_seconds: float = 8.0
     near_expiry_runner_enabled: bool = True
     near_expiry_runner_max_days: int = 7
     websocket_heartbeat_seconds: float = 10.0

@@ -414,6 +414,7 @@ class RealTimeMarketEngine:
                 trade_mode=trade_mode,
                 execution_allowed=execution_allowed,
                 trading_capital=explosive_capital,
+                option_bias=option_bias,
                 safe_mode=risk_decision.safe_mode,
                 optimized_profile=optimized_profile,
                 chart_analysis=chart_analysis,
