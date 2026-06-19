@@ -1342,7 +1342,7 @@ class RealTimeMarketEngine:
             momentum_surge = bool(signal.get("momentumSurge"))
             momentum_override = bool(signal.get("momentumOverride"))
             confidence = str(signal.get("confidence") or "").upper()
-            if self.settings.paper_max_catch_mode:
+            if self.settings.paper_max_catch_mode and not self.settings.paper_elite_runner_only:
                 premium = as_float(signal.get("premium") or signal.get("lastPremium"))
                 if score < catch_min or premium <= 0 or not (premium_min <= premium <= premium_max):
                     continue
@@ -1359,9 +1359,7 @@ class RealTimeMarketEngine:
                     continue
                 if not signal.get("candidate") and not momentum_surge and not momentum_override:
                     continue
-                if momentum_override:
-                    pass
-                elif confidence != "HIGH" or not signal.get("eliteRunner"):
+                if not signal.get("eliteRunner") or confidence != "HIGH":
                     continue
             premium = as_float(signal.get("premium") or signal.get("lastPremium"))
             risk_capital = trading_capital * max(0, self.settings.max_exposure_pct) / 100 if trading_capital > 0 else 0

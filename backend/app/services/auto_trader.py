@@ -261,13 +261,17 @@ class AutoTraderEngine:
                 reason_text = str(quality.get("reason") or "")
                 is_position_limit = any(s in reason_text.lower() for s in ["max open", "max capacity", "already has an open", "hard cap"])
                 is_chase = "chase blocked" in reason_text.lower()
+                is_hard_block = self._is_hard_quality_block(reason_text)
                 explosion_entry = self._runner_entry_bypass(candidate)
                 can_bypass = (
-                    (explosion_entry and not is_position_limit and not is_chase)
-                    or (self._runner_may_bypass_quality(candidate, reason_text, market_phase) and not is_position_limit)
+                    not is_hard_block
+                    and (
+                        (explosion_entry and not is_position_limit and not is_chase)
+                        or (self._runner_may_bypass_quality(candidate, reason_text, market_phase) and not is_position_limit)
+                    )
                 )
                 if can_bypass:
-                    pass
+                    quality = {**quality, "blocked": False, "paperEligible": True, "reason": f"runner quality bypass ({reason_text})"}
                 elif self.settings.paper_trading and self.settings.shadow_trade_all_signals:
                     skipped.append({"candidate": candidate.get("id"), "reason": quality["reason"], "quality": quality})
                     quality = {**quality, "shadowOverride": True, "reason": f"SHADOW despite: {quality['reason']}"}
@@ -1529,10 +1533,41 @@ class AutoTraderEngine:
         result["newsTradingImplication"] = news.get("tradingImplication")
         return result
 
+    def _elite_runner_only_mode(self) -> bool:
+        return bool(self.settings.paper_elite_runner_only or self.settings.paper_high_confidence_only)
+
+    def _is_elite_runner_entry(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
+        """High-profile runner only: elite tape + HIGH confidence + score/velocity floor."""
+        runner = runner or candidate.get("runnerSignal") or {}
+        if candidate.get("strategyType") != "EXPLOSIVE_RUNNER":
+            return False
+        if self._is_explosion_chase(candidate, runner):
+            return False
+        if str(runner.get("confidence") or "").upper() != "HIGH":
+            return False
+        if not runner.get("eliteRunner"):
+            return False
+        score = float(runner.get("score") or candidate.get("tqs") or 0)
+        min_score = float(self.settings.paper_high_confidence_min_runner_score)
+        if score < min_score:
+            return False
+        metrics = self._runner_metrics(runner)
+        premium_velocity = float(runner.get("premiumVelocityPct") or metrics.get("premiumVelocity") or 0)
+        if premium_velocity < float(self.settings.paper_profit_tier_a_min_velocity_pct):
+            return False
+        premium = float(candidate.get("lastPremium") or runner.get("premium") or 0)
+        if premium <= 0:
+            return False
+        premium_min = float(self.settings.paper_min_premium_ltp or self.settings.explosive_runner_premium_min)
+        premium_max = float(self.settings.explosive_runner_premium_max)
+        return premium_min <= premium <= premium_max
+
     def _is_catchable_runner(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
-        """Max-catch mode: enter on any in-range runner with tape activity (target >90% capture)."""
+        """Max-catch mode: enter on in-range runners with tape activity."""
         if not self.settings.paper_max_catch_mode:
             return False
+        if self._elite_runner_only_mode():
+            return self._is_elite_runner_entry(candidate, runner)
         runner = runner or candidate.get("runnerSignal") or {}
         if candidate.get("strategyType") != "EXPLOSIVE_RUNNER":
             return False
@@ -1620,6 +1655,8 @@ class AutoTraderEngine:
         runner = runner or candidate.get("runnerSignal") or {}
         if candidate.get("strategyType") != "EXPLOSIVE_RUNNER":
             return False
+        if self._elite_runner_only_mode():
+            return self._is_elite_runner_entry(candidate, runner)
         premium = float(candidate.get("lastPremium") or runner.get("premium") or 0)
         if premium <= 0 or self._is_explosion_chase(candidate, runner):
             return False
@@ -1697,6 +1734,8 @@ class AutoTraderEngine:
 
     def _runner_entry_bypass(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
         runner = runner or candidate.get("runnerSignal") or {}
+        if self._elite_runner_only_mode():
+            return self._is_elite_runner_entry(candidate, runner)
         loss_guard = self._intraday_loss_guard()
         if loss_guard.get("eliteOnly"):
             if not self._is_profit_tier_entry(candidate, runner):
@@ -1725,16 +1764,8 @@ class AutoTraderEngine:
         return self._is_strong_runner_entry(candidate, runner)
 
     def _is_strong_runner_entry(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
-        """HIGH-confidence elite or momentum burst — bypass chop/breadth/AI gates."""
-        runner = runner or candidate.get("runnerSignal") or {}
-        if candidate.get("strategyType") != "EXPLOSIVE_RUNNER":
-            return False
-        if str(runner.get("confidence") or "").upper() != "HIGH":
-            return False
-        score = float(runner.get("score") or 0)
-        if runner.get("momentumOverride") or self._is_momentum_explosion(candidate, runner):
-            return True
-        return bool(runner.get("eliteRunner") and score >= 80)
+        """HIGH-confidence elite — bypass chop/breadth/AI gates."""
+        return self._is_elite_runner_entry(candidate, runner)
 
     def _runner_metrics(self, runner: dict[str, Any]) -> dict[str, Any]:
         return runner.get("metrics") or {}
@@ -1785,6 +1816,14 @@ class AutoTraderEngine:
             return True, ""
         if not self.settings.paper_high_confidence_only:
             return True, ""
+        if self._elite_runner_only_mode() and candidate.get("strategyType") == "EXPLOSIVE_RUNNER":
+            if self._is_elite_runner_entry(candidate, runner):
+                return True, ""
+            score = float(runner.get("score") or candidate.get("tqs") or 0)
+            return False, (
+                f"elite runner required: confidence={runner.get('confidence')} "
+                f"elite={bool(runner.get('eliteRunner'))} score={score:.0f}"
+            )
         premium = float(candidate.get("lastPremium") or runner.get("premium") or runner.get("lastPremium") or 0)
         max_entry = float(self.settings.paper_momentum_max_entry_premium)
         min_momentum_ltp = float(self.settings.paper_momentum_min_premium_ltp)
@@ -1929,6 +1968,8 @@ class AutoTraderEngine:
         if candidate.get("strategyType") != "EXPLOSIVE_RUNNER":
             return False
         runner = candidate.get("runnerSignal") or {}
+        if self._elite_runner_only_mode():
+            return self._is_elite_runner_entry(candidate, runner)
         if self.settings.paper_max_catch_mode and self._is_catchable_runner(candidate, runner):
             return True
         # MOMENTUM OVERRIDE: premium velocity burst bypasses all score/elite gates
@@ -1975,6 +2016,8 @@ class AutoTraderEngine:
     def _session_entry_allowed(self, candidate: dict[str, Any], session_adj: dict[str, Any], market_phase: str | None = None) -> bool:
         if self._is_tradeable_explosive_runner(candidate, market_phase):
             return True
+        if self._elite_runner_only_mode():
+            return False
         if self._runner_entry_bypass(candidate):
             return True
         runner = candidate.get("runnerSignal") or {}
@@ -2262,7 +2305,9 @@ class AutoTraderEngine:
                 if chart_bias == "WAIT":
                     reasons.append("chart analysis says wait")
             min_runner_score = float(session_adj.get("minRunnerScore") or self.settings.explosive_runner_min_score)
-            if momentum_runner:
+            if self._elite_runner_only_mode():
+                min_runner_score = max(min_runner_score, float(self.settings.paper_high_confidence_min_runner_score))
+            elif momentum_runner:
                 min_runner_score = min(min_runner_score, float(self.settings.explosive_runner_momentum_min_score))
             if candidate.get("strategyType") == "EXPLOSIVE_RUNNER" and runner_score < min_runner_score:
                 reasons.append(f"runner score below session threshold ({min_runner_score:g})")
