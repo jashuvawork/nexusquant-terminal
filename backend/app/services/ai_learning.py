@@ -30,9 +30,10 @@ PRETRAINED_PRIOR = {
         "market_profile_alignment": 0.04,
     },
     "sessionPriors": {
-        "OPEN_DRIVE": {"minimumTqsBias": -4, "cooldownBiasSeconds": -5, "sizeBias": 1.15},
+        "OPEN_DRIVE": {"minimumTqsBias": 8, "cooldownBiasSeconds": 25, "sizeBias": 0.55},
+        "NORMAL": {"minimumTqsBias": 8, "cooldownBiasSeconds": 25, "sizeBias": 0.55},
         "MIDDAY_CHOP": {"minimumTqsBias": 8, "cooldownBiasSeconds": 25, "sizeBias": 0.55},
-        "CLOSING_MOMENTUM": {"minimumTqsBias": 2, "cooldownBiasSeconds": 0, "sizeBias": 0.9},
+        "CLOSING_MOMENTUM": {"minimumTqsBias": 8, "cooldownBiasSeconds": 25, "sizeBias": 0.55},
         "CLOSED": {"minimumTqsBias": 99, "cooldownBiasSeconds": 60, "sizeBias": 0},
         "PREMARKET": {"minimumTqsBias": 99, "cooldownBiasSeconds": 60, "sizeBias": 0},
     },
