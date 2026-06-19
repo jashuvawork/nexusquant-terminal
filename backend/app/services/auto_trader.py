@@ -2446,11 +2446,11 @@ class AutoTraderEngine:
                         exit_mode = "RUNNER"
                 else:
                     exit_mode = trade.exit_mode
-            scalp_lock = exit_mode == "SCALP_LOCK" or (not is_runner and style == "HIGH_WIN_SCALP")
+            scalp_lock = exit_mode == "SCALP_LOCK" or (not is_runner and style == "HIGH_WIN_SCALP") or (not is_runner and trade.strategy_type == "SCALP")
             if is_runner and exit_mode != "SCALP_LOCK":
-                target_points = max(target_points, self.settings.paper_target_points * 1.5)
+                target_points = max(target_points, self.settings.paper_target_points * 1.25)
                 max_hold_seconds = max(max_hold_seconds, int(self.settings.paper_runner_max_hold_seconds))
-                breakeven_shift = max(breakeven_shift, target_points * 0.45)
+                breakeven_shift = max(breakeven_shift, min(target_points * 0.35, float(self.settings.paper_breakeven_shift_points) + 2.0))
             elif scalp_lock or style == "HIGH_WIN_SCALP":
                 target_points = min(target_points, max(self.settings.paper_target_points, 8.0))
                 max_hold_seconds = min(max_hold_seconds, int(self.settings.max_paper_trade_seconds))
@@ -2464,39 +2464,45 @@ class AutoTraderEngine:
             runner_min_hold = int(self.settings.paper_runner_min_hold_seconds)
             target_price = trade.entry_price + target_points
             best_gain = max(0.0, (trade.best_price or trade.entry_price) - trade.entry_price)
-            scalp_trail = max(2.0, min(5.0, best_gain * 0.3)) if scalp_lock else max(2.0, target_points * 0.35)
-            trail_pts = float(trade.trail_points or (target_points * 0.22 if is_runner and not scalp_lock else scalp_trail))
-            trail_arm_at = max(partial_exit_at, target_points * 0.25) if not scalp_lock else max(2.0, best_gain * 0.35)
+            unrealized = current - trade.entry_price
+            scalp_trail = max(1.0, min(3.5, best_gain * 0.35)) if scalp_lock else max(2.0, target_points * 0.35)
+            trail_pts = float(trade.trail_points or (target_points * 0.18 if is_runner and not scalp_lock else scalp_trail))
+            trail_arm_at = max(2.0, min(partial_exit_at, target_points * 0.2)) if scalp_lock else max(partial_exit_at, target_points * 0.25)
             in_profitable_trail = trade.best_price >= trade.entry_price + trail_arm_at
-            if scalp_lock and in_profitable_trail and current <= trade.best_price - trail_pts:
+            reason = self._quick_profit_exit_reason(trade, current, age)
+            if not reason and scalp_lock and in_profitable_trail and current <= trade.best_price - trail_pts:
                 reason = "AI adaptive scalp profit lock"
-            elif in_profitable_trail and current <= trade.best_price - trail_pts:
+            elif not reason and in_profitable_trail and current <= trade.best_price - trail_pts:
                 reason = "elite runner trailing max-points lock" if is_runner else "trailing profit lock"
-            elif is_runner and trade.best_price >= target_price and trade.best_price > target_price + trail_pts * 0.25:
+            elif not reason and is_runner and trade.best_price >= target_price and trade.best_price > target_price + trail_pts * 0.25:
                 if current <= trade.best_price - trail_pts:
                     reason = "elite runner trailing max-points lock"
-            elif scalp_lock and current >= trade.entry_price + max(4.0, target_points * 0.6):
+            elif not reason and scalp_lock and current >= trade.entry_price + max(3.0, target_points * 0.5):
                 reason = "AI adaptive scalp target hit"
-            elif current >= target_price:
+            elif not reason and current >= target_price:
                 reason = "elite runner target profit hit" if is_runner and not scalp_lock else "target profit hit"
-            elif is_runner and not scalp_lock and age >= max_hold_seconds:
-                if current > trade.entry_price + 2.0:
-                    pass
+            elif not reason and is_runner and not scalp_lock and age >= max_hold_seconds:
+                if current >= trade.entry_price + max(float(self.settings.paper_micro_scalp_min_gain), 2.0):
+                    reason = "runner max hold profit lock"
                 elif current >= trade.entry_price + target_points * 0.35:
                     reason = "elite runner max hold profit lock"
                 else:
                     reason = "runner time stop"
-            elif is_runner and not scalp_lock and age >= int(self.settings.paper_runner_min_hold_seconds) and current <= trade.entry_price - max(1.0, stop_points * 0.5):
-                reason = "runner early decay stop"
-            elif scalp_lock and age >= min(max_hold_seconds, 180) and current > trade.entry_price + 1.5:
+            elif not reason and is_runner and not scalp_lock and age >= int(self.settings.paper_runner_min_hold_seconds) and current <= trade.entry_price - max(1.0, stop_points * 0.5):
+                if unrealized < max(1.5, float(self.settings.paper_micro_scalp_min_gain) * 0.5):
+                    reason = "runner early decay stop"
+            elif not reason and scalp_lock and age >= min(max_hold_seconds, 120) and current > trade.entry_price + 1.0:
                 reason = "AI adaptive scalp time lock"
-            elif trade.breakeven_armed and current <= trade.entry_price + 2.0 and (not is_runner or age >= runner_min_hold):
-                reason = "breakeven protection after +8 move"
-            elif current <= trade.entry_price - stop_points:
+            elif not reason and trade.breakeven_armed and current <= trade.entry_price + 1.5 and (not is_runner or age >= runner_min_hold):
+                reason = "breakeven protection after profit move"
+            elif not reason and current <= trade.entry_price - stop_points:
                 reason = psych_exit_reason or "momentum decay or delta reversal stop"
-            elif age >= max_hold_seconds:
-                reason = "psychology shortened time stop" if max_hold_seconds < self.settings.max_paper_trade_seconds else "time stop"
-            elif self._should_chop_exit(trade, candidate, age):
+            elif not reason and age >= max_hold_seconds:
+                if unrealized >= max(2.0, float(self.settings.paper_micro_scalp_min_gain)):
+                    reason = "time stop profit lock"
+                else:
+                    reason = "psychology shortened time stop" if max_hold_seconds < self.settings.max_paper_trade_seconds else "time stop"
+            elif not reason and self._should_chop_exit(trade, candidate, age):
                 reason = "liquidity rejection / chop filter exit"
             if reason:
                 trade.status = "EXITED"
@@ -2694,13 +2700,41 @@ class AutoTraderEngine:
         best_gain = max(0.0, (trade.best_price or trade.entry_price) - trade.entry_price)
         min_gain = float(self.settings.paper_adaptive_scalp_lock_min_gain_points)
         fade_vel = float(self.settings.paper_adaptive_momentum_fade_velocity_pct)
-        had_profit = best_gain >= max(min_gain, trade.target_points * 0.15)
+        had_profit = best_gain >= max(min_gain, trade.target_points * 0.12)
         momentum_fading = premium_velocity < fade_vel
         score_decay = runner_score < 55 and had_profit
-        giveback = trade.partial_exit_taken and best_gain > 0 and (float(candidate.get("lastPremium") or 0) - trade.entry_price) < best_gain * 0.45
-        if had_profit and (momentum_fading or score_decay or giveback or age >= int(self.settings.paper_runner_min_hold_seconds) * 2):
+        current = float(candidate.get("lastPremium") or candidate.get("premium") or 0)
+        unrealized = current - trade.entry_price
+        giveback = had_profit and best_gain > 0 and unrealized < best_gain * (1.0 - float(self.settings.paper_micro_scalp_giveback_pct))
+        quick_age = age >= float(self.settings.paper_runner_quick_lock_seconds)
+        if had_profit and (momentum_fading or score_decay or giveback or quick_age):
             return "SCALP_LOCK"
         return "RUNNER"
+
+    def _quick_profit_exit_reason(self, trade: PaperTrade, current: float, age: float) -> str | None:
+        """Book small profits quickly instead of waiting for wide runner targets."""
+        if not self.settings.paper_quick_profit_enabled:
+            return None
+        entry = float(trade.entry_price)
+        best = float(trade.best_price or entry)
+        best_gain = max(0.0, best - entry)
+        unrealized = current - entry
+        min_move = float(self.settings.min_required_move_points) + 0.5
+        micro_min = max(float(self.settings.paper_micro_scalp_min_gain), min_move)
+        micro_trail = max(1.0, float(self.settings.paper_micro_scalp_trail_points))
+        quick_target = max(micro_min, float(self.settings.paper_quick_profit_points))
+        giveback_floor = 1.0 - float(self.settings.paper_micro_scalp_giveback_pct)
+        if current >= entry + quick_target:
+            return "quick profit target hit"
+        if best_gain >= micro_min:
+            if current <= best - micro_trail:
+                return "micro scalp profit lock"
+            if unrealized >= min_move and unrealized < best_gain * giveback_floor:
+                return "micro scalp giveback lock"
+        if age >= float(self.settings.paper_runner_quick_lock_seconds) and unrealized >= min_move:
+            if current <= best - micro_trail or unrealized < best_gain * giveback_floor:
+                return "time-based quick profit lock"
+        return None
 
     def _paper_risk_halt(self, trading_capital: float | None = None, session_adj: dict[str, Any] | None = None) -> dict[str, Any]:
         session_adj = session_adj or {}
