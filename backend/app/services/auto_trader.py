@@ -261,13 +261,17 @@ class AutoTraderEngine:
                 reason_text = str(quality.get("reason") or "")
                 is_position_limit = any(s in reason_text.lower() for s in ["max open", "max capacity", "already has an open", "hard cap"])
                 is_chase = "chase blocked" in reason_text.lower()
+                is_hard_block = self._is_hard_quality_block(reason_text)
                 explosion_entry = self._runner_entry_bypass(candidate)
                 can_bypass = (
-                    (explosion_entry and not is_position_limit and not is_chase)
-                    or (self._runner_may_bypass_quality(candidate, reason_text, market_phase) and not is_position_limit)
+                    not is_hard_block
+                    and (
+                        (explosion_entry and not is_position_limit and not is_chase)
+                        or (self._runner_may_bypass_quality(candidate, reason_text, market_phase) and not is_position_limit)
+                    )
                 )
                 if can_bypass:
-                    pass
+                    quality = {**quality, "blocked": False, "paperEligible": True, "reason": f"runner quality bypass ({reason_text})"}
                 elif self.settings.paper_trading and self.settings.shadow_trade_all_signals:
                     skipped.append({"candidate": candidate.get("id"), "reason": quality["reason"], "quality": quality})
                     quality = {**quality, "shadowOverride": True, "reason": f"SHADOW despite: {quality['reason']}"}
