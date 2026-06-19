@@ -188,6 +188,7 @@ class Settings(BaseSettings):
     paper_trading: bool = True
     paper_session_adjustments_enabled: bool = True
     paper_unified_scalp_session_profile: bool = True
+    paper_psychology_affects_scalp_exits: bool = False
     paper_profit_first_mode: bool = True
     paper_profit_tier_a_min_runner_score: float = 92.0
     paper_profit_tier_a_min_velocity_pct: float = 3.0
