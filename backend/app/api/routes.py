@@ -214,23 +214,30 @@ async def deployment_status(
 @router.get("/market/snapshots")
 async def market_snapshots(engine: RealTimeMarketEngine = Depends(get_market_engine), auto_engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
     active_symbols = get_settings().trading_symbol_list
-    results = await asyncio.gather(
-        *(engine.snapshot(sym) for sym in active_symbols),
-        return_exceptions=True,
-    )
     snapshots = {}
     errors = {}
-    for symbol, result in zip(active_symbols, results, strict=True):
-        if isinstance(result, Exception):
-            err = str(result)
-            if "429" in err or "Too Many Request" in err:
+    for symbol in active_symbols:
+        loaded: dict[str, Any] | None = None
+        last_error: str | None = None
+        for attempt in range(2):
+            try:
+                loaded = await engine.snapshot(symbol)
+                break
+            except Exception as exc:
+                last_error = str(exc)
+                if attempt == 0 and ("429" in last_error or "Too Many Request" in last_error):
+                    await asyncio.sleep(1.5)
+                    continue
                 stale = engine.stale_snapshot(symbol)
                 if stale:
-                    snapshots[symbol] = stale
-                    continue
-            errors[symbol] = err
-        else:
-            snapshots[symbol] = result
+                    loaded = stale
+                    break
+        if loaded is not None:
+            snapshots[symbol] = loaded
+        elif last_error:
+            errors[symbol] = last_error
+        if symbol != active_symbols[-1]:
+            await asyncio.sleep(0.3)
     if not snapshots:
         raise HTTPException(status_code=503, detail=errors)
     settings = get_settings()
