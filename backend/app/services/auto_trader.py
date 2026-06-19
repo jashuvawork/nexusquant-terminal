@@ -464,6 +464,9 @@ class AutoTraderEngine:
             self.closed_paper.clear()
         self.lifecycle_events.clear()
         AutoTraderEngine._shared_recent_signal_times.clear()
+        AutoTraderEngine._shared_missed_runners.clear()
+        self._daily_plan_cache = None
+        self._daily_plan_day = None
         self._persist_paper_trades_file()
         AutoTraderEngine._shared_learning_samples = 0
         AutoTraderEngine._shared_learning_score = 50.0
