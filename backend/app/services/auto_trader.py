@@ -1995,6 +1995,7 @@ class AutoTraderEngine:
         breadth = snapshot.get("breadth") or {}
         count = int(snapshot.get("count") or 0)
         sector_breadth = snapshot.get("sectorBreadth") or {}
+        stock_score = breadth.get("stockScore")
         # For BANKNIFTY: use banking-sector breadth score instead of overall Nifty 50 breadth
         sym_upper = symbol.upper()
         if sym_upper == "BANKNIFTY" and sector_breadth.get("banking", {}).get("count", 0) >= 4:
@@ -2002,7 +2003,6 @@ class AutoTraderEngine:
             raw_score = float(banking.get("score") or 50.0)
             bias = str(banking.get("bias") or "NEUTRAL")
         else:
-            stock_score = breadth.get("stockScore")
             raw_score = float(stock_score if stock_score is not None else breadth.get("score") or 50.0)
             bias = str(breadth.get("bias") or "NEUTRAL")
         score = raw_score
