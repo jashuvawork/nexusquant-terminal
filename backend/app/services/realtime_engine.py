@@ -329,6 +329,9 @@ class RealTimeMarketEngine:
         trading_control_status = await self.trading_control.status()
         capital_status = await self.trading_control.capital_status()
         trading_capital = capital_status.get("tradingCapital") or self.settings.trading_capital_default
+        dual_capital = bool(self.settings.paper_dual_capital_enabled)
+        scalp_capital = float(self.settings.paper_scalping_capital or trading_capital) if dual_capital else float(trading_capital or 0)
+        explosive_capital = float(self.settings.paper_explosive_capital or trading_capital) if dual_capital else float(trading_capital or 0)
         auto_trading_stopped = bool(trading_control_status.get("autoTradingStopped"))
         atr_points = self._atr_points(candles_list)
         adaptive_exit = self._adaptive_exit_engine(plan_ltp, plan_side, orderflow, spread_quality, volume_state, greeks, pressure_mode, risk_decision.safe_mode, atr_points, optimized_profile)
@@ -379,8 +382,7 @@ class RealTimeMarketEngine:
             execution_allowed=execution_allowed,
             trade_mode=trade_mode,
             safe_mode=risk_decision.safe_mode,
-            trading_capital=float(trading_capital or 0),
-            chop_filter=chop_filter,
+            trading_capital=scalp_capital,
             volume_state=volume_state,
             entry_model=entry_model,
             optimized_profile=optimized_profile,
@@ -392,8 +394,7 @@ class RealTimeMarketEngine:
                 runner_watchlist=runner_watchlist,
                 trade_mode=trade_mode,
                 execution_allowed=execution_allowed,
-                trading_capital=float(trading_capital or 0),
-                option_bias=option_bias,
+                trading_capital=explosive_capital,
                 safe_mode=risk_decision.safe_mode,
                 optimized_profile=optimized_profile,
                 chart_analysis=chart_analysis,
@@ -412,7 +413,13 @@ class RealTimeMarketEngine:
             "aggressiveMode": self.settings.aggressive_mode,
             "autoTradingStopped": auto_trading_stopped,
             "tradingControl": trading_control_status,
-            "tradingCapital": {**capital_status, "tradingCapital": float(trading_capital or 0)},
+            "tradingCapital": {
+                **capital_status,
+                "tradingCapital": float(trading_capital or 0),
+                "dualCapitalEnabled": dual_capital,
+                "scalpingCapital": scalp_capital,
+                "explosiveCapital": explosive_capital,
+            },
             "tradeMode": trade_mode,
             "qualityFilters": {"chopFilter": chop_filter, "volumeState": volume_state},
             "pressureMode": pressure_mode,
