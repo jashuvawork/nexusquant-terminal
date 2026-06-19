@@ -117,6 +117,24 @@ class RealTimeMarketEngine:
         self._contract_meta: dict[str, dict[str, Any]] = {}
         self._account_cache: tuple[float, tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]] | None = None
 
+    def stale_snapshot(self, symbol: str, *, max_age_seconds: float = 90.0) -> dict[str, Any] | None:
+        """Return last good snapshot when Upstox rate-limits (429) so the UI keeps working."""
+        cached = self._snapshot_cache.get(symbol.upper())
+        if not cached:
+            return None
+        age_seconds = monotonic() - cached[0]
+        if age_seconds > max_age_seconds:
+            return None
+        payload = deepcopy(cached[1])
+        payload["cacheStatus"] = {
+            "source": "stale_cache_upstox_429",
+            "ageSeconds": round(age_seconds, 2),
+            "ttlSeconds": self.settings.snapshot_cache_seconds,
+        }
+        payload.setdefault("dataWarnings", []).append("Serving cached snapshot because Upstox rate-limited requests.")
+        payload.setdefault("infra", {})["cacheAgeSeconds"] = round(age_seconds, 2)
+        return payload
+
     async def snapshot(self, symbol: str | None = None) -> dict[str, Any]:
         processing_started = perf_counter()
         selected_symbol = (symbol or self.settings.primary_symbol).upper()
@@ -383,6 +401,7 @@ class RealTimeMarketEngine:
             trade_mode=trade_mode,
             safe_mode=risk_decision.safe_mode,
             trading_capital=scalp_capital,
+            chop_filter=chop_filter,
             volume_state=volume_state,
             entry_model=entry_model,
             optimized_profile=optimized_profile,
@@ -395,6 +414,7 @@ class RealTimeMarketEngine:
                 trade_mode=trade_mode,
                 execution_allowed=execution_allowed,
                 trading_capital=explosive_capital,
+                option_bias=option_bias,
                 safe_mode=risk_decision.safe_mode,
                 optimized_profile=optimized_profile,
                 chart_analysis=chart_analysis,

@@ -6,7 +6,7 @@ const configuredStreamMode = (import.meta.env.VITE_STREAM_MODE ?? 'polling') as 
 const forceWebSocket = import.meta.env.VITE_FORCE_WEBSOCKET === 'true';
 const isRailwayBackend = apiUrl.includes('.up.railway.app');
 const streamMode = (usesSameOriginApiProxy || isRailwayBackend) && !forceWebSocket ? 'polling' : configuredStreamMode;
-const pollMs = Number(import.meta.env.VITE_POLL_MS ?? 1000);
+const pollMs = Number(import.meta.env.VITE_POLL_MS ?? 4000);
 const clientHeartbeatMs = Number(import.meta.env.VITE_WS_CLIENT_HEARTBEAT_MS ?? 5000);
 const reconnectDelays = [1000, 2000, 4000, 8000, 10000];
 
