@@ -3,8 +3,9 @@
   "outputDirectory": "frontend/dist",
   "framework": "vite",
   "rewrites": [
-    { "source": "/api/:path*", "destination": "http://nexusquant-alb-27974946.ap-south-1.elb.amazonaws.com/api/:path*" },
-    { "source": "/health", "destination": "http://nexusquant-alb-27974946.ap-south-1.elb.amazonaws.com/health" },
+    { "source": "/api/:path*", "destination": "https://api.nexusquant.uk/api/:path*" },
+    { "source": "/ws/:path*", "destination": "https://api.nexusquant.uk/ws/:path*" },
+    { "source": "/health", "destination": "https://api.nexusquant.uk/health" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
