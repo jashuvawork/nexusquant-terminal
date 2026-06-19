@@ -287,7 +287,17 @@ class AutoTraderEngine:
                 continue
             runner_sig = (candidate.get("runnerSignal") or {})
             entry_bypass = self._runner_entry_bypass(candidate, runner_sig)
-            momentum_override = bool(runner_sig.get("momentumOverride") and str(runner_sig.get("confidence") or "").upper() == "HIGH") or entry_bypass
+            loss_guard = self._intraday_loss_guard(risk_halt)
+            if loss_guard.get("eliteOnly"):
+                momentum_override = bool(
+                    runner_sig.get("momentumOverride")
+                    and float(runner_sig.get("score") or 0) >= 85
+                    and self._is_profit_tier_entry(candidate, runner_sig)
+                )
+            elif loss_guard.get("active"):
+                momentum_override = bool(entry_bypass and self._is_profit_tier_entry(candidate, runner_sig))
+            else:
+                momentum_override = bool(runner_sig.get("momentumOverride") and str(runner_sig.get("confidence") or "").upper() == "HIGH") or entry_bypass
             if pre_trade_psychology.get("tradePermission") == "BLOCK_NEW_TRADES" and not momentum_override:
                 skipped.append({"candidate": candidate.get("id"), "reason": "psychology gate: BLOCK_NEW_TRADES", "quality": quality})
                 continue
@@ -1520,6 +1530,22 @@ class AutoTraderEngine:
             return True
         return score >= 65
 
+    def _intraday_loss_guard(self, risk_halt: dict[str, Any] | None = None) -> dict[str, Any]:
+        risk_halt = risk_halt or self._paper_risk_halt()
+        day_net = float(risk_halt.get("dayNetPnl") or 0)
+        day_summary = self._summarize_trades(self._today_closed_trades())
+        trades = int(day_summary.get("paperTrades") or day_summary.get("trades") or 0)
+        win_rate = float(day_summary.get("winRate") or 0)
+        strict = day_net < -8000 or (trades >= 3 and win_rate < 35 and day_net < 0)
+        elite_only = day_net < -15000 or (trades >= 4 and win_rate < 30 and day_net < 0)
+        return {
+            "active": strict,
+            "eliteOnly": elite_only,
+            "dayNetPnl": round(day_net, 2),
+            "winRatePct": round(win_rate, 2),
+            "trades": trades,
+        }
+
     def _daily_improvement_plan(self) -> dict[str, Any]:
         trading_day = datetime.now(IST).date().isoformat()
         if self._daily_plan_cache and self._daily_plan_day == trading_day:
@@ -1643,6 +1669,15 @@ class AutoTraderEngine:
 
     def _runner_entry_bypass(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
         runner = runner or candidate.get("runnerSignal") or {}
+        loss_guard = self._intraday_loss_guard()
+        if loss_guard.get("eliteOnly"):
+            if not self._is_profit_tier_entry(candidate, runner):
+                return False
+            score = float(runner.get("score") or 0)
+            return bool(
+                (runner.get("momentumOverride") and score >= 85)
+                or (runner.get("eliteRunner") and score >= 88)
+            )
         if self.settings.paper_profit_first_mode:
             if self._is_profit_tier_entry(candidate, runner):
                 return True
@@ -2169,7 +2204,9 @@ class AutoTraderEngine:
         elif breadth.get("available") and not breadth.get("aligned") and not tradeable_runner:
             reasons.append(str(breadth.get("reason") or "market breadth does not confirm trade side"))
         elif breadth.get("available") and not breadth.get("aligned") and tradeable_runner:
-            pass  # elite runners bypass stale breadth; runner tape score is more current
+            if self._intraday_loss_guard().get("active"):
+                reasons.append(str(breadth.get("reason") or "market breadth does not confirm trade side"))
+            # else: elite runners bypass stale breadth; runner tape score is more current
         high_conf_ok, high_conf_reason = self._passes_high_confidence_gate(candidate, runner)
         if not high_conf_ok and not momentum_explosion and not strong_runner:
             reasons.append(high_conf_reason)

@@ -103,18 +103,26 @@ def build_daily_improvement_plan(
                     blocked_buckets.append(bucket)
                     actions.append("Midday chop underperforming — require A+ override only in MIDDAY_CHOP.")
 
-    if today_trades >= 3 and today_pf < 0.8 and float(today_summary.get("netPnl") or 0) < 0:
+    if today_trades >= 2 and today_pf < 0.8 and float(today_summary.get("netPnl") or 0) < -5000:
         min_runner_score = max(min_runner_score, 82.0)
         allow_tier_b = False
+        allow_tier_c = False
         actions.append("Today losing — tighten to elite momentum only until recovery.")
 
-    if missed_count > 30 and rolling_pf < 1.0 and rolling_trades >= min_trades_for_calibration:
+    if today_trades >= 4 and today_wr < 30 and float(today_summary.get("netPnl") or 0) < 0:
+        min_runner_score = max(min_runner_score, 85.0)
+        allow_tier_b = False
+        allow_tier_c = False
+        blocked_buckets.append("MIDDAY_CHOP")
+        actions.append(f"Today win rate {today_wr:.1f}% — block weak tiers and midday chop.")
+
+    if missed_count > 30 and rolling_pf >= target_profit_factor:
+        actions.append(f"{missed_count} near-misses logged — edge OK; selective capture preferred over blind volume.")
+    elif missed_count > 30 and rolling_pf >= 1.0 and rolling_trades >= min_trades_for_calibration:
         allow_tier_b = True
         min_runner_score = min(min_runner_score, 75.0)
         min_velocity_pct = min(min_velocity_pct, 1.8)
-        actions.append(f"{missed_count} near-misses logged — allow Tier B explosions while PF recovers (score≥75, vel≥1.8%).")
-    elif missed_count > 50 and rolling_pf >= target_profit_factor:
-        actions.append(f"{missed_count} near-misses logged — edge OK; selective capture preferred over blind volume.")
+        actions.append(f"{missed_count} near-misses logged — allow Tier B only while rolling PF >= 1.0.")
 
     if not actions:
         actions.append("Collect more paper trades (target 8+) for full daily calibration.")
