@@ -383,6 +383,7 @@ class RealTimeMarketEngine:
             trade_mode=trade_mode,
             safe_mode=risk_decision.safe_mode,
             trading_capital=scalp_capital,
+            chop_filter=chop_filter,
             volume_state=volume_state,
             entry_model=entry_model,
             optimized_profile=optimized_profile,
