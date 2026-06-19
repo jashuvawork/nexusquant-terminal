@@ -80,8 +80,8 @@ def _midday_scalp_session_params(
         "target_multiplier": 0.95,
         "stop_multiplier": 0.9,
         "max_hold_seconds": min(int(base_max_hold_seconds), 180),
-        "block_new_paper": True,
-        "block_reason": "Scalp session: entries require momentum override or A+ runner (score≥90 + alignment).",
+        "block_new_paper": False,
+        "block_reason": None,
         "midday_runner_bypass_score": 90.0,
     }
 
@@ -234,7 +234,7 @@ def paper_session_adjustments(
         midday_runner_bypass_score = scalp["midday_runner_bypass_score"]
         adjustments.append(
             f"{bucket}: unified midday scalp — TQS≥{min_entry_tqs}, runner≥{min_runner_score}, "
-            f"120s dedupe, 180s max hold, quick-profit targets."
+            f"120s dedupe, 180s max hold, quick-profit active."
         )
 
     elif bucket == "OPEN_DRIVE":

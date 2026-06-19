@@ -2082,7 +2082,19 @@ class AutoTraderEngine:
         ok, _ = self._passes_high_confidence_gate(candidate, runner)
         return ok
 
+    def _is_active_scalp_entry(self, candidate: dict[str, Any]) -> bool:
+        """Unified scalp mode: SCALP / HIGH_WIN_SCALP entries allowed in every live session."""
+        if not self.settings.paper_unified_scalp_session_profile:
+            return False
+        strategy = str(candidate.get("strategyType") or "").upper()
+        style = str((candidate.get("optimizedProfile") or {}).get("executionStyle") or "")
+        if strategy != "SCALP" and style != "HIGH_WIN_SCALP":
+            return False
+        return self._is_scalp_candidate(candidate)
+
     def _session_entry_allowed(self, candidate: dict[str, Any], session_adj: dict[str, Any], market_phase: str | None = None) -> bool:
+        if self._is_active_scalp_entry(candidate):
+            return True
         if self._is_tradeable_explosive_runner(candidate, market_phase):
             return True
         if self._elite_runner_only_mode():
@@ -2526,7 +2538,11 @@ class AutoTraderEngine:
             mode=str(candidate.get("mode")),
             strategy_type=strategy_type,
             capital_pool=pool,
-            exit_mode="SCALP_LOCK" if (strategy_type == "EXPLOSIVE_RUNNER" and self.settings.paper_runner_start_scalp_lock) else "AUTO",
+            exit_mode="SCALP_LOCK" if (
+                strategy_type == "EXPLOSIVE_RUNNER" and self.settings.paper_runner_start_scalp_lock
+            ) or (
+                strategy_type == "SCALP" and self.settings.paper_unified_scalp_session_profile
+            ) else "AUTO",
             paper_session_id=self.paper_sessions.current_id(),
             target_points=risk_plan["targetPoints"],
             stop_points=risk_plan["stopPoints"],
