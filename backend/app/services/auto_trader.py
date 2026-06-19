@@ -2586,7 +2586,6 @@ class AutoTraderEngine:
             stop_points = float(trade.stop_points or profile.get("stopPoints") or self.settings.paper_stop_points)
             partial_exit_at = max(1.0, target_points * float(profile.get("partialExitPct") or 0.6))
             breakeven_shift = float(trade.breakeven_shift_points or self.settings.paper_breakeven_shift_points)
-            stop_points, max_hold_seconds, psych_exit_reason = self._psychology_exit_adjustments(stop_points, psychology, session_max_hold)
             style = str(profile.get("executionStyle") or "GENERIC")
             is_runner = trade.strategy_type == "EXPLOSIVE_RUNNER"
             exit_mode = trade.exit_mode or "AUTO"
@@ -2609,6 +2608,13 @@ class AutoTraderEngine:
                 else:
                     exit_mode = trade.exit_mode
             scalp_lock = exit_mode == "SCALP_LOCK" or (not is_runner and style == "HIGH_WIN_SCALP") or (not is_runner and trade.strategy_type == "SCALP")
+            scalp_exits = self._trade_uses_scalp_exits(trade, exit_mode=exit_mode, style=style, is_runner=is_runner)
+            stop_points, max_hold_seconds, psych_exit_reason = self._psychology_exit_adjustments(
+                stop_points,
+                psychology,
+                session_max_hold,
+                scalp_trade=scalp_exits,
+            )
             if is_runner and exit_mode != "SCALP_LOCK":
                 target_points = max(target_points, self.settings.paper_target_points * 1.25)
                 max_hold_seconds = max(max_hold_seconds, int(self.settings.paper_runner_max_hold_seconds))
@@ -2658,10 +2664,12 @@ class AutoTraderEngine:
             elif not reason and trade.breakeven_armed and current <= trade.entry_price + 1.5 and (not is_runner or age >= runner_min_hold):
                 reason = "breakeven protection after profit move"
             elif not reason and current <= trade.entry_price - stop_points:
-                reason = psych_exit_reason or "momentum decay or delta reversal stop"
+                reason = "momentum decay or delta reversal stop" if scalp_exits else (psych_exit_reason or "momentum decay or delta reversal stop")
             elif not reason and age >= max_hold_seconds:
                 if unrealized >= max(2.0, float(self.settings.paper_micro_scalp_min_gain)):
                     reason = "time stop profit lock"
+                elif scalp_exits:
+                    reason = "scalp time stop"
                 else:
                     reason = "psychology shortened time stop" if max_hold_seconds < self.settings.max_paper_trade_seconds else "time stop"
             elif not reason and self._should_chop_exit(trade, candidate, age):
@@ -2959,7 +2967,35 @@ class AutoTraderEngine:
             "riskScope": "session" if rotation_enabled else "day",
         }
 
-    def _psychology_exit_adjustments(self, stop_points: float, psychology: dict[str, Any] | None = None, session_max_hold: int | None = None) -> tuple[float, int, str | None]:
+    def _trade_uses_scalp_exits(
+        self,
+        trade: PaperTrade,
+        *,
+        exit_mode: str | None = None,
+        style: str = "",
+        is_runner: bool | None = None,
+    ) -> bool:
+        """Scalp/quick-profit exit path — psychology must not tighten stops or shorten time."""
+        if self.settings.paper_unified_scalp_session_profile:
+            return True
+        is_runner_flag = trade.strategy_type == "EXPLOSIVE_RUNNER" if is_runner is None else is_runner
+        mode = str(exit_mode or trade.exit_mode or "AUTO")
+        if mode == "SCALP_LOCK" or trade.strategy_type == "SCALP" or style == "HIGH_WIN_SCALP":
+            return not self.settings.paper_psychology_affects_scalp_exits
+        if is_runner_flag and self.settings.paper_runner_start_scalp_lock:
+            return not self.settings.paper_psychology_affects_scalp_exits
+        return False
+
+    def _psychology_exit_adjustments(
+        self,
+        stop_points: float,
+        psychology: dict[str, Any] | None = None,
+        session_max_hold: int | None = None,
+        *,
+        scalp_trade: bool = False,
+    ) -> tuple[float, int, str | None]:
+        if scalp_trade:
+            return round(float(stop_points), 2), int(session_max_hold or self.settings.max_paper_trade_seconds), None
         psychology = psychology or {}
         state = str(psychology.get("state") or "CALM_AND_SELECTIVE")
         permission = str(psychology.get("tradePermission") or "A_PLUS_ONLY")
