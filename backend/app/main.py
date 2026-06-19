@@ -229,8 +229,14 @@ async def build_multi_symbol_snapshot(*, include_auto_trader: bool | None = None
     primary_symbol = settings.primary_symbol.upper()
     primary = snapshots.get(primary_symbol) or snapshots.get("NIFTY") or next(iter(snapshots.values()))
     execution_candidates = []
+    seen_instruments: set[str] = set()
     for symbol, snapshot in snapshots.items():
         for trade in snapshot.get("suggestedTrades") or []:
+            instrument_key = str(trade.get("instrumentKey") or "")
+            if instrument_key and instrument_key in seen_instruments:
+                continue
+            if instrument_key:
+                seen_instruments.add(instrument_key)
             execution_candidates.append({"symbol": symbol, **trade})
 
     payload = {

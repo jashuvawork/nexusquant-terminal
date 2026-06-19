@@ -57,9 +57,9 @@ def build_daily_improvement_plan(
         pf_est = max(0.2, rolling_pf)
         phase = "DEFENSIVE"
 
-    min_runner_score = 88.0
-    min_velocity_pct = 2.5
-    min_volume_accel = 35.0
+    min_runner_score = 92.0
+    min_velocity_pct = 3.0
+    min_volume_accel = 30.0
     allow_tier_b = False
     allow_tier_c = False
     blocked_sides: list[str] = []

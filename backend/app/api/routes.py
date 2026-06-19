@@ -244,8 +244,14 @@ async def market_snapshots(engine: RealTimeMarketEngine = Depends(get_market_eng
     primary_symbol = settings.primary_symbol.upper()
     primary = snapshots.get(primary_symbol) or snapshots.get("NIFTY") or snapshots.get("SENSEX") or next(iter(snapshots.values()))
     candidates = []
+    seen_instruments: set[str] = set()
     for symbol, snapshot in snapshots.items():
         for trade in snapshot.get("suggestedTrades") or []:
+            instrument_key = str(trade.get("instrumentKey") or "")
+            if instrument_key and instrument_key in seen_instruments:
+                continue
+            if instrument_key:
+                seen_instruments.add(instrument_key)
             candidates.append({"symbol": symbol, **trade})
     market_snapshot: dict[str, Any] = {"available": False, "reason": "not_loaded"}
     try:

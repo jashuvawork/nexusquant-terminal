@@ -224,6 +224,11 @@ class AutoTraderEngine:
         signal_events = []
         skipped = []
         for candidate in candidates:
+            prepared = self._prepare_execution_candidate(candidate)
+            if prepared is None:
+                skipped.append({"candidate": candidate.get("id"), "reason": "runner below ultra-elite; scalping gates not met"})
+                continue
+            candidate = prepared
             event = self._signal_event(candidate, payload)
             signal_events.append(event)
             self.lifecycle_events.append(event)
@@ -1536,8 +1541,41 @@ class AutoTraderEngine:
     def _elite_runner_only_mode(self) -> bool:
         return bool(self.settings.paper_elite_runner_only or self.settings.paper_high_confidence_only)
 
+    def _is_ultra_elite_runner_entry(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
+        """Ultra-high-profile runner: elite + aligned tape + score≥92 + strong velocity/volume."""
+        runner = runner or candidate.get("runnerSignal") or {}
+        if candidate.get("strategyType") != "EXPLOSIVE_RUNNER":
+            return False
+        if self._is_explosion_chase(candidate, runner):
+            return False
+        if str(runner.get("confidence") or "").upper() != "HIGH":
+            return False
+        if not runner.get("eliteRunner"):
+            return False
+        if not runner.get("momentumAligned"):
+            return False
+        score = float(runner.get("score") or candidate.get("tqs") or 0)
+        min_score = float(self.settings.paper_ultra_elite_min_runner_score)
+        if score < min_score:
+            return False
+        metrics = self._runner_metrics(runner)
+        premium_velocity = float(runner.get("premiumVelocityPct") or metrics.get("premiumVelocity") or 0)
+        volume_accel = float(runner.get("volumeAcceleration") or metrics.get("volumeAcceleration") or 0)
+        if premium_velocity < float(self.settings.paper_ultra_elite_min_velocity_pct):
+            return False
+        if volume_accel < float(self.settings.paper_ultra_elite_min_volume_accel):
+            return False
+        premium = float(candidate.get("lastPremium") or runner.get("premium") or 0)
+        if premium <= 0:
+            return False
+        premium_min = float(self.settings.paper_min_premium_ltp or self.settings.explosive_runner_premium_min)
+        premium_max = float(self.settings.explosive_runner_premium_max)
+        return premium_min <= premium <= premium_max
+
     def _is_elite_runner_entry(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
-        """High-profile runner only: elite tape + HIGH confidence + score/velocity floor."""
+        """High-profile runner gate — ultra-elite only when elite-only mode is active."""
+        if self._elite_runner_only_mode():
+            return self._is_ultra_elite_runner_entry(candidate, runner)
         runner = runner or candidate.get("runnerSignal") or {}
         if candidate.get("strategyType") != "EXPLOSIVE_RUNNER":
             return False
@@ -1561,6 +1599,34 @@ class AutoTraderEngine:
         premium_min = float(self.settings.paper_min_premium_ltp or self.settings.explosive_runner_premium_min)
         premium_max = float(self.settings.explosive_runner_premium_max)
         return premium_min <= premium <= premium_max
+
+    def _is_scalp_candidate(self, candidate: dict[str, Any]) -> bool:
+        if candidate.get("chopBlocked"):
+            return False
+        premium = float(candidate.get("lastPremium") or 0)
+        if premium <= 0:
+            return False
+        tqs = int(candidate.get("tqs") or 0)
+        return tqs >= int(self.settings.paper_scalping_min_entry_tqs)
+
+    def _prepare_execution_candidate(self, candidate: dict[str, Any]) -> dict[str, Any] | None:
+        """Route weak runners to scalping; only ultra-elite stays explosive."""
+        strategy = str(candidate.get("strategyType") or "SCALP").upper()
+        runner = candidate.get("runnerSignal") or {}
+        if strategy != "EXPLOSIVE_RUNNER":
+            return candidate
+        if self._is_ultra_elite_runner_entry(candidate, runner):
+            return candidate
+        if self.settings.paper_prefer_scalping and self._is_scalp_candidate(candidate):
+            scalp = dict(candidate)
+            scalp["strategyType"] = "SCALP"
+            profile = dict(scalp.get("optimizedProfile") or {})
+            profile["executionStyle"] = "HIGH_WIN_SCALP"
+            profile["targetPoints"] = min(float(profile.get("targetPoints") or self.settings.paper_target_points), float(self.settings.paper_quick_profit_points) + 4.0)
+            profile["stopPoints"] = min(float(profile.get("stopPoints") or self.settings.paper_stop_points), float(self.settings.paper_stop_points))
+            scalp["optimizedProfile"] = profile
+            return scalp
+        return None
 
     def _is_catchable_runner(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
         """Max-catch mode: enter on in-range runners with tape activity."""
@@ -2455,7 +2521,7 @@ class AutoTraderEngine:
             mode=str(candidate.get("mode")),
             strategy_type=strategy_type,
             capital_pool=pool,
-            exit_mode="AUTO",
+            exit_mode="SCALP_LOCK" if (strategy_type == "EXPLOSIVE_RUNNER" and self.settings.paper_runner_start_scalp_lock) else "AUTO",
             paper_session_id=self.paper_sessions.current_id(),
             target_points=risk_plan["targetPoints"],
             stop_points=risk_plan["stopPoints"],
@@ -2564,7 +2630,7 @@ class AutoTraderEngine:
                 else:
                     reason = "runner time stop"
             elif not reason and is_runner and not scalp_lock and age >= int(self.settings.paper_runner_min_hold_seconds) and current <= trade.entry_price - max(1.0, stop_points * 0.5):
-                if unrealized < max(1.5, float(self.settings.paper_micro_scalp_min_gain) * 0.5):
+                if unrealized < max(1.5, float(self.settings.paper_micro_scalp_min_gain) * 0.5) and best_gain < float(self.settings.paper_micro_scalp_min_gain):
                     reason = "runner early decay stop"
             elif not reason and scalp_lock and age >= min(max_hold_seconds, 120) and current > trade.entry_price + 1.0:
                 reason = "AI adaptive scalp time lock"
