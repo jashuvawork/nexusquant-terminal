@@ -117,6 +117,24 @@ class RealTimeMarketEngine:
         self._contract_meta: dict[str, dict[str, Any]] = {}
         self._account_cache: tuple[float, tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]] | None = None
 
+    def stale_snapshot(self, symbol: str, *, max_age_seconds: float = 90.0) -> dict[str, Any] | None:
+        """Return last good snapshot when Upstox rate-limits (429) so the UI keeps working."""
+        cached = self._snapshot_cache.get(symbol.upper())
+        if not cached:
+            return None
+        age_seconds = monotonic() - cached[0]
+        if age_seconds > max_age_seconds:
+            return None
+        payload = deepcopy(cached[1])
+        payload["cacheStatus"] = {
+            "source": "stale_cache_upstox_429",
+            "ageSeconds": round(age_seconds, 2),
+            "ttlSeconds": self.settings.snapshot_cache_seconds,
+        }
+        payload.setdefault("dataWarnings", []).append("Serving cached snapshot because Upstox rate-limited requests.")
+        payload.setdefault("infra", {})["cacheAgeSeconds"] = round(age_seconds, 2)
+        return payload
+
     async def snapshot(self, symbol: str | None = None) -> dict[str, Any]:
         processing_started = perf_counter()
         selected_symbol = (symbol or self.settings.primary_symbol).upper()

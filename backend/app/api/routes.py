@@ -222,7 +222,13 @@ async def market_snapshots(engine: RealTimeMarketEngine = Depends(get_market_eng
     errors = {}
     for symbol, result in zip(active_symbols, results, strict=True):
         if isinstance(result, Exception):
-            errors[symbol] = str(result)
+            err = str(result)
+            if "429" in err or "Too Many Request" in err:
+                stale = engine.stale_snapshot(symbol)
+                if stale:
+                    snapshots[symbol] = stale
+                    continue
+            errors[symbol] = err
         else:
             snapshots[symbol] = result
     if not snapshots:
