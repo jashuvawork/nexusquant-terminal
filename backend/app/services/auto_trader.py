@@ -372,11 +372,15 @@ class AutoTraderEngine:
         }
 
     def status(self) -> dict[str, Any]:
+        capital = float(self.settings.trading_capital_default or 0)
         return {
             "paperTrading": self.settings.paper_trading,
             "shadowTradeAllSignals": self.settings.shadow_trade_all_signals,
             "paperTradingRespectsStop": self.settings.paper_trading_respects_stop,
             "liveTradingEnabled": self.settings.enable_live_trading,
+            "capitalPools": self._capital_pools_summary(capital),
+            "dualCapitalEnabled": self.settings.paper_dual_capital_enabled,
+            "adaptiveExitEnabled": self.settings.paper_ai_adaptive_exit_enabled,
             "openPaperTrades": [trade.to_dict() for trade in self.open_paper.values()],
             "closedPaperTrades": [trade.to_dict() for trade in list(self.closed_paper)[-25:]],
             "orderLifecycle": [event.__dict__ for event in list(self.lifecycle_events)[-50:]],
