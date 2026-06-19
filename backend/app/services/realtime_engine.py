@@ -264,7 +264,13 @@ class RealTimeMarketEngine:
         tqs, ai_matrix = self.scorer.score(features)
 
         portfolio = self._portfolio(funds, positions, orders, data_warnings)
-        adaptive_risk = adaptive_settings(self.settings.aggression_profile, session.phase, regime, tqs)
+        adaptive_risk = adaptive_settings(
+            self.settings.aggression_profile,
+            session.phase,
+            regime,
+            tqs,
+            unified_scalp_profile=bool(self.settings.paper_unified_scalp_session_profile),
+        )
         adaptive_risk["optimizedProfile"] = optimized_profile
         adaptive_risk["newsState"] = news_state
         adaptive_risk["minimumTqs"] = max(int(adaptive_risk["minimumTqs"]), int(optimized_profile["minTqs"]))

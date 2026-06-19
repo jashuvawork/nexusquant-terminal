@@ -1075,7 +1075,7 @@ class AutoTraderEngine:
             actions.append("Reduce lots using stop-risk sizing before the next paper session.")
         if bucket == "MIDDAY_CHOP":
             findings.append("Trade occurred in chop-prone time window.")
-            actions.append("Keep midday normal trades blocked.")
+            actions.append("Preserve midday scalp discipline in all sessions.")
         if trade.side == "CALL":
             findings.append("CALL side has recently underperformed in paper data.")
             actions.append("Require bullish breadth and chart alignment for any CALL.")
@@ -1518,6 +1518,7 @@ class AutoTraderEngine:
             open_drive_profit_stop_pct=float(self.settings.open_drive_profit_stop_pct),
             open_drive_allocation_boost=float(self.settings.open_drive_allocation_multiplier),
             max_catch_mode=bool(self.settings.paper_max_catch_mode),
+            unified_scalp_profile=bool(self.settings.paper_unified_scalp_session_profile),
         )
         news = self._latest_news_state or {}
         impact = news.get("impact") or {}
@@ -1696,6 +1697,7 @@ class AutoTraderEngine:
             target_profit_factor=float(self.settings.paper_target_profit_factor),
             target_win_rate_pct=float(self.settings.paper_target_win_rate_pct),
             min_trades_for_calibration=int(self.settings.paper_rolling_calibration_trades),
+            unified_scalp_session_profile=bool(self.settings.paper_unified_scalp_session_profile),
         )
         self._daily_plan_cache = plan
         self._daily_plan_day = trading_day
@@ -1743,14 +1745,15 @@ class AutoTraderEngine:
         min_vel = float(gates.get("minVelocityPct") or self.settings.paper_profit_tier_b_min_velocity_pct)
         min_vol = float(gates.get("minVolumeAccel") or 25.0)
         confidence = str(runner.get("confidence") or "").upper()
-        if bucket == "OPEN_DRIVE":
-            min_vel = min(min_vel, 1.5)
-            min_vol = min(min_vol, 20.0)
-            min_score = min(min_score, 68.0)
-        elif bucket == "CLOSING_MOMENTUM":
-            min_vel = min(min_vel, 1.5)
-            min_vol = min(min_vol, 20.0)
-            min_score = min(min_score, 70.0)
+        if not self.settings.paper_unified_scalp_session_profile:
+            if bucket == "OPEN_DRIVE":
+                min_vel = min(min_vel, 1.5)
+                min_vol = min(min_vol, 20.0)
+                min_score = min(min_score, 68.0)
+            elif bucket == "CLOSING_MOMENTUM":
+                min_vel = min(min_vel, 1.5)
+                min_vol = min(min_vol, 20.0)
+                min_score = min(min_score, 70.0)
 
         # A+ — momentum burst + alignment or elite tape
         if runner.get("momentumOverride") and score >= 85 and premium_velocity >= 2.5:
@@ -2092,8 +2095,9 @@ class AutoTraderEngine:
         if self._is_momentum_explosion(candidate, runner):
             return True
         bypass_score = float(session_adj.get("middayRunnerBypassScore") or 90)
+        bypass_all_sessions = bool(session_adj.get("unifiedScalpProfile", self.settings.paper_unified_scalp_session_profile))
         if (
-            session_adj.get("sessionBucket") == "MIDDAY_CHOP"
+            (bypass_all_sessions or session_adj.get("sessionBucket") == "MIDDAY_CHOP")
             and float(runner.get("score") or 0) >= bypass_score
             and runner.get("momentumSurge")
             and runner.get("momentumAligned")
@@ -2243,7 +2247,8 @@ class AutoTraderEngine:
         score += 7.0 if delta_velocity >= 55 else 0.0
         score += 5.0 if premium_velocity >= float(self.settings.explosive_runner_momentum_premium_velocity_pct) else 0.0
         score += 5.0 if effective_volume > 0 else -8.0
-        score += 6.0 if session_bucket == "CLOSING_MOMENTUM" else -7.0 if session_bucket == "MIDDAY_CHOP" else 0.0
+        if not self.settings.paper_unified_scalp_session_profile:
+            score += 6.0 if session_bucket == "CLOSING_MOMENTUM" else -7.0 if session_bucket == "MIDDAY_CHOP" else 0.0
         if chart_bias in {"CALL", "PUT"} and side in {"CALL", "PUT"}:
             score += 8.0 if chart_bias == side else -25.0
         elif chart_bias == "WAIT":

@@ -29,13 +29,15 @@ PROFILES: dict[str, RiskProfile] = {
 }
 
 SESSION_NOTES = {
-    "OPEN_DRIVE": "9:15-10:30 IST: strongest momentum; lower TQS and shorter cooldown if liquidity/spread are good.",
-    "MIDDAY_CHOP": "11:30-13:30 IST: fake moves common; raise TQS and cooldown.",
-    "CLOSING_MOMENTUM": "14:30-15:15 IST: trend continuation window; use moderate aggression.",
+    "OPEN_DRIVE": "9:15-10:30 IST: same midday scalp profile — elite gates, quick-profit exits.",
+    "MIDDAY_CHOP": "11:30-13:30 IST: midday scalp profile — elite gates, quick-profit exits.",
+    "CLOSING_MOMENTUM": "14:30-15:15 IST: same midday scalp profile — elite gates, quick-profit exits.",
     "PREMARKET": "Pre-market: analysis only; build levels and bias, no F&O scalps.",
     "CLOSED": "Closed market: backtest and tomorrow plan only.",
-    "NORMAL": "Normal session: use selected profile unless regime says otherwise.",
+    "NORMAL": "Normal session: same midday scalp profile when unified mode is on.",
 }
+
+LIVE_SCALP_BUCKETS = frozenset({"OPEN_DRIVE", "NORMAL", "MIDDAY_CHOP", "CLOSING_MOMENTUM"})
 
 
 def profile_list() -> list[dict[str, Any]]:
@@ -62,7 +64,36 @@ def session_bucket(phase: MarketPhase, now: datetime | None = None) -> str:
     return "NORMAL"
 
 
-def adaptive_settings(profile_key: str | None, phase: MarketPhase, regime: str, tqs: int) -> dict[str, Any]:
+def _midday_scalp_session_params(
+    *,
+    base_min_tqs: int,
+    base_runner_score: float,
+    base_duplicate_cooldown: int,
+    base_max_hold_seconds: int,
+) -> dict[str, Any]:
+    """Winning midday setup: elite gates, tight targets, short holds, quick-profit style."""
+    return {
+        "min_entry_tqs": max(int(base_min_tqs) + 4, 78),
+        "min_runner_score": max(float(base_runner_score) + 2.0, 82.0),
+        "allocation_multiplier": 0.75,
+        "duplicate_cooldown": max(int(base_duplicate_cooldown), 120),
+        "target_multiplier": 0.95,
+        "stop_multiplier": 0.9,
+        "max_hold_seconds": min(int(base_max_hold_seconds), 180),
+        "block_new_paper": True,
+        "block_reason": "Scalp session: entries require momentum override or A+ runner (score≥90 + alignment).",
+        "midday_runner_bypass_score": 90.0,
+    }
+
+
+def adaptive_settings(
+    profile_key: str | None,
+    phase: MarketPhase,
+    regime: str,
+    tqs: int,
+    *,
+    unified_scalp_profile: bool = True,
+) -> dict[str, Any]:
     base = get_profile(profile_key)
     minimum_tqs = base.minimum_tqs
     safe_mode_tqs = base.safe_mode_tqs
@@ -72,7 +103,13 @@ def adaptive_settings(profile_key: str | None, phase: MarketPhase, regime: str, 
     bucket = session_bucket(phase)
     adjustments: list[str] = []
 
-    if bucket == "OPEN_DRIVE":
+    if unified_scalp_profile and bucket in LIVE_SCALP_BUCKETS:
+        minimum_tqs = max(minimum_tqs, 82 if base.key in {"aggressive_scalping", "extreme_prop"} else 78)
+        safe_mode_tqs = max(safe_mode_tqs, minimum_tqs + 6)
+        cooldown = max(cooldown, 45)
+        max_exposure = min(max_exposure, 25)
+        adjustments.append("Unified scalp session: midday-style TQS, cooldown, and exposure in all live windows.")
+    elif bucket == "OPEN_DRIVE":
         minimum_tqs = max(58, minimum_tqs - 4)
         cooldown = max(5, min(cooldown, 10))
         adjustments.append("Open drive: lower TQS and shorter cooldown for momentum bursts.")
@@ -97,7 +134,12 @@ def adaptive_settings(profile_key: str | None, phase: MarketPhase, regime: str, 
         max_exposure = min(max_exposure, 15)
         cooldown = max(cooldown, 60)
         adjustments.append("Risk/chop regime: raise thresholds and reduce exposure.")
-    elif regime == "TREND_EXPANSION" and tqs >= 85 and bucket in {"OPEN_DRIVE", "CLOSING_MOMENTUM", "NORMAL"}:
+    elif (
+        not unified_scalp_profile
+        and regime == "TREND_EXPANSION"
+        and tqs >= 85
+        and bucket in {"OPEN_DRIVE", "CLOSING_MOMENTUM", "NORMAL"}
+    ):
         max_exposure = min(70, max(max_exposure, base.max_exposure_pct + 5))
         cooldown = max(5, cooldown - 5)
         adjustments.append("Trend expansion with high TQS: allow dynamic exposure increase.")
@@ -144,6 +186,7 @@ def paper_session_adjustments(
     open_drive_profit_stop_pct: float = 33.0,
     open_drive_allocation_boost: float = 1.85,
     max_catch_mode: bool = False,
+    unified_scalp_profile: bool = True,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Time-of-day paper trading gates aligned with Indian market session buckets."""
@@ -172,21 +215,41 @@ def paper_session_adjustments(
         block_reason = None
         adjustments.append("Max-catch mode: session blocks disabled, 15s cooldown, runner floor 52.")
 
-    if bucket == "OPEN_DRIVE":
-        # 9:15-10:30 IST: where the BIGGEST morning explosions happen
-        # NIFTY 23850 CE: ₹130→₹200+ in 30 min at open — must catch this
-        min_entry_tqs = max(55, min_entry_tqs - 8)   # aggressive: 55 TQS floor (was 58 after -4)
-        min_runner_score = max(62.0, min_runner_score - 16.0)  # 62 for near-expiry morning bursts
-        allocation_multiplier = max(1.5, float(open_drive_allocation_boost))  # bigger size on open
-        duplicate_cooldown = max(20, int(duplicate_cooldown * 0.2))  # 20s for momentum continuation
-        target_multiplier = 1.5   # bigger targets — open drive moves extend far
-        max_hold_seconds = min(max_hold_seconds + 300, 900)  # up to 900s for 30-min open drive moves
+    elif unified_scalp_profile and bucket in LIVE_SCALP_BUCKETS:
+        scalp = _midday_scalp_session_params(
+            base_min_tqs=min_entry_tqs,
+            base_runner_score=min_runner_score,
+            base_duplicate_cooldown=duplicate_cooldown,
+            base_max_hold_seconds=max_hold_seconds,
+        )
+        min_entry_tqs = scalp["min_entry_tqs"]
+        min_runner_score = scalp["min_runner_score"]
+        allocation_multiplier = scalp["allocation_multiplier"]
+        duplicate_cooldown = scalp["duplicate_cooldown"]
+        target_multiplier = scalp["target_multiplier"]
+        stop_multiplier = scalp["stop_multiplier"]
+        max_hold_seconds = scalp["max_hold_seconds"]
+        block_new_paper = scalp["block_new_paper"]
+        block_reason = scalp["block_reason"]
+        midday_runner_bypass_score = scalp["midday_runner_bypass_score"]
+        adjustments.append(
+            f"{bucket}: unified midday scalp — TQS≥{min_entry_tqs}, runner≥{min_runner_score}, "
+            f"120s dedupe, 180s max hold, quick-profit targets."
+        )
+
+    elif bucket == "OPEN_DRIVE":
+        min_entry_tqs = max(55, min_entry_tqs - 8)
+        min_runner_score = max(62.0, min_runner_score - 16.0)
+        allocation_multiplier = max(1.5, float(open_drive_allocation_boost))
+        duplicate_cooldown = max(20, int(duplicate_cooldown * 0.2))
+        target_multiplier = 1.5
+        max_hold_seconds = min(max_hold_seconds + 300, 900)
         profit_fallback_pct = float(open_drive_profit_fallback_pct)
         profit_secondary_pct = float(open_drive_profit_secondary_pct)
         profit_primary_pct = float(open_drive_profit_primary_pct)
         session_profit_stop_pct = float(open_drive_profit_stop_pct)
         adjustments.append(
-            f"Open drive AGGRESSIVE: TQS-8, runner-16, 20s cooldown, 1.5x size, 1.5x target — catch morning explosions."
+            "Open drive AGGRESSIVE: TQS-8, runner-16, 20s cooldown, 1.5x size, 1.5x target — catch morning explosions."
         )
     elif bucket == "MIDDAY_CHOP":
         min_entry_tqs = max(min_entry_tqs + 4, 78)
@@ -200,14 +263,11 @@ def paper_session_adjustments(
         block_reason = "Midday chop window: paper entries paused unless momentum override or runner score >= 90 with alignment."
         adjustments.append("Midday chop: momentum override bypass; A+ runners (score≥90 + alignment) allowed.")
     elif bucket == "CLOSING_MOMENTUM":
-        # 14:30-15:15 IST: where the BIGGEST explosive moves happen (end-of-day gamma, institutional)
-        # Lower ALL thresholds — better to miss a false signal than miss a 100%+ move
-        min_entry_tqs = max(58, min_entry_tqs - 10)   # was max(70), now 58 — catch moves earlier
-        min_runner_score = max(65.0, min_runner_score - 15.0)  # was max(80), now 65 — near-expiry high-gamma
-        allocation_multiplier = 1.2   # slightly larger size — end-of-day moves are real
-        duplicate_cooldown = max(60, int(duplicate_cooldown * 0.4))  # fast re-entry for momentum continuation
-        target_multiplier = 1.3    # bigger targets — closing moves extend further
-        max_hold_seconds = max_hold_seconds  # no cap — let trailing exit handle it
+        min_entry_tqs = max(58, min_entry_tqs - 10)
+        min_runner_score = max(65.0, min_runner_score - 15.0)
+        allocation_multiplier = 1.2
+        duplicate_cooldown = max(60, int(duplicate_cooldown * 0.4))
+        target_multiplier = 1.3
         adjustments.append("Closing momentum: AGGRESSIVE gates — TQS-10, runner-15, fast cooldowns for end-of-day explosive moves.")
     elif bucket == "NORMAL":
         adjustments.append("Normal session: use configured high-PF thresholds.")
@@ -224,7 +284,11 @@ def paper_session_adjustments(
         block_new_paper = True
         block_reason = block_reason or "Risk regime: reversal/chop risk elevated; paper entries paused."
         adjustments.append("Risk regime: tighten gates and pause new paper entries.")
-    elif regime == "TREND_EXPANSION" and bucket in {"OPEN_DRIVE", "CLOSING_MOMENTUM", "NORMAL"}:
+    elif (
+        not unified_scalp_profile
+        and regime == "TREND_EXPANSION"
+        and bucket in {"OPEN_DRIVE", "CLOSING_MOMENTUM", "NORMAL"}
+    ):
         allocation_multiplier = min(1.25, allocation_multiplier * 1.1)
         target_multiplier = max(target_multiplier, 1.05)
         adjustments.append("Trend expansion: modest size/target boost in active session windows.")
@@ -248,4 +312,5 @@ def paper_session_adjustments(
         "profitTargetPrimaryPct": profit_primary_pct,
         "sessionProfitStopPct": session_profit_stop_pct,
         "adjustments": adjustments,
+        "unifiedScalpProfile": unified_scalp_profile,
     }

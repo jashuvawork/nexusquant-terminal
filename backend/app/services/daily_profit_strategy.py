@@ -26,6 +26,7 @@ def build_daily_improvement_plan(
     target_profit_factor: float = 1.5,
     target_win_rate_pct: float = 45.0,
     min_trades_for_calibration: int = 8,
+    unified_scalp_session_profile: bool = True,
 ) -> dict[str, Any]:
     """Produce actionable gates for today based on recent paper performance."""
     rolling_trades = int(rolling_summary.get("paperTrades") or rolling_summary.get("trades") or 0)
@@ -97,11 +98,13 @@ def build_daily_improvement_plan(
                     blocked_sides.append(side)
                     actions.append(f"Block {side} today — PF {_pf(summary):.2f}, net ₹{summary.get('netPnl')}.")
 
+        weak_bucket = "OPEN_DRIVE" if unified_scalp_session_profile else "MIDDAY_CHOP"
         for bucket, summary in by_bucket.items():
-            if bucket == "MIDDAY_CHOP" and int(summary.get("paperTrades") or 0) >= 4:
+            if bucket == weak_bucket and int(summary.get("paperTrades") or 0) >= 4:
                 if _pf(summary) < 1.0:
                     blocked_buckets.append(bucket)
-                    actions.append("Midday chop underperforming — require A+ override only in MIDDAY_CHOP.")
+                    label = "Open drive" if unified_scalp_session_profile else "Midday chop"
+                    actions.append(f"{label} underperforming — require A+ override only in {bucket}.")
 
     if today_trades >= 2 and today_pf < 0.8 and float(today_summary.get("netPnl") or 0) < -5000:
         min_runner_score = max(min_runner_score, 82.0)
@@ -113,8 +116,10 @@ def build_daily_improvement_plan(
         min_runner_score = max(min_runner_score, 85.0)
         allow_tier_b = False
         allow_tier_c = False
-        blocked_buckets.append("MIDDAY_CHOP")
-        actions.append(f"Today win rate {today_wr:.1f}% — block weak tiers and midday chop.")
+        weak_bucket = "OPEN_DRIVE" if unified_scalp_session_profile else "MIDDAY_CHOP"
+        blocked_buckets.append(weak_bucket)
+        label = "open drive" if unified_scalp_session_profile else "midday chop"
+        actions.append(f"Today win rate {today_wr:.1f}% — block weak tiers and {label}.")
 
     if missed_count > 30 and rolling_pf >= target_profit_factor:
         actions.append(f"{missed_count} near-misses logged — edge OK; selective capture preferred over blind volume.")

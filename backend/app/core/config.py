@@ -187,6 +187,7 @@ class Settings(BaseSettings):
     paper_daily_target_lock_enabled: bool = True
     paper_trading: bool = True
     paper_session_adjustments_enabled: bool = True
+    paper_unified_scalp_session_profile: bool = True
     paper_profit_first_mode: bool = True
     paper_profit_tier_a_min_runner_score: float = 92.0
     paper_profit_tier_a_min_velocity_pct: float = 3.0
