@@ -1573,7 +1573,7 @@ class AutoTraderEngine:
         return premium_min <= premium <= premium_max
 
     def _is_elite_runner_entry(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
-        """High-profile runner gate — ultra-elite only when elite-only mode is active."""
+        """High-profile runner gate — ultra-elite when elite-only mode is active."""
         if self._elite_runner_only_mode():
             return self._is_ultra_elite_runner_entry(candidate, runner)
         runner = runner or candidate.get("runnerSignal") or {}
