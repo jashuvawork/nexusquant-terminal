@@ -34,7 +34,7 @@ SESSION_NOTES = {
     "CLOSING_MOMENTUM": "14:30-15:15 IST: same midday scalp profile — elite gates, quick-profit exits.",
     "PREMARKET": "Pre-market: analysis only; build levels and bias, no F&O scalps.",
     "CLOSED": "Closed market: backtest and tomorrow plan only.",
-    "NORMAL": "Normal session: ACS scalp — controlled 3.5pt stop, asymmetric profit trail to 12pt.",
+    "NORMAL": "Normal session: ACS + advanced scalp stack (regime/EV/cross-index gates, partials, vol-scaled trail).",
     "CLOSING_MOMENTUM": "14:30-15:15 IST: ACS scalp blocked — backtest PF weak in closing window.",
 }
 

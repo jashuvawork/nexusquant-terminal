@@ -200,6 +200,27 @@ class ContinuousAILearner:
         await self.persist()
         return self.status_from_state(state)
 
+    async def scalp_exit_signal(self, features: dict[str, Any]) -> dict[str, Any]:
+        """ML/heuristic overlay: recommend holding vs exiting an open scalp."""
+        from app.services.advanced_scalp import ml_exit_recommendation
+
+        state = await self.load()
+        should_exit, reason = ml_exit_recommendation(
+            state,
+            age=float(features.get("age") or 0),
+            best_gain=float(features.get("bestGain") or 0),
+            unrealized=float(features.get("unrealized") or 0),
+            premium_velocity=float(features.get("premiumVelocity") or 0),
+            runner_score=float(features.get("runnerScore") or 0),
+            regime=str(features.get("regime") or "NORMAL"),
+            enabled=True,
+        )
+        return {
+            "exitRecommended": should_exit,
+            "reason": reason,
+            "learningScore": float(state.get("learningScore") or 50),
+            "profitFactor": float(state.get("profitFactor") or 0),
+        }
 
     async def train_from_historical_samples(self, samples: list[dict[str, Any]]) -> dict[str, Any]:
         state = await self.load()
