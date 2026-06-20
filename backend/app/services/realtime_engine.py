@@ -317,6 +317,7 @@ class RealTimeMarketEngine:
         # On EXPIRY DAY (days=0): this is the primary opportunity — scan first, prioritise
         if near_expiry:
             try:
+                await self._ensure_contract_meta_for_expiry(instrument_key, near_expiry, data_warnings)
                 near_chain = await self.client.option_chain(instrument_key, near_expiry)
                 near_rows = near_chain.get("data") or []
                 near_today = datetime.now(IST).date()
@@ -584,16 +585,8 @@ class RealTimeMarketEngine:
                 warnings.append(f"Configured {symbol}_EXPIRY_DATE={configured} not found in Upstox contracts; using nearest available {selected}.")
 
         selected_contracts = [item for item in contracts if item.get("expiry") == selected]
-        self._contract_meta.update({
-            str(item.get("instrument_key")): {
-                "lotSize": as_int(item.get("lot_size") or item.get("minimum_lot"), 1),
-                "minimumLot": as_int(item.get("minimum_lot") or item.get("lot_size"), 1),
-                "freezeQuantity": as_int(item.get("freeze_quantity"), 0),
-                "tradingSymbol": item.get("trading_symbol"),
-            }
-            for item in selected_contracts
-            if item.get("instrument_key")
-        })
+        ingested = self._ingest_upstox_contracts(contracts)
+        lot_size_by_expiry = self._lot_size_by_expiry(contracts)
         payload = {
             "symbol": symbol,
             "underlyingInstrumentKey": instrument_key,
@@ -603,16 +596,75 @@ class RealTimeMarketEngine:
             "availableExpiries": expiries[:12],
             "availableExpiryCount": len(expiries),
             "selectedContractCount": len(selected_contracts),
+            "contractMetaCount": ingested,
+            "lotSizeByExpiry": lot_size_by_expiry,
+            "selectedExpiryLotSize": lot_size_by_expiry.get(selected),
+            "contractMetaSource": "upstox_option_contract",
             "lastCheckedAt": datetime.now(timezone.utc).isoformat(),
         }
         payload["cache"] = {"hit": False, "ageSeconds": 0, "ttlSeconds": self.settings.expiry_cache_seconds}
         self._expiry_cache[symbol] = (monotonic(), deepcopy(payload))
         return payload
 
+    def _contract_meta_from_upstox_item(self, item: dict[str, Any]) -> dict[str, Any]:
+        lot_size = as_int(item.get("lot_size") or item.get("minimum_lot"), 0)
+        minimum_lot = as_int(item.get("minimum_lot") or item.get("lot_size"), 0)
+        resolved_lot = max(lot_size, minimum_lot, 1)
+        return {
+            "lotSize": resolved_lot,
+            "minimumLot": resolved_lot,
+            "freezeQuantity": as_int(item.get("freeze_quantity"), 0),
+            "tradingSymbol": item.get("trading_symbol"),
+            "expiry": item.get("expiry"),
+            "strikePrice": as_float(item.get("strike_price")),
+            "instrumentType": item.get("instrument_type"),
+            "source": "upstox_option_contract",
+        }
+
+    def _ingest_upstox_contracts(self, contracts: list[dict[str, Any]]) -> int:
+        ingested = 0
+        for item in contracts:
+            instrument_key = str(item.get("instrument_key") or "")
+            if not instrument_key:
+                continue
+            self._contract_meta[instrument_key] = self._contract_meta_from_upstox_item(item)
+            ingested += 1
+        return ingested
+
+    def _lot_size_by_expiry(self, contracts: list[dict[str, Any]]) -> dict[str, int]:
+        by_expiry: dict[str, int] = {}
+        for item in contracts:
+            expiry = str(item.get("expiry") or "")
+            if not expiry or expiry in by_expiry:
+                continue
+            lot_size = as_int(item.get("lot_size") or item.get("minimum_lot"), 0)
+            if lot_size > 0:
+                by_expiry[expiry] = lot_size
+        return by_expiry
+
+    async def _ensure_contract_meta_for_expiry(self, instrument_key: str, expiry: str, warnings: list[str]) -> None:
+        if not expiry:
+            return
+        sample_key = next((key for key, meta in self._contract_meta.items() if str(meta.get("expiry") or "") == expiry), "")
+        if sample_key:
+            return
+        try:
+            payload = await self.client.option_contracts(instrument_key, expiry)
+            contracts = payload.get("data") or []
+            if contracts:
+                self._ingest_upstox_contracts(contracts)
+            else:
+                warnings.append(f"Upstox returned no contracts for {expiry} lot-size refresh")
+        except Exception as exc:
+            warnings.append(f"Upstox contract lot-size refresh failed for {expiry}: {exc}")
+
     def _contract_details(self, instrument_key: str | None) -> dict[str, Any]:
         if not instrument_key:
-            return {"lotSize": 1, "minimumLot": 1, "freezeQuantity": 0, "tradingSymbol": None}
-        return self._contract_meta.get(str(instrument_key)) or {"lotSize": 1, "minimumLot": 1, "freezeQuantity": 0, "tradingSymbol": None}
+            return {"lotSize": 1, "minimumLot": 1, "freezeQuantity": 0, "tradingSymbol": None, "source": "fallback"}
+        cached = self._contract_meta.get(str(instrument_key))
+        if cached:
+            return cached
+        return {"lotSize": 1, "minimumLot": 1, "freezeQuantity": 0, "tradingSymbol": None, "source": "fallback_missing_upstox_meta"}
 
     def _lot_sized_position(self, instrument_key: str | None, premium: float, risk_capital: float) -> dict[str, Any]:
         details = self._contract_details(instrument_key)
@@ -627,6 +679,7 @@ class RealTimeMarketEngine:
             "lots": lots,
             "quantity": quantity,
             "notional": round(quantity * premium, 2),
+            "lotSizeSource": details.get("source") or "unknown",
         }
 
     async def _optional(self, coroutine: Any, label: str, warnings: list[str]) -> dict[str, Any] | None:
