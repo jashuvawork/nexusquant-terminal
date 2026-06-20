@@ -34,7 +34,8 @@ SESSION_NOTES = {
     "CLOSING_MOMENTUM": "14:30-15:15 IST: same midday scalp profile — elite gates, quick-profit exits.",
     "PREMARKET": "Pre-market: analysis only; build levels and bias, no F&O scalps.",
     "CLOSED": "Closed market: backtest and tomorrow plan only.",
-    "NORMAL": "Normal session: same midday scalp profile when unified mode is on.",
+    "NORMAL": "Normal session: ACS scalp — controlled 3.5pt stop, asymmetric profit trail to 12pt.",
+    "CLOSING_MOMENTUM": "14:30-15:15 IST: ACS scalp blocked — backtest PF weak in closing window.",
 }
 
 LIVE_SCALP_BUCKETS = frozenset({"OPEN_DRIVE", "NORMAL", "MIDDAY_CHOP", "CLOSING_MOMENTUM"})
@@ -62,6 +63,27 @@ def session_bucket(phase: MarketPhase, now: datetime | None = None) -> str:
     if time(14, 30) <= current <= time(15, 15):
         return "CLOSING_MOMENTUM"
     return "NORMAL"
+
+
+def _scalp_acs_session_params(bucket: str) -> dict[str, Any]:
+    """Asymmetric controlled scalp exits — backtest-tuned per session bucket."""
+    defaults = {
+        "controlledStopPoints": 3.5,
+        "breakevenShiftPoints": 3.0,
+        "runnerArmPoints": 5.0,
+        "runnerMinLockPoints": 2.5,
+        "runnerRetainPct": 0.58,
+        "runnerCapPoints": 12.0,
+        "blockScalp": False,
+    }
+    overrides: dict[str, dict[str, Any]] = {
+        "OPEN_DRIVE": {"runnerCapPoints": 14.0, "runnerRetainPct": 0.60, "runnerArmPoints": 4.5, "controlledStopPoints": 3.0},
+        "MIDDAY_CHOP": {"runnerCapPoints": 15.0, "runnerRetainPct": 0.62, "runnerArmPoints": 4.5, "controlledStopPoints": 3.0},
+        "NORMAL": {"runnerCapPoints": 12.0, "runnerRetainPct": 0.58, "runnerArmPoints": 5.0, "controlledStopPoints": 3.5},
+        "CLOSING_MOMENTUM": {"blockScalp": True},
+    }
+    merged = {**defaults, **overrides.get(bucket, {})}
+    return merged
 
 
 def _midday_scalp_session_params(
@@ -222,6 +244,7 @@ def paper_session_adjustments(
             base_duplicate_cooldown=duplicate_cooldown,
             base_max_hold_seconds=max_hold_seconds,
         )
+        acs = _scalp_acs_session_params(bucket)
         min_entry_tqs = scalp["min_entry_tqs"]
         min_runner_score = scalp["min_runner_score"]
         allocation_multiplier = scalp["allocation_multiplier"]
@@ -232,9 +255,12 @@ def paper_session_adjustments(
         block_new_paper = scalp["block_new_paper"]
         block_reason = scalp["block_reason"]
         midday_runner_bypass_score = scalp["midday_runner_bypass_score"]
+        if acs.get("blockScalp"):
+            block_new_paper = True
+            block_reason = block_reason or f"{bucket}: ACS scalp blocked — session backtest PF below target."
         adjustments.append(
-            f"{bucket}: unified midday scalp — TQS≥{min_entry_tqs}, runner≥{min_runner_score}, "
-            f"120s dedupe, 180s max hold, quick-profit active."
+            f"{bucket}: unified ACS scalp — TQS≥{min_entry_tqs}, controlled stop {acs['controlledStopPoints']}pt, "
+            f"trail arm +{acs['runnerArmPoints']}pt, cap +{acs['runnerCapPoints']}pt."
         )
 
     elif bucket == "OPEN_DRIVE":
@@ -313,4 +339,5 @@ def paper_session_adjustments(
         "sessionProfitStopPct": session_profit_stop_pct,
         "adjustments": adjustments,
         "unifiedScalpProfile": unified_scalp_profile,
+        "scalpAcs": _scalp_acs_session_params(bucket) if unified_scalp_profile and bucket in LIVE_SCALP_BUCKETS else {},
     }

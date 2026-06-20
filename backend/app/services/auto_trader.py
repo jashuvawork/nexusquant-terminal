@@ -1613,6 +1613,39 @@ class AutoTraderEngine:
         tqs = int(candidate.get("tqs") or 0)
         return tqs >= int(self.settings.paper_scalping_min_entry_tqs)
 
+    def _scalp_acs_profile(self, session_adj: dict[str, Any] | None = None) -> dict[str, float]:
+        session_adj = session_adj or {}
+        acs = session_adj.get("scalpAcs") or {}
+        return {
+            "stop": float(acs.get("controlledStopPoints") or self.settings.paper_scalp_controlled_stop_points),
+            "breakeven": float(acs.get("breakevenShiftPoints") or self.settings.paper_scalp_breakeven_shift_points),
+            "arm": float(acs.get("runnerArmPoints") or self.settings.paper_scalp_runner_arm_points),
+            "minLock": float(acs.get("runnerMinLockPoints") or self.settings.paper_scalp_runner_min_lock_points),
+            "retain": float(acs.get("runnerRetainPct") or self.settings.paper_scalp_runner_retain_pct),
+            "cap": float(acs.get("runnerCapPoints") or self.settings.paper_scalp_runner_cap_points),
+            "microArm": float(self.settings.paper_scalp_micro_arm_points),
+            "microTrail": float(self.settings.paper_scalp_micro_trail_points),
+            "decaySeconds": float(self.settings.paper_scalp_early_decay_seconds),
+            "decayMinGain": float(self.settings.paper_scalp_early_decay_min_gain),
+        }
+
+    def _passes_scalp_velocity_gate(self, candidate: dict[str, Any]) -> bool:
+        min_velocity = float(self.settings.paper_scalp_velocity_min_pct or 0)
+        if min_velocity <= 0:
+            return True
+        runner = candidate.get("runnerSignal") or candidate
+        if runner.get("momentumOverride"):
+            return True
+        if not runner.get("momentumSurge"):
+            return False
+        metrics = runner.get("metrics") or {}
+        premium_velocity = float(runner.get("premiumVelocityPct") or metrics.get("premiumVelocity") or 0)
+        if premium_velocity < min_velocity:
+            return False
+        if premium_velocity < 3.0 and not runner.get("momentumAligned"):
+            return False
+        return True
+
     def _prepare_execution_candidate(self, candidate: dict[str, Any]) -> dict[str, Any] | None:
         """Route weak runners to scalping; only ultra-elite stays explosive."""
         strategy = str(candidate.get("strategyType") or "SCALP").upper()
@@ -1626,8 +1659,8 @@ class AutoTraderEngine:
             scalp["strategyType"] = "SCALP"
             profile = dict(scalp.get("optimizedProfile") or {})
             profile["executionStyle"] = "HIGH_WIN_SCALP"
-            profile["targetPoints"] = min(float(profile.get("targetPoints") or self.settings.paper_target_points), float(self.settings.paper_quick_profit_points) + 4.0)
-            profile["stopPoints"] = min(float(profile.get("stopPoints") or self.settings.paper_stop_points), float(self.settings.paper_stop_points))
+            profile["targetPoints"] = min(float(profile.get("targetPoints") or self.settings.paper_target_points), float(self.settings.paper_scalp_runner_cap_points))
+            profile["stopPoints"] = min(float(profile.get("stopPoints") or self.settings.paper_stop_points), float(self.settings.paper_scalp_controlled_stop_points))
             scalp["optimizedProfile"] = profile
             return scalp
         return None
@@ -2097,6 +2130,11 @@ class AutoTraderEngine:
 
     def _session_entry_allowed(self, candidate: dict[str, Any], session_adj: dict[str, Any], market_phase: str | None = None) -> bool:
         if self._is_active_scalp_entry(candidate):
+            if not self._passes_scalp_velocity_gate(candidate):
+                return False
+            scalp_acs = session_adj.get("scalpAcs") or {}
+            if session_adj.get("blockNewPaperTrades") and scalp_acs.get("blockScalp"):
+                return False
             return True
         if self._is_tradeable_explosive_runner(candidate, market_phase):
             return True
@@ -2623,9 +2661,12 @@ class AutoTraderEngine:
                 max_hold_seconds = max(max_hold_seconds, int(self.settings.paper_runner_max_hold_seconds))
                 breakeven_shift = max(breakeven_shift, min(target_points * 0.35, float(self.settings.paper_breakeven_shift_points) + 2.0))
             elif scalp_lock or style == "HIGH_WIN_SCALP":
-                target_points = min(target_points, max(self.settings.paper_target_points, 8.0))
+                acs = self._scalp_acs_profile(session_adj) if self.settings.paper_acs_scalp_enabled else {}
+                target_points = min(target_points, float(acs.get("cap") or self.settings.paper_scalp_runner_cap_points or self.settings.paper_target_points))
                 max_hold_seconds = min(max_hold_seconds, int(self.settings.max_paper_trade_seconds))
-                breakeven_shift = min(breakeven_shift, max(4.0, target_points * 0.5))
+                breakeven_shift = min(breakeven_shift, float(acs.get("breakeven") or self.settings.paper_scalp_breakeven_shift_points))
+                if self.settings.paper_acs_scalp_enabled:
+                    stop_points = min(stop_points, float(acs.get("stop") or self.settings.paper_scalp_controlled_stop_points))
             if not trade.breakeven_armed and trade.best_price >= trade.entry_price + breakeven_shift:
                 trade.breakeven_armed = True
                 trade.lifecycle.append(LifecycleEvent("MODIFIED", datetime.now(timezone.utc).isoformat(), "breakeven stop armed", {"breakevenAt": trade.entry_price, "bestPrice": trade.best_price}))
@@ -2640,7 +2681,7 @@ class AutoTraderEngine:
             trail_pts = float(trade.trail_points or (target_points * 0.18 if is_runner and not scalp_lock else scalp_trail))
             trail_arm_at = max(2.0, min(partial_exit_at, target_points * 0.2)) if scalp_lock else max(partial_exit_at, target_points * 0.25)
             in_profitable_trail = trade.best_price >= trade.entry_price + trail_arm_at
-            reason = self._quick_profit_exit_reason(trade, current, age)
+            reason = self._quick_profit_exit_reason(trade, current, age, session_adj=session_adj, scalp_exits=scalp_exits)
             if not reason and scalp_lock and in_profitable_trail and current <= trade.best_price - trail_pts:
                 reason = "AI adaptive scalp profit lock"
             elif not reason and in_profitable_trail and current <= trade.best_price - trail_pts:
@@ -2648,7 +2689,7 @@ class AutoTraderEngine:
             elif not reason and is_runner and trade.best_price >= target_price and trade.best_price > target_price + trail_pts * 0.25:
                 if current <= trade.best_price - trail_pts:
                     reason = "elite runner trailing max-points lock"
-            elif not reason and scalp_lock and current >= trade.entry_price + max(3.0, target_points * 0.5):
+            elif not reason and scalp_lock and current >= trade.entry_price + max(3.0, target_points * 0.5) and not self.settings.paper_acs_scalp_enabled:
                 reason = "AI adaptive scalp target hit"
             elif not reason and current >= target_price:
                 reason = "elite runner target profit hit" if is_runner and not scalp_lock else "target profit hit"
@@ -2884,8 +2925,50 @@ class AutoTraderEngine:
             return "SCALP_LOCK"
         return "RUNNER"
 
-    def _quick_profit_exit_reason(self, trade: PaperTrade, current: float, age: float) -> str | None:
-        """Book small profits quickly instead of waiting for wide runner targets."""
+    def _quick_profit_exit_reason(
+        self,
+        trade: PaperTrade,
+        current: float,
+        age: float,
+        *,
+        session_adj: dict[str, Any] | None = None,
+        scalp_exits: bool = False,
+    ) -> str | None:
+        """ACS asymmetric scalp exits: tight controlled stop, ratcheting profit trail."""
+        if not self.settings.paper_quick_profit_enabled:
+            return None
+        if self.settings.paper_acs_scalp_enabled and scalp_exits:
+            return self._acs_scalp_exit_reason(trade, current, age, session_adj=session_adj)
+        return self._legacy_quick_profit_exit_reason(trade, current, age)
+
+    def _acs_scalp_exit_reason(
+        self,
+        trade: PaperTrade,
+        current: float,
+        age: float,
+        *,
+        session_adj: dict[str, Any] | None = None,
+    ) -> str | None:
+        acs = self._scalp_acs_profile(session_adj)
+        entry = float(trade.entry_price)
+        best = float(trade.best_price or entry)
+        best_gain = max(0.0, best - entry)
+        unrealized = current - entry
+        cap_target = float(acs["cap"])
+        if current >= entry + cap_target:
+            return "ACS runner cap target hit"
+        if age >= acs["decaySeconds"] and best_gain < acs["decayMinGain"]:
+            return "ACS early decay profit scratch" if unrealized > 0 else "ACS early decay exit"
+        if best_gain >= acs["arm"]:
+            floor_price = entry + max(acs["minLock"], best_gain * acs["retain"])
+            if current <= floor_price:
+                return "ACS asymmetric profit trail"
+        if acs["microArm"] <= best_gain < acs["arm"] and current <= best - acs["microTrail"]:
+            return "ACS micro profit lock"
+        return None
+
+    def _legacy_quick_profit_exit_reason(self, trade: PaperTrade, current: float, age: float) -> str | None:
+        """Legacy fixed quick-profit exit (used when ACS disabled)."""
         if not self.settings.paper_quick_profit_enabled:
             return None
         entry = float(trade.entry_price)
@@ -3342,6 +3425,19 @@ class AutoTraderEngine:
             base_stop = max(base_stop, premium * float(plan.get("hardStopPct") or 10.0) / 100)
         premium_stop_cap_pct = 0.10 if runner_score >= 85 and breakout >= 65 and delta_velocity >= 45 else 0.08
         premium_capped_stop = max(costs_per_unit + 1.0, premium * premium_stop_cap_pct) if premium > 0 else base_stop
+        is_scalp = str(candidate.get("strategyType") or "").upper() == "SCALP" or str((profile.get("executionStyle") or "")).upper() == "HIGH_WIN_SCALP"
+        if is_scalp and self.settings.paper_acs_scalp_enabled and not is_runner:
+            acs = self._scalp_acs_profile(session_adj)
+            target = float(acs["cap"])
+            base_stop = float(acs["stop"])
+            breakeven = float(acs["breakeven"])
+            trail = max(1.25, target * 0.25)
+            return {
+                "targetPoints": round(target, 2),
+                "stopPoints": round(max(costs_per_unit + 0.75, base_stop), 2),
+                "breakevenShiftPoints": round(breakeven, 2),
+                "trailPoints": round(trail, 2),
+            }
         stop = min(base_stop, premium_capped_stop) if premium > 0 and not is_runner else base_stop
         stop = max(costs_per_unit + 0.75, stop)
         if is_runner:
