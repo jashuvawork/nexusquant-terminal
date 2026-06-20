@@ -24,6 +24,7 @@ from app.services.advanced_scalp import (
     read_vix_from_payload,
     volatility_scale_acs,
 )
+from app.services.ai_learning import ContinuousAILearner
 from app.services.daily_profit_strategy import build_daily_improvement_plan
 from app.services.paper_session_manager import PaperSessionManager
 from app.services.risk_profiles import paper_session_adjustments
