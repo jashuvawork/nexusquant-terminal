@@ -1714,6 +1714,7 @@ class AutoTraderEngine:
             "microTrail": float(self.settings.paper_scalp_micro_trail_points),
             "decaySeconds": float(self.settings.paper_scalp_early_decay_seconds),
             "decayMinGain": float(self.settings.paper_scalp_early_decay_min_gain),
+            "quickProfit": float(acs.get("quickProfitPoints") or self.settings.paper_acs_quick_profit_points),
         }
         lane = str((trade.scalp_lane if trade else "") or lane_override or "")
         profile.update({k: float(v) for k, v in lane_acs_overrides(lane).items()})
@@ -2836,7 +2837,10 @@ class AutoTraderEngine:
             elif not reason and is_runner and not scalp_lock and age >= int(self.settings.paper_runner_min_hold_seconds) and current <= trade.entry_price - max(1.0, stop_points * 0.5):
                 if unrealized < max(1.5, float(self.settings.paper_micro_scalp_min_gain) * 0.5) and best_gain < float(self.settings.paper_micro_scalp_min_gain):
                     reason = "runner early decay stop"
-            elif not reason and scalp_lock and age >= min(max_hold_seconds, 120) and current > trade.entry_price + 1.0:
+            elif not reason and scalp_lock and age >= min(
+                max_hold_seconds,
+                int(self.settings.paper_scalp_time_lock_seconds),
+            ) and best_gain >= float(self.settings.paper_scalp_time_lock_min_gain):
                 reason = "AI adaptive scalp time lock"
             elif not reason and trade.breakeven_armed and current <= trade.entry_price + 1.5 and (not is_runner or age >= runner_min_hold):
                 reason = "breakeven protection after profit move"
@@ -3079,6 +3083,8 @@ class AutoTraderEngine:
     def _maybe_take_scalp_partial(self, trade: PaperTrade, current: float, *, lot_size: int = 1) -> bool:
         if not self.settings.paper_scalp_partial_exit_enabled or trade.partial_exit_taken:
             return False
+        if str(trade.scalp_lane or "") == LANE_FADE:
+            return False
         if trade.strategy_type != "SCALP" and trade.exit_mode != "SCALP_LOCK" and not trade.scalp_lane:
             return False
         entry = float(trade.entry_price)
@@ -3122,6 +3128,13 @@ class AutoTraderEngine:
         best = float(trade.best_price or entry)
         best_gain = max(0.0, best - entry)
         unrealized = current - entry
+        quick_target = float(acs.get("quickProfit") or self.settings.paper_acs_quick_profit_points)
+        lane = str(trade.scalp_lane or "")
+        if current >= entry + quick_target:
+            if lane == LANE_FADE:
+                return "quick profit target hit"
+            if not trade.partial_exit_taken:
+                return "quick profit target hit"
         cap_target = float(acs["cap"])
         if current >= entry + cap_target:
             return "ACS runner cap target hit"

@@ -73,17 +73,19 @@ def _scalp_acs_session_params(bucket: str, *, block_closing_momentum: bool = Fal
         "runnerMinLockPoints": 2.5,
         "runnerRetainPct": 0.58,
         "runnerCapPoints": 12.0,
+        "quickProfitPoints": 4.0,
         "blockScalp": False,
     }
     overrides: dict[str, dict[str, Any]] = {
-        "OPEN_DRIVE": {"runnerCapPoints": 14.0, "runnerRetainPct": 0.60, "runnerArmPoints": 4.5, "controlledStopPoints": 3.0},
-        "MIDDAY_CHOP": {"runnerCapPoints": 15.0, "runnerRetainPct": 0.62, "runnerArmPoints": 4.5, "controlledStopPoints": 3.0},
-        "NORMAL": {"runnerCapPoints": 12.0, "runnerRetainPct": 0.58, "runnerArmPoints": 5.0, "controlledStopPoints": 3.5},
+        "OPEN_DRIVE": {"runnerCapPoints": 14.0, "runnerRetainPct": 0.60, "runnerArmPoints": 4.5, "controlledStopPoints": 3.0, "quickProfitPoints": 4.0},
+        "MIDDAY_CHOP": {"runnerCapPoints": 15.0, "runnerRetainPct": 0.62, "runnerArmPoints": 4.5, "controlledStopPoints": 3.0, "quickProfitPoints": 4.0},
+        "NORMAL": {"runnerCapPoints": 12.0, "runnerRetainPct": 0.58, "runnerArmPoints": 5.0, "controlledStopPoints": 3.5, "quickProfitPoints": 4.0},
         "CLOSING_MOMENTUM": {
             "runnerCapPoints": 13.0,
             "runnerRetainPct": 0.56,
             "runnerArmPoints": 4.5,
             "controlledStopPoints": 3.5,
+            "quickProfitPoints": 4.0,
         },
     }
     if block_closing_momentum:
