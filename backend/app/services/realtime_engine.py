@@ -1952,11 +1952,11 @@ class RealTimeMarketEngine:
         scalp_profile = {
             **optimized_profile,
             "executionStyle": "HIGH_WIN_SCALP",
-            "targetPoints": min(float(optimized_profile.get("targetPoints") or self.settings.paper_target_points), float(self.settings.paper_quick_profit_points) + 4.0),
-            "stopPoints": min(float(optimized_profile.get("stopPoints") or self.settings.paper_stop_points), float(self.settings.paper_stop_points)),
+            "targetPoints": min(float(optimized_profile.get("targetPoints") or self.settings.paper_target_points), float(self.settings.paper_scalp_runner_cap_points)),
+            "stopPoints": min(float(optimized_profile.get("stopPoints") or self.settings.paper_stop_points), float(self.settings.paper_scalp_controlled_stop_points)),
             "partialExitPct": 0.65,
             "runnerPct": 0.35,
-            "holdBias": "quick_scalp_profit_lock",
+            "holdBias": "acs_controlled_scalp_trail",
         }
         return [
             {
