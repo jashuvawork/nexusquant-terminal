@@ -11,11 +11,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 
 RUN python - <<'PY'
-from app.main import market_engine
+# Full module import — fails the image build if AutoTraderEngine or other startup imports break.
+from app.main import app, market_engine
+
 validation = market_engine.validate_runtime()
 if not validation["ok"]:
     raise SystemExit(f"NexusQuant runtime validation failed: {validation}")
-print(f"NexusQuant runtime validation passed: {validation}")
+print(f"NexusQuant startup validation passed: app={app.title!r} runtime={validation}")
 PY
 
 EXPOSE 8000
