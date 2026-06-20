@@ -460,7 +460,7 @@ class RealTimeMarketEngine:
             "chartAnalysis": chart_analysis,
             "newsState": news_state,
             "explosiveRunner": runner_signal,
-            "explosiveRunnerWatchlist": runner_watchlist[:10],
+            "explosiveRunnerWatchlist": runner_watchlist[:16],
             "paperPriceWatch": self._paper_price_watch(runner_watchlist),
             "productionReadiness": production_readiness,
             "dataSource": "UPSTOX_REALTIME_REST",

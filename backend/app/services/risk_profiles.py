@@ -29,13 +29,12 @@ PROFILES: dict[str, RiskProfile] = {
 }
 
 SESSION_NOTES = {
-    "OPEN_DRIVE": "9:15-10:30 IST: same midday scalp profile — elite gates, quick-profit exits.",
-    "MIDDAY_CHOP": "11:30-13:30 IST: midday scalp profile — elite gates, quick-profit exits.",
-    "CLOSING_MOMENTUM": "14:30-15:15 IST: same midday scalp profile — elite gates, quick-profit exits.",
+    "OPEN_DRIVE": "9:15-10:30 IST: all-day unified scalp — momentum + ACS partials/trail.",
+    "MIDDAY_CHOP": "11:30-13:30 IST: all-day unified scalp — momentum + fade rejection lane.",
+    "CLOSING_MOMENTUM": "14:30-15:15 IST: all-day unified scalp — momentum + controlled ACS exits.",
     "PREMARKET": "Pre-market: analysis only; build levels and bias, no F&O scalps.",
     "CLOSED": "Closed market: backtest and tomorrow plan only.",
-    "NORMAL": "Normal session: ACS + advanced scalp stack (regime/EV/cross-index gates, partials, vol-scaled trail).",
-    "CLOSING_MOMENTUM": "14:30-15:15 IST: ACS scalp blocked — backtest PF weak in closing window.",
+    "NORMAL": "Normal session: all-day ACS + advanced scalp stack (regime/EV/cross-index gates).",
 }
 
 LIVE_SCALP_BUCKETS = frozenset({"OPEN_DRIVE", "NORMAL", "MIDDAY_CHOP", "CLOSING_MOMENTUM"})
@@ -65,8 +64,8 @@ def session_bucket(phase: MarketPhase, now: datetime | None = None) -> str:
     return "NORMAL"
 
 
-def _scalp_acs_session_params(bucket: str) -> dict[str, Any]:
-    """Asymmetric controlled scalp exits — backtest-tuned per session bucket."""
+def _scalp_acs_session_params(bucket: str, *, block_closing_momentum: bool = False) -> dict[str, Any]:
+    """Asymmetric controlled scalp exits — tuned per session bucket, active all live hours."""
     defaults = {
         "controlledStopPoints": 3.5,
         "breakevenShiftPoints": 3.0,
@@ -74,16 +73,47 @@ def _scalp_acs_session_params(bucket: str) -> dict[str, Any]:
         "runnerMinLockPoints": 2.5,
         "runnerRetainPct": 0.58,
         "runnerCapPoints": 12.0,
+        "quickProfitPoints": 4.0,
         "blockScalp": False,
     }
     overrides: dict[str, dict[str, Any]] = {
-        "OPEN_DRIVE": {"runnerCapPoints": 14.0, "runnerRetainPct": 0.60, "runnerArmPoints": 4.5, "controlledStopPoints": 3.0},
-        "MIDDAY_CHOP": {"runnerCapPoints": 15.0, "runnerRetainPct": 0.62, "runnerArmPoints": 4.5, "controlledStopPoints": 3.0},
-        "NORMAL": {"runnerCapPoints": 12.0, "runnerRetainPct": 0.58, "runnerArmPoints": 5.0, "controlledStopPoints": 3.5},
-        "CLOSING_MOMENTUM": {"blockScalp": True},
+        "OPEN_DRIVE": {"runnerCapPoints": 14.0, "runnerRetainPct": 0.60, "runnerArmPoints": 4.5, "controlledStopPoints": 3.0, "quickProfitPoints": 4.0},
+        "MIDDAY_CHOP": {"runnerCapPoints": 15.0, "runnerRetainPct": 0.62, "runnerArmPoints": 4.5, "controlledStopPoints": 3.0, "quickProfitPoints": 4.0},
+        "NORMAL": {"runnerCapPoints": 12.0, "runnerRetainPct": 0.58, "runnerArmPoints": 5.0, "controlledStopPoints": 3.5, "quickProfitPoints": 4.0},
+        "CLOSING_MOMENTUM": {
+            "runnerCapPoints": 13.0,
+            "runnerRetainPct": 0.56,
+            "runnerArmPoints": 4.5,
+            "controlledStopPoints": 3.5,
+            "quickProfitPoints": 4.0,
+        },
     }
+    if block_closing_momentum:
+        overrides["CLOSING_MOMENTUM"] = {"blockScalp": True}
     merged = {**defaults, **overrides.get(bucket, {})}
     return merged
+
+
+def _all_day_unified_scalp_params(
+    *,
+    base_min_tqs: int,
+    base_runner_score: float,
+    base_duplicate_cooldown: int,
+    base_max_hold_seconds: int,
+) -> dict[str, Any]:
+    """All-day unified scalp: elite gates, quick-profit ACS, momentum + fade lanes in every live window."""
+    return {
+        "min_entry_tqs": max(int(base_min_tqs) + 4, 78),
+        "min_runner_score": max(float(base_runner_score) + 2.0, 82.0),
+        "allocation_multiplier": 0.85,
+        "duplicate_cooldown": max(int(base_duplicate_cooldown), 90),
+        "target_multiplier": 1.0,
+        "stop_multiplier": 0.95,
+        "max_hold_seconds": min(int(base_max_hold_seconds), 180),
+        "block_new_paper": False,
+        "block_reason": None,
+        "midday_runner_bypass_score": 88.0,
+    }
 
 
 def _midday_scalp_session_params(
@@ -93,19 +123,13 @@ def _midday_scalp_session_params(
     base_duplicate_cooldown: int,
     base_max_hold_seconds: int,
 ) -> dict[str, Any]:
-    """Winning midday setup: elite gates, tight targets, short holds, quick-profit style."""
-    return {
-        "min_entry_tqs": max(int(base_min_tqs) + 4, 78),
-        "min_runner_score": max(float(base_runner_score) + 2.0, 82.0),
-        "allocation_multiplier": 0.75,
-        "duplicate_cooldown": max(int(base_duplicate_cooldown), 120),
-        "target_multiplier": 0.95,
-        "stop_multiplier": 0.9,
-        "max_hold_seconds": min(int(base_max_hold_seconds), 180),
-        "block_new_paper": False,
-        "block_reason": None,
-        "midday_runner_bypass_score": 90.0,
-    }
+    """Backward-compatible alias for legacy callers."""
+    return _all_day_unified_scalp_params(
+        base_min_tqs=base_min_tqs,
+        base_runner_score=base_runner_score,
+        base_duplicate_cooldown=base_duplicate_cooldown,
+        base_max_hold_seconds=base_max_hold_seconds,
+    )
 
 
 def adaptive_settings(
@@ -130,7 +154,7 @@ def adaptive_settings(
         safe_mode_tqs = max(safe_mode_tqs, minimum_tqs + 6)
         cooldown = max(cooldown, 45)
         max_exposure = min(max_exposure, 25)
-        adjustments.append("Unified scalp session: midday-style TQS, cooldown, and exposure in all live windows.")
+        adjustments.append("Unified all-day scalp: momentum + fade lanes, ACS exits in every live session window.")
     elif bucket == "OPEN_DRIVE":
         minimum_tqs = max(58, minimum_tqs - 4)
         cooldown = max(5, min(cooldown, 10))
@@ -209,6 +233,8 @@ def paper_session_adjustments(
     open_drive_allocation_boost: float = 1.85,
     max_catch_mode: bool = False,
     unified_scalp_profile: bool = True,
+    all_day_scalp_enabled: bool = True,
+    block_closing_scalp: bool = False,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Time-of-day paper trading gates aligned with Indian market session buckets."""
@@ -238,13 +264,13 @@ def paper_session_adjustments(
         adjustments.append("Max-catch mode: session blocks disabled, 15s cooldown, runner floor 52.")
 
     elif unified_scalp_profile and bucket in LIVE_SCALP_BUCKETS:
-        scalp = _midday_scalp_session_params(
+        scalp = _all_day_unified_scalp_params(
             base_min_tqs=min_entry_tqs,
             base_runner_score=min_runner_score,
             base_duplicate_cooldown=duplicate_cooldown,
             base_max_hold_seconds=max_hold_seconds,
         )
-        acs = _scalp_acs_session_params(bucket)
+        acs = _scalp_acs_session_params(bucket, block_closing_momentum=block_closing_scalp)
         min_entry_tqs = scalp["min_entry_tqs"]
         min_runner_score = scalp["min_runner_score"]
         allocation_multiplier = scalp["allocation_multiplier"]
@@ -259,7 +285,7 @@ def paper_session_adjustments(
             block_new_paper = True
             block_reason = block_reason or f"{bucket}: ACS scalp blocked — session backtest PF below target."
         adjustments.append(
-            f"{bucket}: unified ACS scalp — TQS≥{min_entry_tqs}, controlled stop {acs['controlledStopPoints']}pt, "
+            f"{bucket}: all-day unified ACS scalp — TQS≥{min_entry_tqs}, controlled stop {acs['controlledStopPoints']}pt, "
             f"trail arm +{acs['runnerArmPoints']}pt, cap +{acs['runnerCapPoints']}pt."
         )
 
@@ -307,9 +333,10 @@ def paper_session_adjustments(
         min_entry_tqs = max(min_entry_tqs, 84)
         min_runner_score = max(min_runner_score, 90.0)
         allocation_multiplier = min(allocation_multiplier, 0.5)
-        block_new_paper = True
-        block_reason = block_reason or "Risk regime: reversal/chop risk elevated; paper entries paused."
-        adjustments.append("Risk regime: tighten gates and pause new paper entries.")
+        if not (all_day_scalp_enabled and unified_scalp_profile and bucket in LIVE_SCALP_BUCKETS):
+            block_new_paper = True
+            block_reason = block_reason or "Risk regime: reversal/chop risk elevated; paper entries paused."
+        adjustments.append("Risk regime: tighten gates; all-day scalp lanes remain active with stricter thresholds.")
     elif (
         not unified_scalp_profile
         and regime == "TREND_EXPANSION"
@@ -339,5 +366,6 @@ def paper_session_adjustments(
         "sessionProfitStopPct": session_profit_stop_pct,
         "adjustments": adjustments,
         "unifiedScalpProfile": unified_scalp_profile,
-        "scalpAcs": _scalp_acs_session_params(bucket) if unified_scalp_profile and bucket in LIVE_SCALP_BUCKETS else {},
+        "scalpAcs": _scalp_acs_session_params(bucket, block_closing_momentum=block_closing_scalp) if unified_scalp_profile and bucket in LIVE_SCALP_BUCKETS else {},
+        "allDayScalpEnabled": all_day_scalp_enabled,
     }

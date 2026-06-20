@@ -9,6 +9,7 @@ REGIME_RANGE = "RANGE_ABSORPTION"
 REGIME_REVERSAL = "REVERSAL_RISK"
 LANE_MOMENTUM = "MOMENTUM"
 LANE_FADE = "FADE"
+ALL_DAY_SCALP_BUCKETS = frozenset({"OPEN_DRIVE", "NORMAL", "MIDDAY_CHOP", "CLOSING_MOMENTUM"})
 
 
 def _runner(candidate: dict[str, Any]) -> dict[str, Any]:
@@ -29,8 +30,8 @@ def normalize_regime(regime: str | None) -> str:
 
 
 def detect_fade_setup(candidate: dict[str, Any], *, session_bucket: str, regime: str) -> bool:
-    """VAH/VAL rejection fade: range regime, no momentum surge, chart side clear."""
-    if session_bucket not in {"MIDDAY_CHOP", "NORMAL"}:
+    """VAH/VAL rejection fade — available in every live session bucket."""
+    if session_bucket not in ALL_DAY_SCALP_BUCKETS:
         return False
     if normalize_regime(regime) != REGIME_RANGE:
         return False
@@ -63,22 +64,34 @@ def detect_fade_setup(candidate: dict[str, Any], *, session_bucket: str, regime:
 
 def classify_scalp_lane(candidate: dict[str, Any], *, regime: str, session_bucket: str) -> str | None:
     regime = normalize_regime(regime)
-    if regime == REGIME_REVERSAL:
-        return None
     if detect_fade_setup(candidate, session_bucket=session_bucket, regime=regime):
         return LANE_FADE
+    if regime == REGIME_REVERSAL:
+        runner = _runner(candidate)
+        if runner.get("momentumOverride"):
+            return LANE_MOMENTUM
+        return None
     if regime == REGIME_MOMENTUM:
         return LANE_MOMENTUM
     if regime == REGIME_RANGE:
-        return LANE_FADE if detect_fade_setup(candidate, session_bucket=session_bucket, regime=regime) else None
+        runner = _runner(candidate)
+        if runner.get("momentumSurge") or runner.get("momentumOverride"):
+            return LANE_MOMENTUM
+        return None
     runner = _runner(candidate)
     if runner.get("momentumSurge") or runner.get("momentumOverride"):
         return LANE_MOMENTUM
     return None
 
 
-def passes_regime_gate(lane: str | None, regime: str) -> tuple[bool, str | None]:
+def passes_regime_gate(lane: str | None, regime: str, *, all_day_enabled: bool = True) -> tuple[bool, str | None]:
     regime = normalize_regime(regime)
+    if regime == "CLOSED_MARKET_ANALYSIS":
+        return False, "advanced scalp blocked: market closed"
+    if all_day_enabled:
+        if lane is None:
+            return False, "advanced scalp blocked: no valid momentum or fade lane"
+        return True, None
     if regime == REGIME_REVERSAL:
         return False, "advanced scalp blocked: reversal-risk regime"
     if lane is None:
@@ -334,7 +347,8 @@ def evaluate_advanced_scalp_entry(
 
     lane = str(candidate.get("scalpLane") or "") or classify_scalp_lane(candidate, regime=regime, session_bucket=session_bucket)
     if getattr(settings, "paper_scalp_regime_gate_enabled", True):
-        ok, reason = passes_regime_gate(lane, regime)
+        all_day = bool(getattr(settings, "paper_all_day_scalp_enabled", True))
+        ok, reason = passes_regime_gate(lane, regime, all_day_enabled=all_day)
         if not ok:
             return {"allowed": False, "lane": lane, "reason": reason, "sizeMultiplier": 1.0}
 
