@@ -1559,6 +1559,8 @@ class AutoTraderEngine:
             open_drive_allocation_boost=float(self.settings.open_drive_allocation_multiplier),
             max_catch_mode=bool(self.settings.paper_max_catch_mode),
             unified_scalp_profile=bool(self.settings.paper_unified_scalp_session_profile),
+            all_day_scalp_enabled=bool(self.settings.paper_all_day_scalp_enabled),
+            block_closing_scalp=bool(self.settings.paper_scalp_block_closing_momentum),
         )
         news = self._latest_news_state or {}
         impact = news.get("impact") or {}

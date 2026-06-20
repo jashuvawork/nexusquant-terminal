@@ -117,10 +117,10 @@ class Settings(BaseSettings):
     paper_max_open_trades: int = 4
     paper_max_open_same_side_trades: int = 3
     paper_dual_capital_enabled: bool = True
-    paper_scalping_capital: float = 150000.0
-    paper_explosive_capital: float = 350000.0
+    paper_scalping_capital: float = 200000.0
+    paper_explosive_capital: float = 300000.0
     paper_scalping_max_open_trades: int = 3
-    paper_explosive_max_open_trades: int = 1
+    paper_explosive_max_open_trades: int = 2
     paper_scalping_allocation_pct: float = 28.0
     paper_explosive_allocation_pct: float = 15.0
     paper_scalping_min_entry_tqs: int = 52
@@ -145,7 +145,8 @@ class Settings(BaseSettings):
     paper_scalp_early_decay_seconds: float = 45.0
     paper_scalp_early_decay_min_gain: float = 0.5
     paper_scalp_velocity_min_pct: float = 2.0
-    paper_scalp_block_closing_momentum: bool = True
+    paper_scalp_block_closing_momentum: bool = False
+    paper_all_day_scalp_enabled: bool = True
     paper_advanced_scalp_enabled: bool = True
     paper_scalp_regime_gate_enabled: bool = True
     paper_scalp_ev_gate_enabled: bool = True
@@ -257,7 +258,7 @@ class Settings(BaseSettings):
     paper_runner_trail_retain_pct: float = 45.0
     paper_runner_min_hold_seconds: int = 90
     paper_runner_max_hold_seconds: int = 900
-    paper_always_trade_explosive_runners: bool = False
+    paper_always_trade_explosive_runners: bool = True
     paper_min_hold_before_chop_exit_seconds: int = 45
     paper_trading_respects_stop: bool = False
     shadow_trade_all_signals: bool = False
