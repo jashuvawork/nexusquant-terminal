@@ -10,6 +10,20 @@ from typing import Any
 from uuid import uuid4
 
 from app.core.config import Settings
+from app.services.advanced_scalp import (
+    LANE_FADE,
+    LANE_MOMENTUM,
+    adaptive_decay_should_exit,
+    cell_key,
+    classify_scalp_lane,
+    evaluate_advanced_scalp_entry,
+    kelly_size_multiplier,
+    lane_acs_overrides,
+    ml_exit_recommendation,
+    normalize_regime,
+    read_vix_from_payload,
+    volatility_scale_acs,
+)
 from app.services.ai_learning import ContinuousAILearner
 from app.services.daily_profit_strategy import build_daily_improvement_plan
 from app.services.paper_session_manager import PaperSessionManager
@@ -73,6 +87,9 @@ class PaperTrade:
     best_price: float = 0.0
     breakeven_armed: bool = False
     partial_exit_taken: bool = False
+    scalp_lane: str = ""
+    entry_regime: str = ""
+    partial_realized_pnl: float = 0.0
     lifecycle: list[LifecycleEvent] = field(default_factory=list)
 
     @classmethod
@@ -118,6 +135,9 @@ class PaperTrade:
             best_price=float(payload.get("bestPrice") or payload.get("entryPrice") or 0),
             breakeven_armed=bool(payload.get("breakevenArmed")),
             partial_exit_taken=bool(payload.get("partialExitTaken")),
+            scalp_lane=str(payload.get("scalpLane") or ""),
+            entry_regime=str(payload.get("entryRegime") or ""),
+            partial_realized_pnl=float(payload.get("partialRealizedPnl") or 0),
             lifecycle=lifecycle,
         )
 
@@ -153,6 +173,9 @@ class PaperTrade:
             "bestPrice": self.best_price,
             "breakevenArmed": self.breakeven_armed,
             "partialExitTaken": self.partial_exit_taken,
+            "scalpLane": self.scalp_lane or None,
+            "entryRegime": self.entry_regime or None,
+            "partialRealizedPnl": round(self.partial_realized_pnl, 2) if self.partial_realized_pnl else None,
             "lifecycle": [event.__dict__ for event in self.lifecycle],
         }
 
@@ -186,6 +209,9 @@ class AutoTraderEngine:
         self.lifecycle_events = AutoTraderEngine._shared_lifecycle_events
         self._latest_market_snapshot: dict[str, Any] = {}
         self._latest_news_state: dict[str, Any] = {}
+        self._latest_process_payload: dict[str, Any] = {}
+        self._latest_payload_vix: float = 0.0
+        self._latest_payload_atr: float = 0.0
         self._daily_plan_cache: dict[str, Any] | None = None
         self._daily_plan_day: str | None = None
         self._load_replay_file()
@@ -196,6 +222,17 @@ class AutoTraderEngine:
         replay_item = {"timestamp": now, "payload": self._compact_snapshot(payload)}
         self.replay_buffer.append(replay_item)
         self._append_replay_file(replay_item)
+        self._latest_process_payload = payload
+        self._latest_payload_vix = read_vix_from_payload(payload)
+        atr_values: list[float] = []
+        for snap in (payload.get("snapshots") or {}).values():
+            if not isinstance(snap, dict):
+                continue
+            chart = snap.get("chartAnalysis") or {}
+            atr = float(snap.get("atrPoints") or chart.get("atrPoints") or 0)
+            if atr > 0:
+                atr_values.append(atr)
+        self._latest_payload_atr = sum(atr_values) / len(atr_values) if atr_values else 0.0
         trading_control = await self.trading_control.status()
         capital = await self.trading_control.capital_status()
         trading_capital = float(capital.get("tradingCapital") or self.settings.trading_capital_default or 0)
@@ -228,7 +265,7 @@ class AutoTraderEngine:
             if prepared is None:
                 skipped.append({"candidate": candidate.get("id"), "reason": "runner below ultra-elite; scalping gates not met"})
                 continue
-            candidate = prepared
+            candidate = self._annotate_scalp_lane(prepared, payload, session_adj)
             event = self._signal_event(candidate, payload)
             signal_events.append(event)
             self.lifecycle_events.append(event)
@@ -1613,10 +1650,58 @@ class AutoTraderEngine:
         tqs = int(candidate.get("tqs") or 0)
         return tqs >= int(self.settings.paper_scalping_min_entry_tqs)
 
-    def _scalp_acs_profile(self, session_adj: dict[str, Any] | None = None) -> dict[str, float]:
+    def _annotate_scalp_lane(self, candidate: dict[str, Any], payload: dict[str, Any], session_adj: dict[str, Any]) -> dict[str, Any]:
+        if not self.settings.paper_advanced_scalp_enabled:
+            return candidate
+        annotated = dict(candidate)
+        symbol = str(annotated.get("symbol") or "")
+        snap = (payload.get("snapshots") or {}).get(symbol) or {}
+        chart = snap.get("chartAnalysis") or {}
+        if not annotated.get("marketProfile") and chart:
+            annotated["marketProfile"] = {
+                "vah": chart.get("vah"),
+                "val": chart.get("val"),
+                "spot": chart.get("spot"),
+            }
+        regime = str(payload.get("regime") or payload.get("strategy", {}).get("router") or "NORMAL")
+        bucket = str(session_adj.get("sessionBucket") or "UNKNOWN")
+        lane = classify_scalp_lane(annotated, regime=regime, session_bucket=bucket)
+        if not lane:
+            return candidate
+        if lane == LANE_FADE and not self.settings.paper_scalp_fade_lane_enabled:
+            return candidate
+        annotated["scalpLane"] = lane
+        profile = dict(annotated.get("optimizedProfile") or {})
+        if lane == LANE_FADE:
+            profile["executionStyle"] = "FADE_SCALP"
+            annotated["strategyType"] = "SCALP"
+        elif profile.get("executionStyle") not in {"HIGH_WIN_SCALP", "FADE_SCALP"}:
+            profile["executionStyle"] = "HIGH_WIN_SCALP"
+        annotated["optimizedProfile"] = profile
+        return annotated
+
+    def _scalp_ev_summary(self, session_adj: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any] | None:
+        bucket = str(session_adj.get("sessionBucket") or "UNKNOWN")
+        side = str(candidate.get("side") or "UNKNOWN")
+        symbol = str(candidate.get("symbol") or "UNKNOWN")
+        key = cell_key(bucket, side, symbol)
+        rolling = self._rolling_proof(limit=max(20, int(self.settings.paper_scalp_ev_min_trades) * 3))
+        by_cell = self._group_trade_summary(
+            list(self.closed_paper)[-120:],
+            lambda trade: cell_key(self._trade_bucket(trade), trade.side or "UNKNOWN", trade.symbol or "UNKNOWN"),
+        )
+        return by_cell.get(key) or rolling
+
+    def _scalp_acs_profile(
+        self,
+        session_adj: dict[str, Any] | None = None,
+        *,
+        trade: PaperTrade | None = None,
+        lane_override: str | None = None,
+    ) -> dict[str, float]:
         session_adj = session_adj or {}
         acs = session_adj.get("scalpAcs") or {}
-        return {
+        profile = {
             "stop": float(acs.get("controlledStopPoints") or self.settings.paper_scalp_controlled_stop_points),
             "breakeven": float(acs.get("breakevenShiftPoints") or self.settings.paper_scalp_breakeven_shift_points),
             "arm": float(acs.get("runnerArmPoints") or self.settings.paper_scalp_runner_arm_points),
@@ -1628,8 +1713,18 @@ class AutoTraderEngine:
             "decaySeconds": float(self.settings.paper_scalp_early_decay_seconds),
             "decayMinGain": float(self.settings.paper_scalp_early_decay_min_gain),
         }
+        lane = str((trade.scalp_lane if trade else "") or lane_override or "")
+        profile.update({k: float(v) for k, v in lane_acs_overrides(lane).items()})
+        return volatility_scale_acs(
+            profile,
+            vix=self._latest_payload_vix,
+            atr_points=self._latest_payload_atr,
+            enabled=bool(self.settings.paper_scalp_vol_scaled_acs_enabled),
+        )
 
     def _passes_scalp_velocity_gate(self, candidate: dict[str, Any]) -> bool:
+        if str(candidate.get("scalpLane") or "") == LANE_FADE:
+            return True
         min_velocity = float(self.settings.paper_scalp_velocity_min_pct or 0)
         if min_velocity <= 0:
             return True
@@ -2124,7 +2219,7 @@ class AutoTraderEngine:
             return False
         strategy = str(candidate.get("strategyType") or "").upper()
         style = str((candidate.get("optimizedProfile") or {}).get("executionStyle") or "")
-        if strategy != "SCALP" and style != "HIGH_WIN_SCALP":
+        if strategy != "SCALP" and style not in {"HIGH_WIN_SCALP", "FADE_SCALP"}:
             return False
         return self._is_scalp_candidate(candidate)
 
@@ -2437,6 +2532,27 @@ class AutoTraderEngine:
                 reasons.append(f"runner score below session threshold ({min_runner_score:g})")
             if required_move > self.settings.min_required_move_points * 1.4:
                 reasons.append("spread/slippage cost too high for 5-point scalp")
+        strategy_type = str(candidate.get("strategyType") or "SCALP").upper()
+        style = str((candidate.get("optimizedProfile") or {}).get("executionStyle") or "")
+        is_scalp_style = strategy_type == "SCALP" or style in {"HIGH_WIN_SCALP", "FADE_SCALP"}
+        if is_scalp_style and self.settings.paper_advanced_scalp_enabled and not runner_momentum_override:
+            payload = self._latest_process_payload or {}
+            regime = str(payload.get("regime") or "NORMAL")
+            bucket = str(session_adj.get("sessionBucket") or "UNKNOWN")
+            adv = evaluate_advanced_scalp_entry(
+                candidate,
+                payload=payload,
+                session_bucket=bucket,
+                regime=regime,
+                quality={"spreadCost": spread_cost, "slippageEstimate": slippage},
+                ev_summary=self._scalp_ev_summary(session_adj, candidate),
+                settings=self.settings,
+            )
+            if not adv.get("allowed"):
+                reasons.append(str(adv.get("reason") or "advanced scalp gate blocked"))
+            else:
+                candidate["scalpLane"] = adv.get("lane") or candidate.get("scalpLane") or LANE_MOMENTUM
+                candidate["advancedScalpSizeMultiplier"] = float(adv.get("sizeMultiplier") or 1.0)
         return {
             "blocked": bool(reasons),
             "paperEligible": not bool(reasons),
@@ -2544,6 +2660,12 @@ class AutoTraderEngine:
                 target_lots = int(self.settings.paper_quick_profit_target_lots)
                 allowed_lots = min(affordable_lots, risk_lots, max_lots_cap)
                 final_lots = min(allowed_lots, max(min_lots, min(target_lots, allowed_lots)))
+                if self.settings.paper_scalp_kelly_sizing_enabled:
+                    rolling = self._rolling_proof(limit=20)
+                    size_mult = kelly_size_multiplier(float(rolling.get("profitFactor") or 0), enabled=True)
+                    size_mult *= float(candidate.get("advancedScalpSizeMultiplier") or 1.0)
+                    size_mult = max(0.5, min(1.5, size_mult))
+                    final_lots = max(min_lots, int(final_lots * size_mult))
                 quantity = final_lots * lot_size
             else:
                 quantity = min(desired_quantity, affordable_lots * lot_size, risk_lots * lot_size)
@@ -2590,6 +2712,8 @@ class AutoTraderEngine:
             breakeven_shift_points=risk_plan["breakevenShiftPoints"],
             trail_points=risk_plan["trailPoints"],
             best_price=premium,
+            scalp_lane=str(candidate.get("scalpLane") or LANE_MOMENTUM),
+            entry_regime=normalize_regime(str(self._latest_process_payload.get("regime") or "NORMAL")),
         )
         trade.lifecycle.extend([
             LifecycleEvent("RISK_CHECKED", trade.opened_at, quality["reason"], {**quality, "riskPlan": risk_plan}),
@@ -2648,7 +2772,7 @@ class AutoTraderEngine:
                         exit_mode = "RUNNER"
                 else:
                     exit_mode = trade.exit_mode
-            scalp_lock = exit_mode == "SCALP_LOCK" or (not is_runner and style == "HIGH_WIN_SCALP") or (not is_runner and trade.strategy_type == "SCALP")
+            scalp_lock = exit_mode == "SCALP_LOCK" or (not is_runner and style in {"HIGH_WIN_SCALP", "FADE_SCALP"}) or (not is_runner and trade.strategy_type == "SCALP")
             scalp_exits = self._trade_uses_scalp_exits(trade, exit_mode=exit_mode, style=style, is_runner=is_runner)
             stop_points, max_hold_seconds, psych_exit_reason = self._psychology_exit_adjustments(
                 stop_points,
@@ -2660,17 +2784,24 @@ class AutoTraderEngine:
                 target_points = max(target_points, self.settings.paper_target_points * 1.25)
                 max_hold_seconds = max(max_hold_seconds, int(self.settings.paper_runner_max_hold_seconds))
                 breakeven_shift = max(breakeven_shift, min(target_points * 0.35, float(self.settings.paper_breakeven_shift_points) + 2.0))
-            elif scalp_lock or style == "HIGH_WIN_SCALP":
-                acs = self._scalp_acs_profile(session_adj) if self.settings.paper_acs_scalp_enabled else {}
+            elif scalp_lock or style in {"HIGH_WIN_SCALP", "FADE_SCALP"}:
+                acs = self._scalp_acs_profile(session_adj, trade=trade) if self.settings.paper_acs_scalp_enabled else {}
                 target_points = min(target_points, float(acs.get("cap") or self.settings.paper_scalp_runner_cap_points or self.settings.paper_target_points))
                 max_hold_seconds = min(max_hold_seconds, int(self.settings.max_paper_trade_seconds))
                 breakeven_shift = min(breakeven_shift, float(acs.get("breakeven") or self.settings.paper_scalp_breakeven_shift_points))
                 if self.settings.paper_acs_scalp_enabled:
                     stop_points = min(stop_points, float(acs.get("stop") or self.settings.paper_scalp_controlled_stop_points))
+            if self.settings.paper_scalp_partial_exit_enabled and scalp_exits:
+                lot_size = max(1, int((candidate or {}).get("lotSize") or 1))
+                self._maybe_take_scalp_partial(trade, current, lot_size=lot_size)
             if not trade.breakeven_armed and trade.best_price >= trade.entry_price + breakeven_shift:
                 trade.breakeven_armed = True
                 trade.lifecycle.append(LifecycleEvent("MODIFIED", datetime.now(timezone.utc).isoformat(), "breakeven stop armed", {"breakevenAt": trade.entry_price, "bestPrice": trade.best_price}))
-            if not trade.partial_exit_taken and trade.best_price >= trade.entry_price + partial_exit_at:
+            if (
+                not self.settings.paper_scalp_partial_exit_enabled
+                and not trade.partial_exit_taken
+                and trade.best_price >= trade.entry_price + partial_exit_at
+            ):
                 trade.partial_exit_taken = True
                 trade.lifecycle.append(LifecycleEvent("PARTIAL_FILL", datetime.now(timezone.utc).isoformat(), "partial exit threshold reached in paper model", {"partialExitAt": round(partial_exit_at, 2), "bestPrice": trade.best_price}))
             runner_min_hold = int(self.settings.paper_runner_min_hold_seconds)
@@ -2681,7 +2812,7 @@ class AutoTraderEngine:
             trail_pts = float(trade.trail_points or (target_points * 0.18 if is_runner and not scalp_lock else scalp_trail))
             trail_arm_at = max(2.0, min(partial_exit_at, target_points * 0.2)) if scalp_lock else max(partial_exit_at, target_points * 0.25)
             in_profitable_trail = trade.best_price >= trade.entry_price + trail_arm_at
-            reason = self._quick_profit_exit_reason(trade, current, age, session_adj=session_adj, scalp_exits=scalp_exits)
+            reason = self._quick_profit_exit_reason(trade, current, age, session_adj=session_adj, scalp_exits=scalp_exits, candidate=candidate)
             if not reason and scalp_lock and in_profitable_trail and current <= trade.best_price - trail_pts:
                 reason = "AI adaptive scalp profit lock"
             elif not reason and in_profitable_trail and current <= trade.best_price - trail_pts:
@@ -2725,8 +2856,9 @@ class AutoTraderEngine:
                 trade.exited_at = datetime.now(timezone.utc).isoformat()
                 charges = self._charges_estimate(trade.entry_price, current, trade.quantity)
                 trade.charges_estimate = charges
-                trade.pnl = ((current - trade.entry_price - trade.spread_cost - trade.slippage_estimate) * trade.quantity) - charges
-                trade.lifecycle.append(LifecycleEvent("EXITED", trade.exited_at, reason, {"exit": current, "pnl": trade.pnl, "charges": charges}))
+                remainder_pnl = ((current - trade.entry_price - trade.spread_cost - trade.slippage_estimate) * trade.quantity) - charges
+                trade.pnl = round(float(trade.partial_realized_pnl or 0) + remainder_pnl, 2)
+                trade.lifecycle.append(LifecycleEvent("EXITED", trade.exited_at, reason, {"exit": current, "pnl": trade.pnl, "charges": charges, "partialRealizedPnl": trade.partial_realized_pnl}))
                 self.closed_paper.append(trade)
                 AutoTraderEngine._shared_recent_signal_times[trade_id] = monotonic()
                 if trade.instrument_key:
@@ -2933,13 +3065,46 @@ class AutoTraderEngine:
         *,
         session_adj: dict[str, Any] | None = None,
         scalp_exits: bool = False,
+        candidate: dict[str, Any] | None = None,
     ) -> str | None:
         """ACS asymmetric scalp exits: tight controlled stop, ratcheting profit trail."""
         if not self.settings.paper_quick_profit_enabled:
             return None
         if self.settings.paper_acs_scalp_enabled and scalp_exits:
-            return self._acs_scalp_exit_reason(trade, current, age, session_adj=session_adj)
+            return self._acs_scalp_exit_reason(trade, current, age, session_adj=session_adj, candidate=candidate)
         return self._legacy_quick_profit_exit_reason(trade, current, age)
+
+    def _maybe_take_scalp_partial(self, trade: PaperTrade, current: float, *, lot_size: int = 1) -> bool:
+        if not self.settings.paper_scalp_partial_exit_enabled or trade.partial_exit_taken:
+            return False
+        if trade.strategy_type != "SCALP" and trade.exit_mode != "SCALP_LOCK" and not trade.scalp_lane:
+            return False
+        entry = float(trade.entry_price)
+        trigger = float(self.settings.paper_scalp_partial_exit_points)
+        if current < entry + trigger:
+            return False
+        pct = float(self.settings.paper_scalp_partial_exit_pct)
+        lot_size = max(1, lot_size)
+        partial_qty = max(lot_size, int(round(trade.quantity * pct / lot_size) * lot_size))
+        if partial_qty >= trade.quantity:
+            return False
+        per_unit_cost = (float(trade.spread_cost) + float(trade.slippage_estimate)) / max(trade.quantity, 1)
+        partial_charges = self._charges_estimate(entry, current, partial_qty)
+        partial_pnl = ((current - entry - per_unit_cost) * partial_qty) - partial_charges
+        trade.partial_realized_pnl += partial_pnl
+        trade.quantity -= partial_qty
+        trade.partial_exit_taken = True
+        trade.breakeven_armed = True
+        trade.stop_points = min(float(trade.stop_points or 99), float(self.settings.paper_scalp_partial_remainder_stop_points))
+        trade.lifecycle.append(
+            LifecycleEvent(
+                "PARTIAL_FILL",
+                datetime.now(timezone.utc).isoformat(),
+                f"Advanced scalp partial exit at +{trigger:.1f}pt on {partial_qty} units",
+                {"partialQty": partial_qty, "partialPnl": round(partial_pnl, 2), "remainingQty": trade.quantity, "price": current},
+            )
+        )
+        return True
 
     def _acs_scalp_exit_reason(
         self,
@@ -2948,8 +3113,9 @@ class AutoTraderEngine:
         age: float,
         *,
         session_adj: dict[str, Any] | None = None,
+        candidate: dict[str, Any] | None = None,
     ) -> str | None:
-        acs = self._scalp_acs_profile(session_adj)
+        acs = self._scalp_acs_profile(session_adj, trade=trade)
         entry = float(trade.entry_price)
         best = float(trade.best_price or entry)
         best_gain = max(0.0, best - entry)
@@ -2957,14 +3123,38 @@ class AutoTraderEngine:
         cap_target = float(acs["cap"])
         if current >= entry + cap_target:
             return "ACS runner cap target hit"
-        if age >= acs["decaySeconds"] and best_gain < acs["decayMinGain"]:
-            return "ACS early decay profit scratch" if unrealized > 0 else "ACS early decay exit"
+        if adaptive_decay_should_exit(
+            age=age,
+            best_gain=best_gain,
+            min_gain_floor=float(acs["decayMinGain"]),
+            base_decay_seconds=float(acs["decaySeconds"]),
+            enabled=bool(self.settings.paper_scalp_adaptive_decay_enabled),
+        ):
+            return "ACS adaptive decay profit scratch" if unrealized > 0 else "ACS adaptive decay exit"
         if best_gain >= acs["arm"]:
             floor_price = entry + max(acs["minLock"], best_gain * acs["retain"])
             if current <= floor_price:
                 return "ACS asymmetric profit trail"
         if acs["microArm"] <= best_gain < acs["arm"] and current <= best - acs["microTrail"]:
             return "ACS micro profit lock"
+        if trade.partial_exit_taken and current <= entry + float(self.settings.paper_scalp_partial_remainder_stop_points):
+            return "ACS partial remainder stop lock"
+        if self.settings.paper_scalp_ml_exit_overlay_enabled and candidate:
+            runner = (candidate or {}).get("runnerSignal") or {}
+            metrics = runner.get("metrics") or {}
+            learner_state = getattr(self.learner, "_state", {}) or {}
+            should_exit, ml_reason = ml_exit_recommendation(
+                learner_state,
+                age=age,
+                best_gain=best_gain,
+                unrealized=unrealized,
+                premium_velocity=float(runner.get("premiumVelocityPct") or metrics.get("premiumVelocity") or 0),
+                runner_score=float(runner.get("score") or 0),
+                regime=str(trade.entry_regime or self._latest_process_payload.get("regime") or "NORMAL"),
+                enabled=True,
+            )
+            if should_exit and ml_reason:
+                return ml_reason
         return None
 
     def _legacy_quick_profit_exit_reason(self, trade: PaperTrade, current: float, age: float) -> str | None:
@@ -3066,7 +3256,7 @@ class AutoTraderEngine:
             return True
         is_runner_flag = trade.strategy_type == "EXPLOSIVE_RUNNER" if is_runner is None else is_runner
         mode = str(exit_mode or trade.exit_mode or "AUTO")
-        if mode == "SCALP_LOCK" or trade.strategy_type == "SCALP" or style == "HIGH_WIN_SCALP":
+        if mode == "SCALP_LOCK" or trade.strategy_type == "SCALP" or style in {"HIGH_WIN_SCALP", "FADE_SCALP"}:
             return not self.settings.paper_psychology_affects_scalp_exits
         if is_runner_flag and self.settings.paper_runner_start_scalp_lock:
             return not self.settings.paper_psychology_affects_scalp_exits
@@ -3425,9 +3615,9 @@ class AutoTraderEngine:
             base_stop = max(base_stop, premium * float(plan.get("hardStopPct") or 10.0) / 100)
         premium_stop_cap_pct = 0.10 if runner_score >= 85 and breakout >= 65 and delta_velocity >= 45 else 0.08
         premium_capped_stop = max(costs_per_unit + 1.0, premium * premium_stop_cap_pct) if premium > 0 else base_stop
-        is_scalp = str(candidate.get("strategyType") or "").upper() == "SCALP" or str((profile.get("executionStyle") or "")).upper() == "HIGH_WIN_SCALP"
+        is_scalp = str(candidate.get("strategyType") or "").upper() == "SCALP" or str((profile.get("executionStyle") or "")).upper() in {"HIGH_WIN_SCALP", "FADE_SCALP"}
         if is_scalp and self.settings.paper_acs_scalp_enabled and not is_runner:
-            acs = self._scalp_acs_profile(session_adj)
+            acs = self._scalp_acs_profile(session_adj, lane_override=str(candidate.get("scalpLane") or ""))
             target = float(acs["cap"])
             base_stop = float(acs["stop"])
             breakeven = float(acs["breakeven"])
