@@ -132,7 +132,7 @@ class Settings(BaseSettings):
     paper_suggested_trade_dedupe: bool = True
     paper_ai_adaptive_exit_enabled: bool = True
     paper_adaptive_scalp_lock_min_gain_points: float = 4.0
-    paper_acs_quick_profit_points: float = 4.0
+    paper_acs_quick_profit_points: float = 7.0
     paper_scalp_time_lock_seconds: int = 90
     paper_scalp_time_lock_min_gain: float = 4.0
     paper_adaptive_momentum_fade_velocity_pct: float = 1.2
@@ -162,7 +162,7 @@ class Settings(BaseSettings):
     paper_scalp_vol_scaled_acs_enabled: bool = True
     paper_scalp_adaptive_decay_enabled: bool = True
     paper_scalp_partial_exit_enabled: bool = True
-    paper_scalp_partial_exit_points: float = 4.0
+    paper_scalp_partial_exit_points: float = 7.0
     paper_scalp_partial_exit_pct: float = 0.45
     paper_scalp_partial_remainder_stop_points: float = 2.0
     paper_scalp_fade_lane_enabled: bool = True
