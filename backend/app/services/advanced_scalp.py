@@ -143,16 +143,19 @@ def passes_absorption_gate(candidate: dict[str, Any], quality: dict[str, Any], *
     spread_pct = ((spread_cost + slippage) / premium * 100) if premium > 0 else 999.0
     score = float(runner.get("score") or candidate.get("tqs") or 0)
     spread_quality = float(metrics.get("spreadQuality") or 0)
+    if relaxed and score >= 62 and spread_quality >= 80 and spread_pct <= 3.5:
+        if volume_accel >= 8 or delta_velocity >= 18 or premium_velocity >= 1.0:
+            return True, None
     if relaxed and score >= 65 and spread_quality >= 85 and spread_pct <= 3.0:
         if volume_accel >= 15 or delta_velocity >= 20 or premium_velocity >= 0.25:
             return True, None
     if not runner.get("momentumSurge"):
         return False, "absorption gate: momentum surge required"
-    if premium_velocity < 2.0:
-        return False, "absorption gate: premium velocity below 2%"
-    if delta_velocity < 35:
+    if premium_velocity < 1.5:
+        return False, "absorption gate: premium velocity below 1.5%"
+    if delta_velocity < 28:
         return False, "absorption gate: delta velocity too low"
-    if volume_accel < 12:
+    if volume_accel < 10:
         return False, "absorption gate: volume acceleration too low"
     if spread_pct > 2.5:
         return False, "absorption gate: spread widening — cost > 2.5% of premium"
@@ -269,9 +272,9 @@ def adaptive_decay_should_exit(
     if not enabled:
         return age >= base_decay_seconds and best_gain < min_gain_floor
     progress_rate = best_gain / max(age, 1.0)
-    if age >= 30 and progress_rate < 0.02 and best_gain < max(0.5, min_gain_floor):
+    if age >= 30 and progress_rate < 0.015 and best_gain < max(0.5, min_gain_floor):
         return True
-    if age >= 60 and progress_rate < 0.04 and best_gain < max(1.0, min_gain_floor * 1.5):
+    if age >= 60 and progress_rate < 0.03 and best_gain < max(1.0, min_gain_floor * 1.5):
         return True
     return age >= base_decay_seconds and best_gain < min_gain_floor
 
@@ -331,7 +334,7 @@ def ml_exit_recommendation(
         exit_score += 10
     exit_score *= max(0.6, min(1.4, 2.0 - trail_bias))
     exit_score += max(0, (50 - learning_score) * 0.2)
-    if exit_score >= 55 and unrealized >= 1.5:
+    if exit_score >= 65 and unrealized >= 2.0:
         return True, "ML exit overlay: momentum/score decay with profit on table"
     return False, None
 
