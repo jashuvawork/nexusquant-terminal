@@ -1252,10 +1252,11 @@ class RealTimeMarketEngine:
                     option_direction=(option_bias or {}).get("direction"),
                     momentum_premium_velocity_pct=float(self.settings.explosive_runner_momentum_premium_velocity_pct),
                     momentum_override_velocity_pct=float(self.settings.paper_momentum_override_min_velocity_pct),
-                    momentum_override_volume_accel=40.0,
+                    momentum_override_volume_accel=18.0,
                     explosion_velocity_pct=float(self.settings.paper_momentum_explosion_velocity_pct),
                     explosion_volume_accel=float(self.settings.paper_momentum_explosion_volume_accel),
                     explosion_min_premium=float(self.settings.paper_momentum_min_premium_ltp),
+                    vertical_surge_velocity_pct=float(self.settings.paper_vertical_surge_velocity_pct),
                     max_catch_mode=bool(self.settings.paper_max_catch_mode),
                     elite_min_score=float(self.settings.explosive_runner_elite_min_score),
                     elite_breakout_min=float(self.settings.explosive_runner_elite_breakout_min),
@@ -1406,6 +1407,41 @@ class RealTimeMarketEngine:
         premium = as_float(signal.get("premium") or signal.get("lastPremium"))
         return premium > 0 and float(self.settings.explosive_runner_premium_min) <= premium <= float(self.settings.paper_momentum_max_entry_premium)
 
+    def _passes_momentum_burst_signal(self, signal: dict[str, Any]) -> bool:
+        """Catch vertical open moments (e.g. ₹52→₹88 CE) without waiting for ultra-elite score 92."""
+        if not getattr(self.settings, "paper_open_drive_momentum_catch", True):
+            return False
+        premium = as_float(signal.get("premium") or signal.get("lastPremium"))
+        if premium <= 0 or premium > float(self.settings.paper_momentum_max_entry_premium):
+            return False
+        if premium < float(self.settings.paper_momentum_min_premium_ltp):
+            return False
+        orderflow = signal.get("orderflow") or {}
+        pv = as_float(signal.get("premiumVelocityPct") or orderflow.get("premiumVelocity"))
+        vol = as_float(signal.get("volumeAcceleration") or orderflow.get("volumeAcceleration"))
+        score = as_float(signal.get("score"))
+        breakout = as_float(orderflow.get("breakoutVelocity"))
+        min_score = float(self.settings.paper_momentum_burst_min_runner_score)
+        min_vel = float(self.settings.paper_momentum_burst_min_velocity_pct)
+        min_vol = float(self.settings.paper_momentum_burst_min_volume_accel)
+        vertical = pv >= float(self.settings.paper_vertical_surge_velocity_pct)
+        if bool(signal.get("momentumOverride")) and str(signal.get("confidence") or "").upper() == "HIGH":
+            if score >= min_score and pv >= min_vel:
+                return True
+        if vertical and vol >= min_vol and score >= min_score:
+            return True
+        if pv >= 5.0 and vol >= 18 and score >= min_score:
+            return True
+        if (
+            bool(signal.get("momentumSurge"))
+            and (bool(signal.get("momentumAligned")) or breakout >= 55)
+            and pv >= min_vel
+            and vol >= min_vol
+            and score >= min_score
+        ):
+            return True
+        return False
+
     def _runner_suggested_trades(
         self,
         *,
@@ -1452,7 +1488,7 @@ class RealTimeMarketEngine:
             momentum_override = bool(signal.get("momentumOverride"))
             confidence = str(signal.get("confidence") or "").upper()
             if self.settings.paper_elite_runner_only:
-                if not self._passes_ultra_elite_runner_signal(signal):
+                if not (self._passes_ultra_elite_runner_signal(signal) or self._passes_momentum_burst_signal(signal)):
                     continue
             elif self.settings.paper_max_catch_mode and not self.settings.paper_elite_runner_only:
                 premium = as_float(signal.get("premium") or signal.get("lastPremium"))

@@ -377,7 +377,11 @@ def evaluate_advanced_scalp_entry(
 
     if lane == LANE_MOMENTUM and getattr(settings, "paper_scalp_absorption_gate_enabled", True):
         ok, reason = passes_absorption_gate(candidate, quality, enabled=True, relaxed=relaxed)
+        runner_pv = float(runner.get("premiumVelocityPct") or (runner.get("metrics") or {}).get("premiumVelocity") or 0)
+        runner_burst = bool(runner.get("momentumOverride")) or runner_pv >= float(getattr(settings, "paper_vertical_surge_velocity_pct", 6.0))
         if not ok and relaxed and float(runner.get("score") or candidate.get("tqs") or 0) >= 65:
+            pass
+        elif not ok and runner_burst and float(runner.get("score") or candidate.get("tqs") or 0) >= float(getattr(settings, "paper_momentum_burst_min_runner_score", 65.0)):
             pass
         elif not ok:
             return {"allowed": False, "lane": lane, "reason": reason, "sizeMultiplier": 1.0}
