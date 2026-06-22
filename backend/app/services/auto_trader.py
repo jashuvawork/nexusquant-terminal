@@ -1679,8 +1679,6 @@ class AutoTraderEngine:
         if not self.settings.paper_open_drive_momentum_catch:
             return False
         runner = runner or candidate.get("runnerSignal") or {}
-        if self._is_explosion_chase(candidate, runner):
-            return False
         premium = float(candidate.get("lastPremium") or runner.get("premium") or 0)
         min_premium = float(self.settings.paper_momentum_min_premium_ltp)
         max_premium = float(self.settings.paper_momentum_max_entry_premium)
@@ -2057,11 +2055,53 @@ class AutoTraderEngine:
         """HIGH-confidence elite — bypass chop/breadth/AI gates."""
         return self._is_elite_runner_entry(candidate, runner)
 
+    def _consecutive_loss_streak(self) -> int:
+        trades = sorted(
+            self._today_closed_trades(),
+            key=lambda trade: str(trade.exited_at or trade.opened_at or ""),
+            reverse=True,
+        )
+        streak = 0
+        for trade in trades:
+            if float(trade.pnl or 0) < 0:
+                streak += 1
+            else:
+                break
+        return streak
+
+    def _scalp_red_streak_pause(self, session_adj: dict[str, Any] | None = None) -> tuple[bool, str]:
+        """Pause new scalps after a red streak — all session drives unless momentum burst."""
+        session_adj = session_adj or {}
+        bucket = str(session_adj.get("sessionBucket") or "UNKNOWN")
+        streak = self._consecutive_loss_streak()
+        pause_after = int(self.settings.paper_scalp_red_streak_pause_losses)
+        if streak >= pause_after:
+            return True, f"{bucket}: red-streak pause — {streak} consecutive losses (win-only scalps)"
+        rolling = self._rolling_proof(limit=int(self.settings.paper_scalp_red_streak_rolling_trades))
+        rolling_trades = int(rolling.get("paperTrades") or 0)
+        rolling_pf = float(rolling.get("profitFactor") or 0)
+        min_pf = float(self.settings.paper_scalp_red_streak_min_pf)
+        min_trades = int(self.settings.paper_scalp_red_streak_rolling_trades)
+        if rolling_trades >= min_trades and rolling_pf < min_pf:
+            return True, f"{bucket}: red-streak pause — rolling PF {rolling_pf:.2f} below {min_pf:.1f}"
+        return False, ""
+
+    def _loss_streak_max_lots(self) -> int | None:
+        streak = self._consecutive_loss_streak()
+        if streak >= int(self.settings.paper_scalp_loss_streak_lot_cap_after):
+            return int(self.settings.paper_scalp_loss_streak_lot_cap)
+        rolling = self._rolling_proof(limit=8)
+        if int(rolling.get("paperTrades") or 0) >= 3:
+            pf = float(rolling.get("profitFactor") or 0)
+            if pf < float(self.settings.paper_scalp_loss_streak_pf_cap):
+                return int(self.settings.paper_scalp_loss_streak_lot_cap)
+        return None
+
     def _runner_metrics(self, runner: dict[str, Any]) -> dict[str, Any]:
         return runner.get("metrics") or {}
 
     def _is_explosion_chase(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
-        """Block late chase entries — not valid premiums like ₹110 CE before a breakout."""
+        """Block late chase entries — e.g. ₹92 CE after ₹52→₹88 move already played out."""
         runner = runner or candidate.get("runnerSignal") or {}
         premium = float(candidate.get("lastPremium") or runner.get("premium") or 0)
         max_entry = float(self.settings.paper_momentum_max_entry_premium)
@@ -2069,9 +2109,14 @@ class AutoTraderEngine:
             return True
         metrics = self._runner_metrics(runner)
         premium_velocity = float(runner.get("premiumVelocityPct") or metrics.get("premiumVelocity") or 0)
-        chase_floor = float(self.settings.paper_momentum_chase_premium_floor)
-        chase_velocity = float(self.settings.paper_momentum_chase_max_velocity_pct)
-        # High premium + momentum fading = chasing the tail of the move
+        if self._is_scalp_style_candidate(candidate):
+            chase_floor = float(self.settings.paper_scalp_chase_premium_floor)
+            chase_velocity = float(self.settings.paper_scalp_chase_min_velocity_pct)
+        else:
+            chase_floor = float(self.settings.paper_momentum_chase_premium_floor)
+            chase_velocity = float(self.settings.paper_momentum_chase_max_velocity_pct)
+        if self._is_momentum_burst_entry(candidate, runner):
+            return False
         if premium >= chase_floor and premium_velocity < chase_velocity:
             return True
         return False
@@ -2325,7 +2370,12 @@ class AutoTraderEngine:
         return self._is_scalp_candidate(candidate)
 
     def _session_entry_allowed(self, candidate: dict[str, Any], session_adj: dict[str, Any], market_phase: str | None = None) -> bool:
+        runner = candidate.get("runnerSignal") or {}
+        burst_entry = self._is_momentum_burst_entry(candidate, runner)
         if self._is_active_scalp_entry(candidate):
+            paused, _ = self._scalp_red_streak_pause(session_adj)
+            if paused and not burst_entry and not runner.get("momentumOverride"):
+                return False
             if not self._passes_scalp_velocity_gate(candidate):
                 return False
             scalp_acs = session_adj.get("scalpAcs") or {}
@@ -2566,6 +2616,7 @@ class AutoTraderEngine:
         required_move = spread_cost + slippage + charges_per_unit + self.settings.min_required_move_points
         reasons = []
         runner = candidate.get("runnerSignal") or {}
+        burst_entry = self._is_momentum_burst_entry(candidate, runner)
         runner_score = float(runner.get("score") or 0)
         chart_bias = str(candidate.get("chartBias") or "")
         side = str(candidate.get("side") or "")
@@ -2590,6 +2641,16 @@ class AutoTraderEngine:
         breadth = self._breadth_confirmation(side, symbol=symbol)
         momentum_explosion = self._is_momentum_explosion(candidate, runner)
         runner_momentum_override = bool(runner.get("momentumOverride")) or momentum_explosion or strong_runner
+        if self._is_explosion_chase(candidate, runner) and not burst_entry and not runner_momentum_override:
+            reasons.append(
+                f"scalp chase blocked: premium ₹{premium:.0f} needs velocity ≥"
+                f"{self.settings.paper_scalp_chase_min_velocity_pct:.0f}% above "
+                f"₹{self.settings.paper_scalp_chase_premium_floor:.0f} floor"
+            )
+        paused, pause_reason = self._scalp_red_streak_pause(session_adj)
+        is_scalp_style = self._is_scalp_style_candidate(candidate)
+        if paused and is_scalp_style and not burst_entry and not runner.get("momentumOverride"):
+            reasons.append(pause_reason)
         if self._is_explosion_chase(candidate, runner) and runner.get("momentumOverride"):
             reasons.append(
                 f"explosion chase blocked: premium ₹{premium:.0f} above max entry ₹{self.settings.paper_momentum_max_entry_premium:.0f}"
@@ -2777,6 +2838,13 @@ class AutoTraderEngine:
             if quick_sizing:
                 min_lots = int(self.settings.paper_quick_profit_min_lots)
                 target_lots = int(self.settings.paper_quick_profit_target_lots)
+                loss_streak_cap = self._loss_streak_max_lots()
+                if loss_streak_cap is not None:
+                    max_lots_cap = min(max_lots_cap, loss_streak_cap)
+                    min_lots = min(min_lots, loss_streak_cap)
+                    target_lots = min(target_lots, loss_streak_cap)
+                    affordable_lots = min(affordable_lots, max_lots_cap)
+                    risk_lots = min(risk_lots, max_lots_cap)
                 allowed_lots = min(affordable_lots, risk_lots, max_lots_cap)
                 final_lots = min(allowed_lots, max(min_lots, min(target_lots, allowed_lots)))
                 if self.settings.paper_scalp_kelly_sizing_enabled:

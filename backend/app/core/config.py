@@ -251,6 +251,14 @@ class Settings(BaseSettings):
     paper_momentum_max_entry_premium: float = 175.0
     paper_momentum_chase_premium_floor: float = 165.0
     paper_momentum_chase_max_velocity_pct: float = 1.0
+    paper_scalp_chase_premium_floor: float = 85.0
+    paper_scalp_chase_min_velocity_pct: float = 5.0
+    paper_scalp_red_streak_pause_losses: int = 3
+    paper_scalp_red_streak_min_pf: float = 0.5
+    paper_scalp_red_streak_rolling_trades: int = 3
+    paper_scalp_loss_streak_lot_cap: int = 4
+    paper_scalp_loss_streak_lot_cap_after: int = 2
+    paper_scalp_loss_streak_pf_cap: float = 1.0
     paper_momentum_explosion_velocity_pct: float = 1.5
     paper_momentum_explosion_volume_accel: float = 15.0
     paper_momentum_override_min_velocity_pct: float = 1.5

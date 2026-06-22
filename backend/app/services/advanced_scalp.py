@@ -386,6 +386,7 @@ def evaluate_advanced_scalp_entry(
         elif not ok:
             return {"allowed": False, "lane": lane, "reason": reason, "sizeMultiplier": 1.0}
     if getattr(settings, "paper_scalp_cross_index_enabled", True):
+        snapshots = payload.get("snapshots") or {}
         min_confirmations = 1 if relaxed else int(getattr(settings, "paper_scalp_cross_index_min", 2))
         ok, reason = passes_cross_index_gate(
             candidate,
