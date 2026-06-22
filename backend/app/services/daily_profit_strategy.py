@@ -93,10 +93,16 @@ def build_daily_improvement_plan(
             actions.append(f"Win rate {rolling_wr:.1f}% low — raise runner floor.")
 
         for side, summary in by_side.items():
-            if int(summary.get("paperTrades") or summary.get("trades") or 0) >= 5:
+            trades_n = int(summary.get("paperTrades") or summary.get("trades") or 0)
+            side_wins = int(summary.get("wins") or 0)
+            if trades_n >= 3 and side_wins == 0 and float(summary.get("netPnl") or 0) < 0:
+                blocked_sides.append(side)
+                actions.append(f"Block {side} today — 0/{trades_n} wins, net ₹{summary.get('netPnl')}.")
+            elif trades_n >= 5:
                 if float(summary.get("netPnl") or 0) < 0 and _pf(summary) < 0.9:
-                    blocked_sides.append(side)
-                    actions.append(f"Block {side} today — PF {_pf(summary):.2f}, net ₹{summary.get('netPnl')}.")
+                    if side not in blocked_sides:
+                        blocked_sides.append(side)
+                        actions.append(f"Block {side} today — PF {_pf(summary):.2f}, net ₹{summary.get('netPnl')}.")
 
         weak_bucket = "OPEN_DRIVE" if unified_scalp_session_profile else "MIDDAY_CHOP"
         for bucket, summary in by_bucket.items():
