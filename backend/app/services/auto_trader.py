@@ -2806,6 +2806,7 @@ class AutoTraderEngine:
         desired_quantity = int(candidate.get("quantityEstimate") or lot_size)
         risk_plan = self._paper_risk_plan(candidate, quality, premium, session_adj)
         quick_sizing = self._quick_profit_sizing_active(candidate, pool, strategy_type)
+        effective_min_lots = int(self.settings.paper_quick_profit_min_lots) if quick_sizing else 3
         if available_capital is not None and premium > 0:
             capital = max(0.0, float(trading_capital or 0))
             runner_sig_inner = candidate.get("runnerSignal") or {}
@@ -2845,6 +2846,7 @@ class AutoTraderEngine:
                     target_lots = min(target_lots, loss_streak_cap)
                     affordable_lots = min(affordable_lots, max_lots_cap)
                     risk_lots = min(risk_lots, max_lots_cap)
+                effective_min_lots = min_lots
                 allowed_lots = min(affordable_lots, risk_lots, max_lots_cap)
                 final_lots = min(allowed_lots, max(min_lots, min(target_lots, allowed_lots)))
                 if self.settings.paper_scalp_kelly_sizing_enabled:
@@ -2864,7 +2866,7 @@ class AutoTraderEngine:
             return None
         min_viable_lots = 3
         if quick_sizing:
-            min_viable_lots = int(self.settings.paper_quick_profit_min_lots)
+            min_viable_lots = effective_min_lots
         cheap_threshold = float(self.settings.paper_cheap_premium_lot_threshold)
         if premium <= cheap_threshold and (entry_bypass or momentum_explosion or momentum_override):
             min_viable_lots = max(1, int(self.settings.paper_runner_min_lots_cheap_premium))
@@ -3319,10 +3321,10 @@ class AutoTraderEngine:
         quick_target = float(acs.get("quickProfit") or self.settings.paper_acs_quick_profit_points)
         lane = str(trade.scalp_lane or "")
         if current >= entry + quick_target:
-            if lane == LANE_FADE:
+            if lane == LANE_FADE or not trade.partial_exit_taken:
                 return "quick profit target hit"
-            if not trade.partial_exit_taken:
-                return "quick profit target hit"
+            if trade.partial_exit_taken and (age >= 40 or unrealized >= max(1.5, quick_target * 0.5)):
+                return "quick profit remainder target hit"
         cap_target = float(acs["cap"])
         if current >= entry + cap_target:
             return "ACS runner cap target hit"
