@@ -2066,6 +2066,23 @@ class AutoTraderEngine:
         """HIGH-confidence elite — bypass chop/breadth/AI gates."""
         return self._is_elite_runner_entry(candidate, runner)
 
+    def _consecutive_dead_entry_streak(self) -> int:
+        """Trades that never went green (best gain < 0.15pt) — dead tape entries."""
+        trades = sorted(
+            self._today_closed_trades(),
+            key=lambda trade: str(trade.exited_at or trade.opened_at or ""),
+            reverse=True,
+        )
+        streak = 0
+        for trade in trades:
+            entry = float(trade.entry_price or 0)
+            best = float(trade.best_price or entry)
+            if best - entry < 0.15:
+                streak += 1
+            else:
+                break
+        return streak
+
     def _consecutive_loss_streak(self) -> int:
         trades = sorted(
             self._today_closed_trades(),
@@ -2085,9 +2102,13 @@ class AutoTraderEngine:
         session_adj = session_adj or {}
         bucket = str(session_adj.get("sessionBucket") or "UNKNOWN")
         streak = self._consecutive_loss_streak()
+        dead_streak = self._consecutive_dead_entry_streak()
         pause_after = int(self.settings.paper_scalp_red_streak_pause_losses)
+        dead_pause = int(self.settings.paper_scalp_red_streak_dead_entries)
         if streak >= pause_after:
             return True, f"{bucket}: red-streak pause — {streak} consecutive losses (win-only scalps)"
+        if dead_streak >= dead_pause:
+            return True, f"{bucket}: dead-tape pause — {dead_streak} entries never went green"
         rolling = self._rolling_proof(limit=int(self.settings.paper_scalp_red_streak_rolling_trades))
         rolling_trades = int(rolling.get("paperTrades") or 0)
         rolling_pf = float(rolling.get("profitFactor") or 0)
@@ -2419,6 +2440,62 @@ class AutoTraderEngine:
             return True
         return False
 
+    def _passes_scalp_momentum_entry_gate(self, candidate: dict[str, Any], session_adj: dict[str, Any] | None = None) -> tuple[bool, str]:
+        """Require live momentum at entry — skip dead-tape scalps that never move."""
+        if not self._is_scalp_style_candidate(candidate):
+            return True, ""
+        runner = candidate.get("runnerSignal") or {}
+        if runner.get("momentumOverride") or self._is_momentum_burst_entry(candidate, runner):
+            return True, ""
+        if self._runner_entry_bypass(candidate, runner):
+            return True, ""
+        if self._scalp_relax_allowed(candidate):
+            return True, ""
+        min_vel = float(self.settings.paper_scalp_min_entry_velocity_pct)
+        metrics = runner.get("metrics") or {}
+        premium_velocity = float(runner.get("premiumVelocityPct") or metrics.get("premiumVelocity") or 0)
+        if not runner.get("momentumSurge"):
+            return False, f"dead-tape gate: momentum surge required (velocity {premium_velocity:.1f}%)"
+        if premium_velocity < min_vel:
+            return False, f"dead-tape gate: premium velocity {premium_velocity:.1f}% below {min_vel:.1f}%"
+        return True, ""
+
+    def _passes_chop_breadth_entry_gate(self, candidate: dict[str, Any], side: str) -> tuple[bool, str]:
+        """Block scalps in pure chop when breadth is stuck in the middle."""
+        if not self._is_scalp_style_candidate(candidate):
+            return True, ""
+        breadth = self._breadth_confirmation(side, symbol=str(candidate.get("symbol") or ""))
+        if not breadth.get("available"):
+            return True, ""
+        score = float(breadth.get("score") or 50)
+        low = float(self.settings.paper_scalp_chop_breadth_low)
+        high = float(self.settings.paper_scalp_chop_breadth_high)
+        if low <= score <= high and not breadth.get("aligned"):
+            return False, f"chop breadth gate: score {score:.0f} in dead zone {low:.0f}-{high:.0f}"
+        return True, ""
+
+    def _win_streak_lot_boost(self) -> float:
+        trades = sorted(
+            self._today_closed_trades(),
+            key=lambda trade: str(trade.exited_at or trade.opened_at or ""),
+            reverse=True,
+        )
+        win_streak = 0
+        for trade in trades:
+            if float(trade.pnl or 0) > 0:
+                win_streak += 1
+            else:
+                break
+        if win_streak >= 2:
+            return float(self.settings.paper_scalp_win_streak_lot_boost)
+        rolling = self._rolling_proof(limit=8)
+        pf = float(rolling.get("profitFactor") or 0)
+        if pf >= 1.5:
+            return 1.25
+        if pf >= 1.0:
+            return 1.1
+        return 1.0
+
     def _side_performance_gate(self, candidate: dict[str, Any]) -> str | None:
         trades = self._today_closed_trades()
         if len(trades) < 10:
@@ -2648,6 +2725,12 @@ class AutoTraderEngine:
         blocked_sides = plan.get("gates", {}).get("blockedSides") or []
         if str(candidate.get("side") or "") in blocked_sides:
             reasons.append(f"daily calibration blocked {candidate.get('side')} side (underperforming)")
+        momentum_ok, momentum_reason = self._passes_scalp_momentum_entry_gate(candidate, session_adj)
+        if not momentum_ok and not tradeable_runner and not runner_momentum_override:
+            reasons.append(momentum_reason)
+        chop_ok, chop_reason = self._passes_chop_breadth_entry_gate(candidate, side)
+        if not chop_ok and not tradeable_runner and not runner_momentum_override:
+            reasons.append(chop_reason)
         symbol = str(candidate.get("symbol") or "")
         breadth = self._breadth_confirmation(side, symbol=symbol)
         momentum_explosion = self._is_momentum_explosion(candidate, runner)
@@ -2857,6 +2940,11 @@ class AutoTraderEngine:
                     target_lots = min(target_lots, loss_streak_cap)
                     affordable_lots = min(affordable_lots, max_lots_cap)
                     risk_lots = min(risk_lots, max_lots_cap)
+                else:
+                    boost = self._win_streak_lot_boost()
+                    if boost > 1.0:
+                        target_lots = min(int(self.settings.paper_quick_profit_max_lots), int(target_lots * boost))
+                        max_lots_cap = min(int(self.settings.paper_quick_profit_max_lots), max(max_lots_cap, target_lots))
                 effective_min_lots = min_lots
                 allowed_lots = min(affordable_lots, risk_lots, max_lots_cap)
                 final_lots = min(allowed_lots, max(min_lots, min(target_lots, allowed_lots)))
