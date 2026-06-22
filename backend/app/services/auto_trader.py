@@ -22,6 +22,7 @@ from app.services.advanced_scalp import (
     ml_exit_recommendation,
     normalize_regime,
     read_vix_from_payload,
+    reluctant_market_profit_exit,
     volatility_scale_acs,
 )
 from app.services.ai_learning import ContinuousAILearner
@@ -87,6 +88,7 @@ class PaperTrade:
     best_price: float = 0.0
     breakeven_armed: bool = False
     partial_exit_taken: bool = False
+    micro_partial_taken: bool = False
     scalp_lane: str = ""
     entry_regime: str = ""
     partial_realized_pnl: float = 0.0
@@ -135,6 +137,7 @@ class PaperTrade:
             best_price=float(payload.get("bestPrice") or payload.get("entryPrice") or 0),
             breakeven_armed=bool(payload.get("breakevenArmed")),
             partial_exit_taken=bool(payload.get("partialExitTaken")),
+            micro_partial_taken=bool(payload.get("microPartialTaken")),
             scalp_lane=str(payload.get("scalpLane") or ""),
             entry_regime=str(payload.get("entryRegime") or ""),
             partial_realized_pnl=float(payload.get("partialRealizedPnl") or 0),
@@ -173,6 +176,7 @@ class PaperTrade:
             "bestPrice": self.best_price,
             "breakevenArmed": self.breakeven_armed,
             "partialExitTaken": self.partial_exit_taken,
+            "microPartialTaken": self.micro_partial_taken,
             "scalpLane": self.scalp_lane or None,
             "entryRegime": self.entry_regime or None,
             "partialRealizedPnl": round(self.partial_realized_pnl, 2) if self.partial_realized_pnl else None,
@@ -1789,6 +1793,13 @@ class AutoTraderEngine:
             "partialExitPct": float(acs.get("partialExitPct") or self.settings.paper_scalp_partial_exit_pct),
             "timeLockSeconds": float(acs.get("timeLockSeconds") or self.settings.paper_scalp_time_lock_seconds),
             "timeLockMinGain": float(acs.get("timeLockMinGain") or self.settings.paper_scalp_time_lock_min_gain),
+            "microPartial": float(acs.get("microPartialPoints") or self.settings.paper_scalp_micro_partial_points),
+            "microPartialPct": float(acs.get("microPartialPct") or self.settings.paper_scalp_micro_partial_pct),
+            "grindSeconds": float(acs.get("grindProfitSeconds") or self.settings.paper_scalp_grind_profit_seconds),
+            "grindMinGain": float(acs.get("grindProfitMinGain") or self.settings.paper_scalp_grind_profit_min_gain),
+            "staleGiveback": float(acs.get("staleGivebackPoints") or self.settings.paper_scalp_stale_giveback_points),
+            "staleMinBest": float(acs.get("staleMinBestGain") or self.settings.paper_scalp_stale_min_best_gain),
+            "staleMinUnrealized": float(self.settings.paper_scalp_stale_min_unrealized),
         }
         lane = str((trade.scalp_lane if trade else "") or lane_override or "")
         profile.update({k: float(v) for k, v in lane_acs_overrides(lane).items()})
@@ -2983,6 +2994,7 @@ class AutoTraderEngine:
                     stop_points = min(stop_points, float(acs.get("stop") or self.settings.paper_scalp_controlled_stop_points))
             if self.settings.paper_scalp_partial_exit_enabled and scalp_exits:
                 lot_size = max(1, int((candidate or {}).get("lotSize") or 1))
+                self._maybe_take_scalp_micro_partial(trade, current, lot_size=lot_size, session_adj=session_adj)
                 self._maybe_take_scalp_partial(trade, current, lot_size=lot_size, session_adj=session_adj)
             if not trade.breakeven_armed and trade.best_price >= trade.entry_price + breakeven_shift:
                 trade.breakeven_armed = True
@@ -3269,6 +3281,41 @@ class AutoTraderEngine:
             return self._acs_scalp_exit_reason(trade, current, age, session_adj=session_adj, candidate=candidate)
         return self._legacy_quick_profit_exit_reason(trade, current, age)
 
+    def _maybe_take_scalp_micro_partial(self, trade: PaperTrade, current: float, *, lot_size: int = 1, session_adj: dict[str, Any] | None = None) -> bool:
+        """Early partial at +2.5pt — book profit before market fades in chop."""
+        if not self.settings.paper_scalp_partial_exit_enabled or trade.micro_partial_taken:
+            return False
+        if str(trade.scalp_lane or "") == LANE_FADE:
+            return False
+        if trade.strategy_type != "SCALP" and trade.exit_mode != "SCALP_LOCK" and not trade.scalp_lane:
+            return False
+        entry = float(trade.entry_price)
+        acs = self._scalp_acs_profile(session_adj, trade=trade)
+        trigger = float(acs.get("microPartial") or self.settings.paper_scalp_micro_partial_points)
+        if current < entry + trigger:
+            return False
+        pct = float(acs.get("microPartialPct") or self.settings.paper_scalp_micro_partial_pct)
+        lot_size = max(1, lot_size)
+        partial_qty = max(lot_size, int(round(trade.quantity * pct / lot_size) * lot_size))
+        if partial_qty >= trade.quantity:
+            return False
+        per_unit_cost = (float(trade.spread_cost) + float(trade.slippage_estimate)) / max(trade.quantity, 1)
+        partial_charges = self._charges_estimate(entry, current, partial_qty)
+        partial_pnl = ((current - entry - per_unit_cost) * partial_qty) - partial_charges
+        trade.partial_realized_pnl += partial_pnl
+        trade.quantity -= partial_qty
+        trade.micro_partial_taken = True
+        trade.breakeven_armed = True
+        trade.lifecycle.append(
+            LifecycleEvent(
+                "PARTIAL_FILL",
+                datetime.now(timezone.utc).isoformat(),
+                f"Micro partial exit at +{trigger:.1f}pt on {partial_qty} units (reluctant market book)",
+                {"partialQty": partial_qty, "partialPnl": round(partial_pnl, 2), "remainingQty": trade.quantity, "price": current, "micro": True},
+            )
+        )
+        return True
+
     def _maybe_take_scalp_partial(self, trade: PaperTrade, current: float, *, lot_size: int = 1, session_adj: dict[str, Any] | None = None) -> bool:
         if not self.settings.paper_scalp_partial_exit_enabled or trade.partial_exit_taken:
             return False
@@ -3325,6 +3372,22 @@ class AutoTraderEngine:
                 return "quick profit target hit"
             if trade.partial_exit_taken and (age >= 40 or unrealized >= max(1.5, quick_target * 0.5)):
                 return "quick profit remainder target hit"
+        # Book profit when market peaks then fades — before decay can scratch
+        reluctant = reluctant_market_profit_exit(
+            age=age,
+            best_gain=best_gain,
+            unrealized=unrealized,
+            enabled=bool(self.settings.paper_scalp_reluctant_profit_enabled),
+            min_best_gain=float(acs.get("staleMinBest") or self.settings.paper_scalp_stale_min_best_gain),
+            giveback_points=float(acs.get("staleGiveback") or self.settings.paper_scalp_stale_giveback_points),
+            min_unrealized=float(acs.get("staleMinUnrealized") or self.settings.paper_scalp_stale_min_unrealized),
+            grind_seconds=float(acs.get("grindSeconds") or self.settings.paper_scalp_grind_profit_seconds),
+            grind_min_gain=float(acs.get("grindMinGain") or self.settings.paper_scalp_grind_profit_min_gain),
+            micro_arm=float(acs["microArm"]),
+            micro_trail=float(acs["microTrail"]),
+        )
+        if reluctant:
+            return reluctant
         cap_target = float(acs["cap"])
         if current >= entry + cap_target:
             return "ACS runner cap target hit"
@@ -3334,6 +3397,7 @@ class AutoTraderEngine:
             min_gain_floor=float(acs["decayMinGain"]),
             base_decay_seconds=float(acs["decaySeconds"]),
             enabled=bool(self.settings.paper_scalp_adaptive_decay_enabled),
+            unrealized=unrealized,
         ):
             return "ACS adaptive decay profit scratch" if unrealized > 0 else "ACS adaptive decay exit"
         if best_gain >= acs["arm"]:

@@ -268,15 +268,45 @@ def adaptive_decay_should_exit(
     min_gain_floor: float,
     base_decay_seconds: float,
     enabled: bool,
+    unrealized: float = 0.0,
 ) -> bool:
     if not enabled:
         return age >= base_decay_seconds and best_gain < min_gain_floor
+    # Don't scratch greens that peaked — reluctant-market exit will book them
+    if unrealized >= 0.4 and best_gain >= 1.8:
+        return False
     progress_rate = best_gain / max(age, 1.0)
     if age >= 30 and progress_rate < 0.015 and best_gain < max(0.5, min_gain_floor):
         return True
     if age >= 60 and progress_rate < 0.03 and best_gain < max(1.0, min_gain_floor * 1.5):
         return True
     return age >= base_decay_seconds and best_gain < min_gain_floor
+
+
+def reluctant_market_profit_exit(
+    *,
+    age: float,
+    best_gain: float,
+    unrealized: float,
+    enabled: bool,
+    min_best_gain: float,
+    giveback_points: float,
+    min_unrealized: float,
+    grind_seconds: float,
+    grind_min_gain: float,
+    micro_arm: float,
+    micro_trail: float,
+) -> str | None:
+    """Book profits when the market peaks and fades — take what it gives."""
+    if not enabled or unrealized < min_unrealized:
+        return None
+    if best_gain >= min_best_gain and (best_gain - unrealized) >= giveback_points:
+        return "reluctant market peak giveback profit lock"
+    if age >= grind_seconds and unrealized >= grind_min_gain:
+        return "reluctant market grind profit book"
+    if micro_arm <= best_gain and unrealized <= best_gain - micro_trail:
+        return "reluctant market micro trail profit lock"
+    return None
 
 
 def kelly_size_multiplier(

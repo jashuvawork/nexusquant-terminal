@@ -147,8 +147,8 @@ class Settings(BaseSettings):
     paper_scalp_runner_min_lock_points: float = 2.0
     paper_scalp_runner_retain_pct: float = 0.65
     paper_scalp_runner_cap_points: float = 10.0
-    paper_scalp_micro_arm_points: float = 3.0
-    paper_scalp_micro_trail_points: float = 1.0
+    paper_scalp_micro_arm_points: float = 2.0
+    paper_scalp_micro_trail_points: float = 0.75
     paper_scalp_early_decay_seconds: float = 35.0
     paper_scalp_early_decay_min_gain: float = 0.35
     paper_scalp_velocity_min_pct: float = 2.0
@@ -169,6 +169,14 @@ class Settings(BaseSettings):
     paper_scalp_partial_exit_points: float = 5.5
     paper_scalp_partial_exit_pct: float = 0.60
     paper_scalp_partial_remainder_stop_points: float = 2.0
+    paper_scalp_reluctant_profit_enabled: bool = True
+    paper_scalp_micro_partial_points: float = 2.5
+    paper_scalp_micro_partial_pct: float = 0.40
+    paper_scalp_grind_profit_seconds: float = 50.0
+    paper_scalp_grind_profit_min_gain: float = 1.0
+    paper_scalp_stale_giveback_points: float = 1.0
+    paper_scalp_stale_min_best_gain: float = 2.0
+    paper_scalp_stale_min_unrealized: float = 0.5
     paper_scalp_fade_lane_enabled: bool = True
     paper_scalp_kelly_sizing_enabled: bool = True
     paper_scalp_ml_exit_overlay_enabled: bool = False
