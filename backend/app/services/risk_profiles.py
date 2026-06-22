@@ -101,18 +101,18 @@ def _all_day_unified_scalp_params(
     base_duplicate_cooldown: int,
     base_max_hold_seconds: int,
 ) -> dict[str, Any]:
-    """All-day unified scalp: elite gates, quick-profit ACS, momentum + fade lanes in every live window."""
+    """All-day unified scalp: active scalping with ACS exits; relaxed TQS vs elite-only mode."""
     return {
-        "min_entry_tqs": max(int(base_min_tqs) + 4, 78),
-        "min_runner_score": max(float(base_runner_score) + 2.0, 82.0),
+        "min_entry_tqs": max(int(base_min_tqs), 52),
+        "min_runner_score": max(float(base_runner_score), 68.0),
         "allocation_multiplier": 0.85,
-        "duplicate_cooldown": max(int(base_duplicate_cooldown), 90),
+        "duplicate_cooldown": max(int(base_duplicate_cooldown), 45),
         "target_multiplier": 1.0,
         "stop_multiplier": 0.95,
         "max_hold_seconds": min(int(base_max_hold_seconds), 180),
         "block_new_paper": False,
         "block_reason": None,
-        "midday_runner_bypass_score": 88.0,
+        "midday_runner_bypass_score": 75.0,
     }
 
 
@@ -150,7 +150,7 @@ def adaptive_settings(
     adjustments: list[str] = []
 
     if unified_scalp_profile and bucket in LIVE_SCALP_BUCKETS:
-        minimum_tqs = max(minimum_tqs, 82 if base.key in {"aggressive_scalping", "extreme_prop"} else 78)
+        minimum_tqs = max(minimum_tqs, 58)
         safe_mode_tqs = max(safe_mode_tqs, minimum_tqs + 6)
         cooldown = max(cooldown, 45)
         max_exposure = min(max_exposure, 25)

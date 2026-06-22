@@ -1569,9 +1569,13 @@ class AutoTraderEngine:
             result["blockNewPaperTrades"] = True
             result["blockReason"] = f"News: avoid regular entries — {news.get('eventRisk')} risk, {news.get('sentiment')} sentiment (momentum override still active)"
             result.setdefault("adjustments", []).append("News avoidFreshTrades: scalps paused, momentum override runners still allowed")
-        elif impact.get("raiseTqs"):
+        elif impact.get("raiseTqs") and not self.settings.paper_scalp_relaxed_gates:
             result["minEntryTqs"] = int(result.get("minEntryTqs", 74)) + 4
             result.setdefault("adjustments", []).append(f"News event risk ({news.get('eventRisk')}): TQS floor +4")
+        elif impact.get("raiseTqs"):
+            result.setdefault("adjustments", []).append(
+                f"News event risk ({news.get('eventRisk')}): scalp relaxed mode — TQS floor unchanged"
+            )
         if impact.get("allowRunnerBias"):
             result["minRunnerScore"] = max(68.0, float(result.get("minRunnerScore", 78.0)) - 5.0)
             result.setdefault("adjustments", []).append("News confirms direction: runner score threshold -5")
@@ -1643,8 +1647,22 @@ class AutoTraderEngine:
         premium_max = float(self.settings.explosive_runner_premium_max)
         return premium_min <= premium <= premium_max
 
+    def _is_scalp_style_candidate(self, candidate: dict[str, Any]) -> bool:
+        strategy = str(candidate.get("strategyType") or "SCALP").upper()
+        style = str((candidate.get("optimizedProfile") or {}).get("executionStyle") or "")
+        return strategy == "SCALP" or style in {"HIGH_WIN_SCALP", "FADE_SCALP"}
+
+    def _scalp_runner_score(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> float:
+        runner = runner or candidate.get("runnerSignal") or {}
+        return float(runner.get("score") or candidate.get("tqs") or 0)
+
+    def _scalp_relax_allowed(self, candidate: dict[str, Any]) -> bool:
+        if not self.settings.paper_scalp_relaxed_gates or not self._is_scalp_style_candidate(candidate):
+            return False
+        return self._scalp_runner_score(candidate) >= float(self.settings.paper_scalp_relaxed_min_runner_score)
+
     def _is_scalp_candidate(self, candidate: dict[str, Any]) -> bool:
-        if candidate.get("chopBlocked"):
+        if candidate.get("chopBlocked") and not self._scalp_relax_allowed(candidate):
             return False
         premium = float(candidate.get("lastPremium") or 0)
         if premium <= 0:
@@ -1727,6 +1745,8 @@ class AutoTraderEngine:
 
     def _passes_scalp_velocity_gate(self, candidate: dict[str, Any]) -> bool:
         if str(candidate.get("scalpLane") or "") == LANE_FADE:
+            return True
+        if self._scalp_relax_allowed(candidate):
             return True
         min_velocity = float(self.settings.paper_scalp_velocity_min_pct or 0)
         if min_velocity <= 0:
@@ -2012,6 +2032,8 @@ class AutoTraderEngine:
 
     def _passes_high_confidence_gate(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> tuple[bool, str]:
         runner = runner or candidate.get("runnerSignal") or {}
+        if self._scalp_relax_allowed(candidate):
+            return True, ""
         if self.settings.paper_max_catch_mode and self._runner_entry_bypass(candidate, runner):
             premium = float(candidate.get("lastPremium") or runner.get("premium") or 0)
             if self._is_explosion_chase(candidate, runner):
@@ -2404,16 +2426,16 @@ class AutoTraderEngine:
             score += 8.0 if chart_bias == side else -25.0
         elif chart_bias == "WAIT":
             score -= 15.0
-        if candidate.get("chopBlocked") and not is_runner:
+        if candidate.get("chopBlocked") and not is_runner and not self._scalp_relax_allowed(candidate):
             score -= 18.0
         if breadth.get("available"):
             score += 10.0 if breadth.get("aligned") else -18.0
 
         news = self._latest_news_state or {}
         news_impact = news.get("impact") or {}
-        if news_impact.get("avoidFreshTrades") and not runner.get("momentumOverride"):
+        if news_impact.get("avoidFreshTrades") and not runner.get("momentumOverride") and not self._scalp_relax_allowed(candidate):
             score -= 40.0  # penalise regular trades; momentum override bypasses
-        elif news_impact.get("raiseTqs") and not runner.get("momentumOverride"):
+        elif news_impact.get("raiseTqs") and not runner.get("momentumOverride") and not self._scalp_relax_allowed(candidate):
             score -= 7.0
         if news_impact.get("allowRunnerBias") and is_runner:
             bias_side = str(news_impact.get("biasSide") or "")
@@ -2421,6 +2443,8 @@ class AutoTraderEngine:
                 score += 12.0
         if runner.get("momentumOverride"):
             score = max(score, 70.0)  # momentum override always passes AI predictor
+        if self._scalp_relax_allowed(candidate):
+            score = max(score, 66.0)
         if self.settings.paper_max_catch_mode and self._is_catchable_runner(candidate, runner):
             score = max(score, 78.0)
 
@@ -2472,7 +2496,7 @@ class AutoTraderEngine:
         strong_runner = self._runner_entry_bypass(candidate, runner)
         if premium <= 0:
             reasons.append("missing premium")
-        if candidate.get("chopBlocked") and not tradeable_runner and not strong_runner:
+        if candidate.get("chopBlocked") and not tradeable_runner and not strong_runner and not self._scalp_relax_allowed(candidate):
             reasons.append("chop filter blocked")
         correlation_gate = self._entry_correlation_gate(candidate, session_adj)
         if correlation_gate:
@@ -2494,7 +2518,7 @@ class AutoTraderEngine:
             )
         if runner_momentum_override:
             pass  # momentum override: premium velocity is the signal, not breadth
-        elif breadth.get("available") and not breadth.get("aligned") and not tradeable_runner:
+        elif breadth.get("available") and not breadth.get("aligned") and not tradeable_runner and not self._scalp_relax_allowed(candidate):
             reasons.append(str(breadth.get("reason") or "market breadth does not confirm trade side"))
         elif breadth.get("available") and not breadth.get("aligned") and tradeable_runner:
             if self._intraday_loss_guard().get("active"):
@@ -2504,7 +2528,7 @@ class AutoTraderEngine:
         if not high_conf_ok and not momentum_explosion and not strong_runner:
             reasons.append(high_conf_reason)
         ai_prediction = self._ai_trade_quality_prediction(candidate, premium=premium, required_move=required_move, session_adj=session_adj, market_phase=market_phase)
-        if not ai_prediction["passed"] and not momentum_explosion and not runner.get("momentumOverride") and not strong_runner:
+        if not ai_prediction["passed"] and not momentum_explosion and not runner.get("momentumOverride") and not strong_runner and not self._scalp_relax_allowed(candidate):
             reasons.append(
                 "AI quality predictor rejected: "
                 f"win {ai_prediction['winProbabilityPct']}%, RR {ai_prediction['riskReward']}, confidence {ai_prediction['confidencePct']}%"
@@ -2515,13 +2539,19 @@ class AutoTraderEngine:
                 reasons.append("missing effective volume")
         else:
             min_entry_tqs = int(session_adj.get("minEntryTqs") or max(int(self.settings.nifty_opt_min_tqs), int(self.settings.sensex_opt_min_tqs)))
-            if candidate.get("strategyType") != "EXPLOSIVE_RUNNER" and self.settings.paper_dual_capital_enabled:
+            if self._is_scalp_style_candidate(candidate) and self.settings.paper_dual_capital_enabled:
+                floor = int(self.settings.paper_scalp_relaxed_min_tqs if self._scalp_relax_allowed(candidate) else self.settings.paper_scalping_min_entry_tqs)
+                min_entry_tqs = min(min_entry_tqs, floor)
+            elif candidate.get("strategyType") != "EXPLOSIVE_RUNNER" and self.settings.paper_dual_capital_enabled:
                 min_entry_tqs = min(min_entry_tqs, int(self.settings.paper_scalping_min_entry_tqs))
-            if candidate.get("tqs", 0) < min_entry_tqs:
+            effective_tqs = int(candidate.get("tqs") or 0)
+            if self._scalp_relax_allowed(candidate):
+                effective_tqs = max(effective_tqs, int(self._scalp_runner_score(candidate, runner)))
+            if effective_tqs < min_entry_tqs:
                 reasons.append(f"TQS below session threshold ({min_entry_tqs})")
             if candidate.get("effectiveVolume", 0) <= 0:
                 reasons.append("missing effective volume")
-            if not momentum_runner and not momentum_explosion and not strong_runner:
+            if not momentum_runner and not momentum_explosion and not strong_runner and not self._scalp_relax_allowed(candidate):
                 if chart_bias in {"CALL", "PUT"} and side in {"CALL", "PUT"} and side != chart_bias:
                     reasons.append(f"chart trend conflict: {chart_bias} bias vs {side} trade")
                 if chart_bias == "WAIT":
@@ -2603,10 +2633,16 @@ class AutoTraderEngine:
         strategy_type = str(candidate.get("strategyType") or "SCALP")
         pool = capital_pool or self._capital_pool_for(strategy_type)
         entry_tqs = int(candidate.get("tqs") or 0)
+        if self._scalp_relax_allowed(candidate):
+            entry_tqs = max(entry_tqs, int(self._scalp_runner_score(candidate, runner_sig)))
         if entry_bypass or momentum_explosion:
             min_entry_tqs = int(self.settings.paper_momentum_min_entry_tqs)
         elif not self._is_explosive_strategy(strategy_type) and self.settings.paper_dual_capital_enabled:
-            min_entry_tqs = int(self.settings.paper_scalping_min_entry_tqs)
+            min_entry_tqs = int(
+                self.settings.paper_scalp_relaxed_min_tqs
+                if self._scalp_relax_allowed(candidate)
+                else self.settings.paper_scalping_min_entry_tqs
+            )
         else:
             min_entry_tqs = int(self.settings.paper_min_entry_tqs or self.settings.paper_high_confidence_min_tqs)
         if entry_tqs < min_entry_tqs and not momentum_override and not entry_bypass:

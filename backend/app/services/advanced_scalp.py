@@ -75,7 +75,10 @@ def classify_scalp_lane(candidate: dict[str, Any], *, regime: str, session_bucke
         return LANE_MOMENTUM
     if regime == REGIME_RANGE:
         runner = _runner(candidate)
+        score = float(runner.get("score") or candidate.get("tqs") or 0)
         if runner.get("momentumSurge") or runner.get("momentumOverride"):
+            return LANE_MOMENTUM
+        if score >= 65 or runner.get("candidate") or runner.get("momentumAligned"):
             return LANE_MOMENTUM
         return None
     runner = _runner(candidate)
@@ -124,7 +127,7 @@ def passes_ev_gate(
     return True, None
 
 
-def passes_absorption_gate(candidate: dict[str, Any], quality: dict[str, Any], *, enabled: bool) -> tuple[bool, str | None]:
+def passes_absorption_gate(candidate: dict[str, Any], quality: dict[str, Any], *, enabled: bool, relaxed: bool = False) -> tuple[bool, str | None]:
     if not enabled:
         return True, None
     runner = _runner(candidate)
@@ -138,6 +141,11 @@ def passes_absorption_gate(candidate: dict[str, Any], quality: dict[str, Any], *
     slippage = float(quality.get("slippageEstimate") or 0)
     premium = float(candidate.get("lastPremium") or runner.get("premium") or 0)
     spread_pct = ((spread_cost + slippage) / premium * 100) if premium > 0 else 999.0
+    score = float(runner.get("score") or candidate.get("tqs") or 0)
+    spread_quality = float(metrics.get("spreadQuality") or 0)
+    if relaxed and score >= 65 and spread_quality >= 85 and spread_pct <= 3.0:
+        if volume_accel >= 15 or delta_velocity >= 20 or premium_velocity >= 0.25:
+            return True, None
     if not runner.get("momentumSurge"):
         return False, "absorption gate: momentum surge required"
     if premium_velocity < 2.0:
@@ -346,6 +354,11 @@ def evaluate_advanced_scalp_entry(
         return {"allowed": True, "lane": LANE_MOMENTUM, "reason": None, "sizeMultiplier": 1.0}
 
     lane = str(candidate.get("scalpLane") or "") or classify_scalp_lane(candidate, regime=regime, session_bucket=session_bucket)
+    if not lane:
+        score = float(runner.get("score") or candidate.get("tqs") or 0)
+        if score >= 65 or runner.get("candidate") or runner.get("momentumAligned"):
+            lane = LANE_MOMENTUM
+    relaxed = bool(getattr(settings, "paper_scalp_relaxed_gates", True))
     if getattr(settings, "paper_scalp_regime_gate_enabled", True):
         all_day = bool(getattr(settings, "paper_all_day_scalp_enabled", True))
         ok, reason = passes_regime_gate(lane, regime, all_day_enabled=all_day)
@@ -363,19 +376,22 @@ def evaluate_advanced_scalp_entry(
             return {"allowed": False, "lane": lane, "reason": reason, "sizeMultiplier": 1.0}
 
     if lane == LANE_MOMENTUM and getattr(settings, "paper_scalp_absorption_gate_enabled", True):
-        ok, reason = passes_absorption_gate(candidate, quality, enabled=True)
-        if not ok:
+        ok, reason = passes_absorption_gate(candidate, quality, enabled=True, relaxed=relaxed)
+        if not ok and relaxed and float(runner.get("score") or candidate.get("tqs") or 0) >= 65:
+            pass
+        elif not ok:
             return {"allowed": False, "lane": lane, "reason": reason, "sizeMultiplier": 1.0}
-
-    snapshots = payload.get("snapshots") or {}
     if getattr(settings, "paper_scalp_cross_index_enabled", True):
+        min_confirmations = 1 if relaxed else int(getattr(settings, "paper_scalp_cross_index_min", 2))
         ok, reason = passes_cross_index_gate(
             candidate,
             snapshots,
             enabled=True,
-            min_confirmations=int(getattr(settings, "paper_scalp_cross_index_min", 2)),
+            min_confirmations=min_confirmations,
         )
-        if not ok and lane == LANE_MOMENTUM:
+        if not ok and lane == LANE_MOMENTUM and relaxed:
+            pass
+        elif not ok:
             return {"allowed": False, "lane": lane, "reason": reason, "sizeMultiplier": 1.0}
 
     return {"allowed": True, "lane": lane or LANE_MOMENTUM, "reason": None, "sizeMultiplier": 1.0}

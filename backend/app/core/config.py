@@ -124,6 +124,9 @@ class Settings(BaseSettings):
     paper_scalping_allocation_pct: float = 28.0
     paper_explosive_allocation_pct: float = 15.0
     paper_scalping_min_entry_tqs: int = 52
+    paper_scalp_relaxed_gates: bool = True
+    paper_scalp_relaxed_min_runner_score: float = 65.0
+    paper_scalp_relaxed_min_tqs: int = 48
     paper_prefer_scalping: bool = True
     paper_ultra_elite_min_runner_score: float = 92.0
     paper_ultra_elite_min_velocity_pct: float = 3.0
