@@ -1679,8 +1679,6 @@ class AutoTraderEngine:
         if not self.settings.paper_open_drive_momentum_catch:
             return False
         runner = runner or candidate.get("runnerSignal") or {}
-        if self._is_explosion_chase(candidate, runner):
-            return False
         premium = float(candidate.get("lastPremium") or runner.get("premium") or 0)
         min_premium = float(self.settings.paper_momentum_min_premium_ltp)
         max_premium = float(self.settings.paper_momentum_max_entry_premium)
