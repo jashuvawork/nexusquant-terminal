@@ -60,6 +60,7 @@ class ExplosiveRunnerEngine:
         explosion_volume_accel: float = 35.0,
         max_catch_mode: bool = False,
         explosion_min_premium: float = 25.0,
+        vertical_surge_velocity_pct: float = 6.0,
         elite_min_score: float = 92.0,
         elite_breakout_min: float = 70.0,
         elite_delta_velocity_min: float = 55.0,
@@ -155,6 +156,11 @@ class ExplosiveRunnerEngine:
             and volume_accel >= max(50.0, momentum_override_volume_accel * 2)
             and (price_velocity >= 0.05 or price_velocity <= -0.05)
             and spread_quality >= 65
+        ) or (
+            premium_velocity >= vertical_surge_velocity_pct
+            and volume_accel >= 12
+            and spread_quality >= 45
+            and premium >= explosion_min_premium
         ) or (
             premium_velocity >= explosion_velocity_pct
             and volume_accel >= explosion_volume_accel

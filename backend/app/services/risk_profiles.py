@@ -29,7 +29,7 @@ PROFILES: dict[str, RiskProfile] = {
 }
 
 SESSION_NOTES = {
-    "OPEN_DRIVE": "9:15-10:30 IST: selective scalps only — higher TQS, smaller size; book +6pt quickly.",
+    "OPEN_DRIVE": "9:15-10:30 IST: momentum-burst catch — vertical premium surges (e.g. ₹52→₹88 CE); 1.35× size.",
     "MIDDAY_CHOP": "11:30-13:30 IST: primary quick-scalp window — relaxed gates, +5pt book, larger lots.",
     "CLOSING_MOMENTUM": "14:30-15:15 IST: momentum scalps with moderate gates; trail profits aggressively.",
     "PREMARKET": "Pre-market: analysis only; build levels and bias, no F&O scalps.",
@@ -83,14 +83,15 @@ def _scalp_acs_session_params(bucket: str, *, block_closing_momentum: bool = Fal
     }
     overrides: dict[str, dict[str, Any]] = {
         "OPEN_DRIVE": {
-            "runnerCapPoints": 10.0,
+            "runnerCapPoints": 14.0,
             "runnerRetainPct": 0.66,
-            "runnerArmPoints": 3.5,
-            "controlledStopPoints": 2.75,
+            "runnerArmPoints": 4.0,
+            "controlledStopPoints": 3.0,
             "quickProfitPoints": 6.0,
-            "partialExitPct": 0.52,
+            "partialExitPct": 0.50,
             "timeLockSeconds": 90,
-            "timeLockMinGain": 3.5,
+            "timeLockMinGain": 4.0,
+            "decaySeconds": 40.0,
         },
         "MIDDAY_CHOP": {
             "runnerCapPoints": 9.0,
@@ -152,15 +153,16 @@ def _session_scalp_entry_params(
             "scalp_relaxed_gates": True,
         },
         "OPEN_DRIVE": {
-            "min_entry_tqs": max(int(base_min_tqs), 60),
-            "min_runner_score": max(float(base_runner_score), 74.0),
-            "allocation_multiplier": 0.65,
-            "duplicate_cooldown": max(int(base_duplicate_cooldown), 60),
-            "target_multiplier": 1.05,
+            "min_entry_tqs": max(int(base_min_tqs) - 6, 50),
+            "min_runner_score": max(float(base_runner_score) - 10.0, 65.0),
+            "allocation_multiplier": 1.35,
+            "duplicate_cooldown": max(20, int(base_duplicate_cooldown) // 2),
+            "target_multiplier": 1.25,
             "stop_multiplier": 0.95,
-            "max_hold_seconds": min(int(base_max_hold_seconds), 150),
-            "midday_runner_bypass_score": 88.0,
+            "max_hold_seconds": min(int(base_max_hold_seconds), 240),
+            "midday_runner_bypass_score": 68.0,
             "scalp_relaxed_gates": False,
+            "momentum_burst_catch": True,
         },
         "NORMAL": {
             "min_entry_tqs": max(int(base_min_tqs) - 2, 54),
@@ -461,6 +463,7 @@ def paper_session_adjustments(
         "blockReason": block_reason,
         "middayRunnerBypassScore": midday_runner_bypass_score,
         "scalpRelaxedGates": scalp_relaxed_gates if unified_scalp_profile and bucket in LIVE_SCALP_BUCKETS else False,
+        "momentumBurstCatch": bool(scalp.get("momentum_burst_catch")) if unified_scalp_profile and bucket in LIVE_SCALP_BUCKETS else False,
         "minEntryTqs": int(min_entry_tqs),
         "minRunnerScore": round(min_runner_score, 2),
         "allocationPctMultiplier": round(allocation_multiplier, 3),

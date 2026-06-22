@@ -274,6 +274,7 @@ class AutoTraderEngine:
             runner_sig = (candidate.get("runnerSignal") or {})
             is_runner_burst = bool(
                 runner_sig.get("momentumOverride")
+                or self._is_momentum_burst_entry(candidate, runner_sig)
                 or self._is_momentum_explosion(candidate, runner_sig)
                 or self._is_catchable_runner(candidate, runner_sig)
             )
@@ -1673,6 +1674,48 @@ class AutoTraderEngine:
             return False
         return self._scalp_runner_score(candidate) >= float(self.settings.paper_scalp_relaxed_min_runner_score)
 
+    def _is_momentum_burst_entry(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
+        """Vertical premium surge / open-drive burst — e.g. NIFTY CE ₹52→₹88 on 1m chart."""
+        if not self.settings.paper_open_drive_momentum_catch:
+            return False
+        runner = runner or candidate.get("runnerSignal") or {}
+        if self._is_explosion_chase(candidate, runner):
+            return False
+        premium = float(candidate.get("lastPremium") or runner.get("premium") or 0)
+        min_premium = float(self.settings.paper_momentum_min_premium_ltp)
+        max_premium = float(self.settings.paper_momentum_max_entry_premium)
+        if not (min_premium <= premium <= max_premium):
+            return False
+        metrics = self._runner_metrics(runner)
+        premium_velocity = float(runner.get("premiumVelocityPct") or metrics.get("premiumVelocity") or 0)
+        volume_accel = float(runner.get("volumeAcceleration") or metrics.get("volumeAcceleration") or 0)
+        score = float(runner.get("score") or candidate.get("tqs") or 0)
+        breakout = float(metrics.get("breakoutVelocity") or 0)
+        min_score = float(self.settings.paper_momentum_burst_min_runner_score)
+        min_vel = float(self.settings.paper_momentum_burst_min_velocity_pct)
+        min_vol = float(self.settings.paper_momentum_burst_min_volume_accel)
+        vertical = premium_velocity >= float(self.settings.paper_vertical_surge_velocity_pct)
+        session_adj = getattr(self, "_latest_session_adj", None) or {}
+        bucket = str(session_adj.get("sessionBucket") or "")
+        burst_window = bucket in {"OPEN_DRIVE", "CLOSING_MOMENTUM", "NORMAL"} or bool(session_adj.get("momentumBurstCatch"))
+        if bool(runner.get("momentumOverride")) and str(runner.get("confidence") or "").upper() == "HIGH":
+            if score >= min_score and premium_velocity >= min_vel:
+                return True
+        if vertical and volume_accel >= min_vol and score >= min_score:
+            return True
+        if premium_velocity >= 5.0 and volume_accel >= 18 and score >= min_score:
+            return True
+        if (
+            burst_window
+            and bool(runner.get("momentumSurge"))
+            and (bool(runner.get("momentumAligned")) or breakout >= 50)
+            and premium_velocity >= min_vel
+            and volume_accel >= min_vol
+            and score >= min_score
+        ):
+            return True
+        return False
+
     def _is_scalp_candidate(self, candidate: dict[str, Any]) -> bool:
         if candidate.get("chopBlocked") and not self._scalp_relax_allowed(candidate):
             return False
@@ -1787,6 +1830,13 @@ class AutoTraderEngine:
             return candidate
         if self._is_ultra_elite_runner_entry(candidate, runner):
             return candidate
+        if self._is_momentum_burst_entry(candidate, runner):
+            burst = dict(candidate)
+            burst["strategyType"] = "EXPLOSIVE_RUNNER"
+            profile = dict(burst.get("optimizedProfile") or {})
+            profile["executionStyle"] = "RUNNER_BREAKOUT"
+            burst["optimizedProfile"] = profile
+            return burst
         if self.settings.paper_prefer_scalping and self._is_scalp_candidate(candidate):
             scalp = dict(candidate)
             scalp["strategyType"] = "SCALP"
@@ -1904,7 +1954,7 @@ class AutoTraderEngine:
             return False
         bucket = str((self._paper_session_settings({})).get("sessionBucket") or "")
         if bucket in (gates.get("blockedBuckets") or []):
-            if not (runner.get("momentumOverride") and float(runner.get("score") or 0) >= 85):
+            if not (self._is_momentum_burst_entry(candidate, runner) or (runner.get("momentumOverride") and float(runner.get("score") or 0) >= 85)):
                 return False
         score = float(runner.get("score") or 0)
         metrics = self._runner_metrics(runner)
@@ -1972,6 +2022,8 @@ class AutoTraderEngine:
 
     def _runner_entry_bypass(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
         runner = runner or candidate.get("runnerSignal") or {}
+        if self._is_momentum_burst_entry(candidate, runner):
+            return True
         if self._elite_runner_only_mode():
             return self._is_elite_runner_entry(candidate, runner)
         loss_guard = self._intraday_loss_guard()
@@ -2027,6 +2079,8 @@ class AutoTraderEngine:
     def _is_momentum_explosion(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> bool:
         """Premium velocity + volume burst — e.g. ₹45→₹100 with volume spike on 1m chart."""
         runner = runner or candidate.get("runnerSignal") or {}
+        if self._is_momentum_burst_entry(candidate, runner):
+            return True
         metrics = self._runner_metrics(runner)
         premium_velocity = float(runner.get("premiumVelocityPct") or metrics.get("premiumVelocity") or 0)
         volume_accel = float(runner.get("volumeAcceleration") or metrics.get("volumeAcceleration") or 0)
@@ -2039,6 +2093,9 @@ class AutoTraderEngine:
             return False
         if self.settings.paper_max_catch_mode:
             return premium_velocity >= min_vel or volume_accel >= min_vol
+        if premium_velocity >= float(self.settings.paper_vertical_surge_velocity_pct) and volume_accel >= min_vol:
+            score = float(runner.get("score") or candidate.get("tqs") or 0)
+            return score >= float(self.settings.paper_momentum_burst_min_runner_score)
         if not runner.get("momentumOverride"):
             return False
         if str(runner.get("confidence") or "").upper() != "HIGH":
@@ -2047,6 +2104,8 @@ class AutoTraderEngine:
 
     def _passes_high_confidence_gate(self, candidate: dict[str, Any], runner: dict[str, Any] | None = None) -> tuple[bool, str]:
         runner = runner or candidate.get("runnerSignal") or {}
+        if self._is_momentum_burst_entry(candidate, runner):
+            return True, ""
         if self._scalp_relax_allowed(candidate):
             return True, ""
         if self.settings.paper_max_catch_mode and self._runner_entry_bypass(candidate, runner):
@@ -2209,6 +2268,8 @@ class AutoTraderEngine:
             return False
         runner = candidate.get("runnerSignal") or {}
         if self._elite_runner_only_mode():
+            if self._is_momentum_burst_entry(candidate, runner):
+                return True
             return self._is_elite_runner_entry(candidate, runner)
         if self.settings.paper_max_catch_mode and self._is_catchable_runner(candidate, runner):
             return True
@@ -2272,6 +2333,8 @@ class AutoTraderEngine:
                 return False
             return True
         if self._is_tradeable_explosive_runner(candidate, market_phase):
+            return True
+        if self._is_momentum_burst_entry(candidate):
             return True
         if self._elite_runner_only_mode():
             return False
@@ -2686,6 +2749,8 @@ class AutoTraderEngine:
             capital = max(0.0, float(trading_capital or 0))
             runner_sig_inner = candidate.get("runnerSignal") or {}
             alloc_boost = 1.5 if runner_sig_inner.get("momentumOverride") else 1.0
+            if self._is_momentum_burst_entry(candidate, runner_sig_inner):
+                alloc_boost = max(alloc_boost, 1.65)
             if quick_sizing:
                 alloc_boost *= float(self.settings.paper_quick_profit_allocation_boost)
             allocation_pct = self._allocation_pct_for_pool(pool, session_adj) * alloc_boost
