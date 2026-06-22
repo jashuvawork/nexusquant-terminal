@@ -2616,6 +2616,7 @@ class AutoTraderEngine:
         required_move = spread_cost + slippage + charges_per_unit + self.settings.min_required_move_points
         reasons = []
         runner = candidate.get("runnerSignal") or {}
+        burst_entry = self._is_momentum_burst_entry(candidate, runner)
         runner_score = float(runner.get("score") or 0)
         chart_bias = str(candidate.get("chartBias") or "")
         side = str(candidate.get("side") or "")
