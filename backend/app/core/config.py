@@ -188,10 +188,10 @@ class Settings(BaseSettings):
     paper_runner_quick_lock_seconds: float = 40.0
     paper_quick_profit_min_lots: int = 8
     paper_quick_profit_target_lots: int = 14
-    paper_quick_profit_max_lots: int = 22
+    paper_quick_profit_max_lots: int = 24
     paper_quick_profit_allocation_boost: float = 2.1
     paper_quick_profit_risk_unit_points: float = 3.0
-    paper_quick_profit_risk_budget_amount: float = 30000.0
+    paper_quick_profit_risk_budget_amount: float = 35000.0
     paper_quick_profit_size_runners: bool = True
     paper_same_side_entry_cooldown_seconds: int = 900
     paper_same_side_loss_cooldown_seconds: int = 1200
@@ -272,6 +272,13 @@ class Settings(BaseSettings):
     paper_scalp_chop_breadth_low: float = 45.0
     paper_scalp_chop_breadth_high: float = 55.0
     paper_scalp_win_streak_lot_boost: float = 1.35
+    paper_trade_mastermind_enabled: bool = True
+    paper_mastermind_runner_target_points: float = 6.0
+    paper_mastermind_min_hold_seconds: float = 45.0
+    paper_mastermind_micro_burst_target: float = 2.0
+    paper_mastermind_max_stop_points: float = 6.0
+    paper_mastermind_min_stop_points: float = 2.0
+    paper_mastermind_micro_burst_lot_mult: float = 1.45
     paper_momentum_explosion_velocity_pct: float = 1.5
     paper_momentum_explosion_volume_accel: float = 15.0
     paper_momentum_override_min_velocity_pct: float = 1.5

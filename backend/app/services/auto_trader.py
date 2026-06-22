@@ -25,6 +25,12 @@ from app.services.advanced_scalp import (
     reluctant_market_profit_exit,
     volatility_scale_acs,
 )
+from app.services.trade_mastermind import (
+    SESSION_RUNNER_TARGETS,
+    classify_entry_mode,
+    entry_lot_multiplier,
+    evaluate_trade_mastermind,
+)
 from app.services.ai_learning import ContinuousAILearner
 from app.services.daily_profit_strategy import build_daily_improvement_plan
 from app.services.paper_session_manager import PaperSessionManager
@@ -89,6 +95,8 @@ class PaperTrade:
     breakeven_armed: bool = False
     partial_exit_taken: bool = False
     micro_partial_taken: bool = False
+    mastermind_phase: str = ""
+    mastermind_plan: dict[str, Any] = field(default_factory=dict)
     scalp_lane: str = ""
     entry_regime: str = ""
     partial_realized_pnl: float = 0.0
@@ -138,6 +146,8 @@ class PaperTrade:
             breakeven_armed=bool(payload.get("breakevenArmed")),
             partial_exit_taken=bool(payload.get("partialExitTaken")),
             micro_partial_taken=bool(payload.get("microPartialTaken")),
+            mastermind_phase=str(payload.get("mastermindPhase") or ""),
+            mastermind_plan=dict(payload.get("mastermindPlan") or {}),
             scalp_lane=str(payload.get("scalpLane") or ""),
             entry_regime=str(payload.get("entryRegime") or ""),
             partial_realized_pnl=float(payload.get("partialRealizedPnl") or 0),
@@ -177,6 +187,8 @@ class PaperTrade:
             "breakevenArmed": self.breakeven_armed,
             "partialExitTaken": self.partial_exit_taken,
             "microPartialTaken": self.micro_partial_taken,
+            "mastermindPhase": self.mastermind_phase or None,
+            "mastermindPlan": self.mastermind_plan or None,
             "scalpLane": self.scalp_lane or None,
             "entryRegime": self.entry_regime or None,
             "partialRealizedPnl": round(self.partial_realized_pnl, 2) if self.partial_realized_pnl else None,
@@ -421,6 +433,7 @@ class AutoTraderEngine:
             "sessionRotation": rotation_event,
             "targetLock": target_lock,
             "performanceAnalysis": self.performance_analysis(),
+            "tradeMastermind": self._trade_mastermind_status(),
         }
 
     def status(self) -> dict[str, Any]:
@@ -445,6 +458,7 @@ class AutoTraderEngine:
             "paperSessions": self._paper_sessions_status(),
             "targetLock": self._target_lock_status(),
             "performanceAnalysis": self.performance_analysis(),
+            "tradeMastermind": self._trade_mastermind_status(),
         }
 
     def paper_sessions_history(self, limit: int = 50) -> dict[str, Any]:
@@ -1810,6 +1824,58 @@ class AutoTraderEngine:
             enabled=bool(self.settings.paper_scalp_vol_scaled_acs_enabled),
         )
 
+    def _evaluate_mastermind(
+        self,
+        trade: PaperTrade,
+        candidate: dict[str, Any],
+        *,
+        current: float,
+        age: float,
+        session_adj: dict[str, Any],
+        acs: dict[str, float],
+    ):
+        if not self.settings.paper_trade_mastermind_enabled:
+            return None
+        payload = self._latest_process_payload or {}
+        plan = evaluate_trade_mastermind(
+            entry=float(trade.entry_price),
+            current=current,
+            best=float(trade.best_price or trade.entry_price),
+            age=age,
+            session_bucket=str(session_adj.get("sessionBucket") or "NORMAL"),
+            candidate=candidate,
+            acs=acs,
+            learner_state=getattr(self.learner, "_state", {}) or {},
+            regime=str(trade.entry_regime or payload.get("regime") or "NORMAL"),
+            settings=self.settings,
+        )
+        trade.mastermind_phase = plan.phase
+        trade.mastermind_plan = plan.as_dict()
+        trade.stop_points = plan.stop_points
+        trade.target_points = plan.target_points
+        trade.trail_points = max(float(trade.trail_points or 0), plan.target_points * 0.22)
+        return plan
+
+    def _trade_mastermind_status(self) -> dict[str, Any]:
+        return {
+            "enabled": bool(self.settings.paper_trade_mastermind_enabled),
+            "runnerTargetPoints": float(self.settings.paper_mastermind_runner_target_points),
+            "minHoldSeconds": float(self.settings.paper_mastermind_min_hold_seconds),
+            "microBurstTargetPoints": float(self.settings.paper_mastermind_micro_burst_target),
+            "maxStopPoints": float(self.settings.paper_mastermind_max_stop_points),
+            "minStopPoints": float(self.settings.paper_mastermind_min_stop_points),
+            "microBurstLotMultiplier": float(self.settings.paper_mastermind_micro_burst_lot_mult),
+            "sessionRunnerTargets": {
+                bucket: (
+                    float(self.settings.paper_mastermind_runner_target_points)
+                    if bucket == "NORMAL"
+                    else float(target)
+                )
+                for bucket, target in SESSION_RUNNER_TARGETS.items()
+            },
+            "phases": ["RUNNER", "MICRO_BURST", "GRIND", "DEFEND", "DEAD"],
+        }
+
     def _passes_scalp_velocity_gate(self, candidate: dict[str, Any]) -> bool:
         if str(candidate.get("scalpLane") or "") == LANE_FADE:
             return True
@@ -2901,6 +2967,7 @@ class AutoTraderEngine:
         risk_plan = self._paper_risk_plan(candidate, quality, premium, session_adj)
         quick_sizing = self._quick_profit_sizing_active(candidate, pool, strategy_type)
         effective_min_lots = int(self.settings.paper_quick_profit_min_lots) if quick_sizing else 3
+        entry_mm_mode = classify_entry_mode(candidate, str(session_adj.get("sessionBucket") or "NORMAL")) if quick_sizing else "GRIND"
         if available_capital is not None and premium > 0:
             capital = max(0.0, float(trading_capital or 0))
             runner_sig_inner = candidate.get("runnerSignal") or {}
@@ -2933,6 +3000,16 @@ class AutoTraderEngine:
             if quick_sizing:
                 min_lots = int(self.settings.paper_quick_profit_min_lots)
                 target_lots = int(self.settings.paper_quick_profit_target_lots)
+                mode_mult = entry_lot_multiplier(entry_mm_mode, win_boost=1.0)
+                if entry_mm_mode == "MICRO_BURST":
+                    mode_mult = max(mode_mult, float(self.settings.paper_mastermind_micro_burst_lot_mult))
+                    target_lots = int(self.settings.paper_quick_profit_max_lots)
+                    min_lots = max(min_lots, int(self.settings.paper_quick_profit_target_lots))
+                elif entry_mm_mode == "RUNNER":
+                    target_lots = int(self.settings.paper_quick_profit_target_lots)
+                else:
+                    target_lots = min(int(self.settings.paper_quick_profit_max_lots), int(target_lots * mode_mult))
+                    min_lots = max(min_lots, int(min_lots * min(mode_mult, 1.2)))
                 loss_streak_cap = self._loss_streak_max_lots()
                 if loss_streak_cap is not None:
                     max_lots_cap = min(max_lots_cap, loss_streak_cap)
@@ -3001,6 +3078,7 @@ class AutoTraderEngine:
             trail_points=risk_plan["trailPoints"],
             best_price=premium,
             scalp_lane=str(candidate.get("scalpLane") or LANE_MOMENTUM),
+            mastermind_phase=entry_mm_mode if quick_sizing else "",
             entry_regime=normalize_regime(str(self._latest_process_payload.get("regime") or "NORMAL")),
         )
         trade.lifecycle.extend([
@@ -3034,6 +3112,7 @@ class AutoTraderEngine:
             trade.best_price = max(trade.best_price or trade.entry_price, current)
             age = self._age_seconds(trade.opened_at)
             reason = None
+            mastermind_plan = None
             profile = (candidate or {}).get("optimizedProfile") or {}
             target_points = float(trade.target_points or profile.get("targetPoints") or self.settings.paper_target_points)
             stop_points = float(trade.stop_points or profile.get("stopPoints") or self.settings.paper_stop_points)
@@ -3080,6 +3159,20 @@ class AutoTraderEngine:
                 breakeven_shift = min(breakeven_shift, float(acs.get("breakeven") or self.settings.paper_scalp_breakeven_shift_points))
                 if self.settings.paper_acs_scalp_enabled:
                     stop_points = min(stop_points, float(acs.get("stop") or self.settings.paper_scalp_controlled_stop_points))
+            mastermind_plan = None
+            if scalp_exits and self.settings.paper_trade_mastermind_enabled:
+                mastermind_plan = self._evaluate_mastermind(
+                    trade,
+                    candidate,
+                    current=current,
+                    age=age,
+                    session_adj=session_adj,
+                    acs=acs_profile or self._scalp_acs_profile(session_adj, trade=trade),
+                )
+                if mastermind_plan:
+                    stop_points = mastermind_plan.stop_points
+                    target_points = mastermind_plan.target_points
+                    max_hold_seconds = max(max_hold_seconds, int(mastermind_plan.max_hold_seconds))
             if self.settings.paper_scalp_partial_exit_enabled and scalp_exits:
                 lot_size = max(1, int((candidate or {}).get("lotSize") or 1))
                 self._maybe_take_scalp_micro_partial(trade, current, lot_size=lot_size, session_adj=session_adj)
@@ -3102,7 +3195,18 @@ class AutoTraderEngine:
             trail_pts = float(trade.trail_points or (target_points * 0.18 if is_runner and not scalp_lock else scalp_trail))
             trail_arm_at = max(2.0, min(partial_exit_at, target_points * 0.2)) if scalp_lock else max(partial_exit_at, target_points * 0.25)
             in_profitable_trail = trade.best_price >= trade.entry_price + trail_arm_at
-            reason = self._quick_profit_exit_reason(trade, current, age, session_adj=session_adj, scalp_exits=scalp_exits, candidate=candidate)
+            if mastermind_plan and mastermind_plan.exit_reason:
+                reason = mastermind_plan.exit_reason
+            else:
+                reason = self._quick_profit_exit_reason(
+                    trade,
+                    current,
+                    age,
+                    session_adj=session_adj,
+                    scalp_exits=scalp_exits,
+                    candidate=candidate,
+                    mastermind_plan=mastermind_plan,
+                )
             if not reason and scalp_lock and in_profitable_trail and current <= trade.best_price - trail_pts:
                 reason = "AI adaptive scalp profit lock"
             elif not reason and in_profitable_trail and current <= trade.best_price - trail_pts:
@@ -3130,11 +3234,14 @@ class AutoTraderEngine:
             ) and best_gain >= float(
                 acs_profile.get("timeLockMinGain") if scalp_exits else self.settings.paper_scalp_time_lock_min_gain
             ):
-                reason = "AI adaptive scalp time lock"
+                if not mastermind_plan or mastermind_plan.phase not in {"RUNNER", "GRIND"}:
+                    reason = "AI adaptive scalp time lock"
             elif not reason and trade.breakeven_armed and current <= trade.entry_price + 1.5 and (not is_runner or age >= runner_min_hold):
-                reason = "breakeven protection after profit move"
+                if not mastermind_plan or mastermind_plan.phase not in {"RUNNER", "GRIND"}:
+                    reason = "breakeven protection after profit move"
             elif not reason and current <= trade.entry_price - stop_points:
-                reason = "momentum decay or delta reversal stop" if scalp_exits else (psych_exit_reason or "momentum decay or delta reversal stop")
+                if not mastermind_plan or age >= float(mastermind_plan.min_hold_seconds):
+                    reason = "momentum decay or delta reversal stop" if scalp_exits else (psych_exit_reason or "momentum decay or delta reversal stop")
             elif not reason and age >= max_hold_seconds:
                 if unrealized >= max(2.0, float(self.settings.paper_micro_scalp_min_gain)):
                     reason = "time stop profit lock"
@@ -3361,17 +3468,28 @@ class AutoTraderEngine:
         session_adj: dict[str, Any] | None = None,
         scalp_exits: bool = False,
         candidate: dict[str, Any] | None = None,
+        mastermind_plan: Any | None = None,
     ) -> str | None:
         """ACS asymmetric scalp exits: tight controlled stop, ratcheting profit trail."""
         if not self.settings.paper_quick_profit_enabled:
             return None
         if self.settings.paper_acs_scalp_enabled and scalp_exits:
-            return self._acs_scalp_exit_reason(trade, current, age, session_adj=session_adj, candidate=candidate)
+            return self._acs_scalp_exit_reason(
+                trade,
+                current,
+                age,
+                session_adj=session_adj,
+                candidate=candidate,
+                mastermind_plan=mastermind_plan,
+            )
         return self._legacy_quick_profit_exit_reason(trade, current, age)
 
     def _maybe_take_scalp_micro_partial(self, trade: PaperTrade, current: float, *, lot_size: int = 1, session_adj: dict[str, Any] | None = None) -> bool:
-        """Early partial at +2.5pt — book profit before market fades in chop."""
+        """Early partial — book profit before market fades in chop."""
         if not self.settings.paper_scalp_partial_exit_enabled or trade.micro_partial_taken:
+            return False
+        mm_plan = trade.mastermind_plan or {}
+        if mm_plan.get("allowMicroPartial") is False or str(trade.mastermind_phase or "") == "RUNNER":
             return False
         if str(trade.scalp_lane or "") == LANE_FADE:
             return False
@@ -3447,56 +3565,76 @@ class AutoTraderEngine:
         *,
         session_adj: dict[str, Any] | None = None,
         candidate: dict[str, Any] | None = None,
+        mastermind_plan: Any | None = None,
     ) -> str | None:
         acs = self._scalp_acs_profile(session_adj, trade=trade)
         entry = float(trade.entry_price)
         best = float(trade.best_price or entry)
         best_gain = max(0.0, best - entry)
         unrealized = current - entry
-        quick_target = float(acs.get("quickProfit") or self.settings.paper_acs_quick_profit_points)
+        mm = mastermind_plan
+        min_hold = float(mm.min_hold_seconds) if mm else 0.0
+        if mm and age < min_hold and unrealized > -mm.stop_points:
+            return None
+        quick_target = float(mm.quick_profit_points if mm else acs.get("quickProfit") or self.settings.paper_acs_quick_profit_points)
+        cap_target = float(mm.cap_points if mm else acs["cap"])
+        retain = float(mm.trail_retain if mm else acs["retain"])
+        runner = (candidate or {}).get("runnerSignal") or {}
+        metrics = runner.get("metrics") or {}
+        vel = float(runner.get("premiumVelocityPct") or metrics.get("premiumVelocity") or 0)
         lane = str(trade.scalp_lane or "")
-        if current >= entry + quick_target:
+        # RUNNER phase: let trade work toward 6pt+ — skip early quick book while momentum lives
+        if mm and mm.phase == "RUNNER" and vel >= 1.2 and unrealized < cap_target * 0.85:
+            pass
+        elif current >= entry + quick_target:
             if lane == LANE_FADE or not trade.partial_exit_taken:
                 return "quick profit target hit"
             if trade.partial_exit_taken and (age >= 40 or unrealized >= max(1.5, quick_target * 0.5)):
                 return "quick profit remainder target hit"
-        # Book profit when market peaks then fades — before decay can scratch
-        reluctant = reluctant_market_profit_exit(
-            age=age,
-            best_gain=best_gain,
-            unrealized=unrealized,
-            enabled=bool(self.settings.paper_scalp_reluctant_profit_enabled),
-            min_best_gain=float(acs.get("staleMinBest") or self.settings.paper_scalp_stale_min_best_gain),
-            giveback_points=float(acs.get("staleGiveback") or self.settings.paper_scalp_stale_giveback_points),
-            min_unrealized=float(acs.get("staleMinUnrealized") or self.settings.paper_scalp_stale_min_unrealized),
-            grind_seconds=float(acs.get("grindSeconds") or self.settings.paper_scalp_grind_profit_seconds),
-            grind_min_gain=float(acs.get("grindMinGain") or self.settings.paper_scalp_grind_profit_min_gain),
-            micro_arm=float(acs["microArm"]),
-            micro_trail=float(acs["microTrail"]),
-        )
-        if reluctant:
-            return reluctant
-        cap_target = float(acs["cap"])
+        if not (mm and mm.phase == "RUNNER" and vel >= 1.0):
+            reluctant = reluctant_market_profit_exit(
+                age=age,
+                best_gain=best_gain,
+                unrealized=unrealized,
+                enabled=bool(self.settings.paper_scalp_reluctant_profit_enabled),
+                min_best_gain=float(acs.get("staleMinBest") or self.settings.paper_scalp_stale_min_best_gain),
+                giveback_points=float(acs.get("staleGiveback") or self.settings.paper_scalp_stale_giveback_points),
+                min_unrealized=float(acs.get("staleMinUnrealized") or self.settings.paper_scalp_stale_min_unrealized),
+                grind_seconds=float(acs.get("grindSeconds") or self.settings.paper_scalp_grind_profit_seconds),
+                grind_min_gain=float(acs.get("grindMinGain") or self.settings.paper_scalp_grind_profit_min_gain),
+                micro_arm=float(acs["microArm"]),
+                micro_trail=float(acs["microTrail"]),
+            )
+            if reluctant:
+                return reluctant
         if current >= entry + cap_target:
             return "ACS runner cap target hit"
+        decay_enabled = bool(self.settings.paper_scalp_adaptive_decay_enabled)
+        if mm and not mm.allow_decay:
+            decay_enabled = False
         if adaptive_decay_should_exit(
             age=age,
             best_gain=best_gain,
             min_gain_floor=float(acs["decayMinGain"]),
             base_decay_seconds=float(acs["decaySeconds"]),
-            enabled=bool(self.settings.paper_scalp_adaptive_decay_enabled),
+            enabled=decay_enabled,
             unrealized=unrealized,
         ):
             return "ACS adaptive decay profit scratch" if unrealized > 0 else "ACS adaptive decay exit"
-        if best_gain >= acs["arm"]:
-            floor_price = entry + max(acs["minLock"], best_gain * acs["retain"])
+        arm_pts = float(acs["arm"])
+        if mm and mm.phase == "RUNNER":
+            arm_pts = max(arm_pts, quick_target * 0.65)
+        if best_gain >= arm_pts:
+            floor_price = entry + max(acs["minLock"], best_gain * retain)
             if current <= floor_price:
                 return "ACS asymmetric profit trail"
-        if acs["microArm"] <= best_gain < acs["arm"] and current <= best - acs["microTrail"]:
-            return "ACS micro profit lock"
+        if acs["microArm"] <= best_gain < arm_pts and current <= best - acs["microTrail"]:
+            if not mm or mm.phase != "RUNNER":
+                return "ACS micro profit lock"
         if trade.partial_exit_taken and current <= entry + float(self.settings.paper_scalp_partial_remainder_stop_points):
             return "ACS partial remainder stop lock"
-        if self.settings.paper_scalp_ml_exit_overlay_enabled and candidate:
+        ml_phase_ok = not mm or str(mm.phase) in {"DEFEND", "DEAD"}
+        if self.settings.paper_scalp_ml_exit_overlay_enabled and candidate and ml_phase_ok:
             runner = (candidate or {}).get("runnerSignal") or {}
             metrics = runner.get("metrics") or {}
             learner_state = getattr(self.learner, "_state", {}) or {}
