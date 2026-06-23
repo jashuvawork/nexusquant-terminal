@@ -164,7 +164,7 @@ class Settings(BaseSettings):
     paper_scalp_cross_index_enabled: bool = True
     paper_scalp_cross_index_min: int = 1
     paper_scalp_vol_scaled_acs_enabled: bool = True
-    paper_scalp_adaptive_decay_enabled: bool = True
+    paper_scalp_adaptive_decay_enabled: bool = False
     paper_scalp_partial_exit_enabled: bool = True
     paper_scalp_partial_exit_points: float = 5.5
     paper_scalp_partial_exit_pct: float = 0.60

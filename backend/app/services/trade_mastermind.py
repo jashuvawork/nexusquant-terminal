@@ -171,28 +171,28 @@ def evaluate_trade_mastermind(
         quick = micro_target
         cap = max(micro_target * 1.5, base_quick)
         trail_retain = 0.55
-        allow_decay = vel < 0.5
+        allow_decay = False
         allow_micro = True
     elif phase == "GRIND":
         target = max(base_quick, runner_target * 0.65)
         quick = float(acs.get("microPartial") or settings.paper_scalp_micro_partial_points)
         cap = max(target, base_cap * 0.7)
         trail_retain = retain
-        allow_decay = best_gain < quick * 0.8
+        allow_decay = False
         allow_micro = True
     elif phase == "DEFEND":
         target = max(1.5, base_quick * 0.8)
         quick = target
         cap = base_cap * 0.6
         trail_retain = 0.6
-        allow_decay = True
+        allow_decay = False
         allow_micro = True
     else:  # DEAD
         target = base_quick
         quick = base_quick
         cap = base_cap
         trail_retain = retain
-        allow_decay = True
+        allow_decay = False
         allow_micro = False
 
     # Dynamic stop — wide when running toward target, tight only when tape dies

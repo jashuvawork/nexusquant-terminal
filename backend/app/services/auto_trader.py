@@ -13,7 +13,6 @@ from app.core.config import Settings
 from app.services.advanced_scalp import (
     LANE_FADE,
     LANE_MOMENTUM,
-    adaptive_decay_should_exit,
     cell_key,
     classify_scalp_lane,
     evaluate_advanced_scalp_entry,
@@ -1127,9 +1126,9 @@ class AutoTraderEngine:
         quality = "GOOD_WIN" if pnl > 0 else "CONTROLLED_LOSS" if abs(pnl) <= float(self.settings.paper_max_trade_loss_amount or 5000) else "OVERSIZED_LOSS"
         findings: list[str] = []
         actions: list[str] = []
-        if pnl < 0 and "momentum decay" in reason:
-            findings.append("Momentum failed after entry.")
-            actions.append("Require stronger breadth and premium velocity before next similar entry.")
+        if pnl < 0 and "stop loss" in reason.lower():
+            findings.append("Stop loss hit before trade could develop.")
+            actions.append("Let mastermind widen stop during min-hold; require stronger entry velocity.")
         if pnl < 0 and abs(pnl) > float(self.settings.paper_max_trade_loss_amount or 5000):
             findings.append("Loss exceeded intended per-trade cap.")
             actions.append("Reduce lots using stop-risk sizing before the next paper session.")
@@ -3225,9 +3224,6 @@ class AutoTraderEngine:
                     reason = "elite runner max hold profit lock"
                 else:
                     reason = "runner time stop"
-            elif not reason and is_runner and not scalp_lock and age >= int(self.settings.paper_runner_min_hold_seconds) and current <= trade.entry_price - max(1.0, stop_points * 0.5):
-                if unrealized < max(1.5, float(self.settings.paper_micro_scalp_min_gain) * 0.5) and best_gain < float(self.settings.paper_micro_scalp_min_gain):
-                    reason = "runner early decay stop"
             elif not reason and scalp_lock and age >= min(
                 max_hold_seconds,
                 int(acs_profile.get("timeLockSeconds") if scalp_exits else self.settings.paper_scalp_time_lock_seconds),
@@ -3241,7 +3237,7 @@ class AutoTraderEngine:
                     reason = "breakeven protection after profit move"
             elif not reason and current <= trade.entry_price - stop_points:
                 if not mastermind_plan or age >= float(mastermind_plan.min_hold_seconds):
-                    reason = "momentum decay or delta reversal stop" if scalp_exits else (psych_exit_reason or "momentum decay or delta reversal stop")
+                    reason = "stop loss hit" if scalp_exits else (psych_exit_reason or "stop loss hit")
             elif not reason and age >= max_hold_seconds:
                 if unrealized >= max(2.0, float(self.settings.paper_micro_scalp_min_gain)):
                     reason = "time stop profit lock"
@@ -3609,18 +3605,6 @@ class AutoTraderEngine:
                 return reluctant
         if current >= entry + cap_target:
             return "ACS runner cap target hit"
-        decay_enabled = bool(self.settings.paper_scalp_adaptive_decay_enabled)
-        if mm and not mm.allow_decay:
-            decay_enabled = False
-        if adaptive_decay_should_exit(
-            age=age,
-            best_gain=best_gain,
-            min_gain_floor=float(acs["decayMinGain"]),
-            base_decay_seconds=float(acs["decaySeconds"]),
-            enabled=decay_enabled,
-            unrealized=unrealized,
-        ):
-            return "ACS adaptive decay profit scratch" if unrealized > 0 else "ACS adaptive decay exit"
         arm_pts = float(acs["arm"])
         if mm and mm.phase == "RUNNER":
             arm_pts = max(arm_pts, quick_target * 0.65)
