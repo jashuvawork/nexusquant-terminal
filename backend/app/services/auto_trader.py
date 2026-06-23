@@ -24,6 +24,7 @@ from app.services.advanced_scalp import (
     reluctant_market_profit_exit,
     volatility_scale_acs,
 )
+from app.services.simple_profit import passes_simple_entry, simple_lot_bounds, simple_profit_exit, session_target_points
 from app.services.trade_mastermind import (
     SESSION_RUNNER_TARGETS,
     classify_entry_mode,
@@ -1856,8 +1857,13 @@ class AutoTraderEngine:
         return plan
 
     def _trade_mastermind_status(self) -> dict[str, Any]:
+        simple = bool(self.settings.paper_simple_profit_mode)
         return {
-            "enabled": bool(self.settings.paper_trade_mastermind_enabled),
+            "simpleProfitMode": simple,
+            "simpleTargetPoints": float(self.settings.paper_simple_target_points),
+            "simpleStopPoints": float(self.settings.paper_simple_stop_points),
+            "simpleMaxLots": int(self.settings.paper_simple_max_lots),
+            "enabled": bool(self.settings.paper_trade_mastermind_enabled) and not simple,
             "runnerTargetPoints": float(self.settings.paper_mastermind_runner_target_points),
             "minHoldSeconds": float(self.settings.paper_mastermind_min_hold_seconds),
             "microBurstTargetPoints": float(self.settings.paper_mastermind_micro_burst_target),
@@ -2775,7 +2781,15 @@ class AutoTraderEngine:
         side = str(candidate.get("side") or "")
         tradeable_runner = self._is_tradeable_explosive_runner(candidate, market_phase)
         momentum_runner = self._is_momentum_aligned_runner(candidate, runner)
+        momentum_explosion = self._is_momentum_explosion(candidate, runner)
         strong_runner = self._runner_entry_bypass(candidate, runner)
+        runner_momentum_override = bool(runner.get("momentumOverride")) or momentum_explosion or strong_runner
+        if self.settings.paper_simple_profit_mode and not tradeable_runner:
+            simple_ok, simple_reason = passes_simple_entry(
+                candidate, str(session_adj.get("sessionBucket") or "NORMAL"), self.settings
+            )
+            if not simple_ok and not runner_momentum_override and not burst_entry:
+                reasons.append(simple_reason)
         if premium <= 0:
             reasons.append("missing premium")
         if candidate.get("chopBlocked") and not tradeable_runner and not strong_runner and not self._scalp_relax_allowed(candidate):
@@ -2798,8 +2812,6 @@ class AutoTraderEngine:
             reasons.append(chop_reason)
         symbol = str(candidate.get("symbol") or "")
         breadth = self._breadth_confirmation(side, symbol=symbol)
-        momentum_explosion = self._is_momentum_explosion(candidate, runner)
-        runner_momentum_override = bool(runner.get("momentumOverride")) or momentum_explosion or strong_runner
         if self._is_explosion_chase(candidate, runner) and not burst_entry and not runner_momentum_override:
             reasons.append(
                 f"scalp chase blocked: premium ₹{premium:.0f} needs velocity ≥"
@@ -2997,40 +3009,55 @@ class AutoTraderEngine:
             affordable_lots = min(affordable_lots, max_lots_cap)
             risk_lots = min(risk_lots, max_lots_cap)
             if quick_sizing:
-                min_lots = int(self.settings.paper_quick_profit_min_lots)
-                target_lots = int(self.settings.paper_quick_profit_target_lots)
-                mode_mult = entry_lot_multiplier(entry_mm_mode, win_boost=1.0)
-                if entry_mm_mode == "MICRO_BURST":
-                    mode_mult = max(mode_mult, float(self.settings.paper_mastermind_micro_burst_lot_mult))
-                    target_lots = int(self.settings.paper_quick_profit_max_lots)
-                    min_lots = max(min_lots, int(self.settings.paper_quick_profit_target_lots))
-                elif entry_mm_mode == "RUNNER":
-                    target_lots = int(self.settings.paper_quick_profit_target_lots)
-                else:
-                    target_lots = min(int(self.settings.paper_quick_profit_max_lots), int(target_lots * mode_mult))
-                    min_lots = max(min_lots, int(min_lots * min(mode_mult, 1.2)))
-                loss_streak_cap = self._loss_streak_max_lots()
-                if loss_streak_cap is not None:
-                    max_lots_cap = min(max_lots_cap, loss_streak_cap)
-                    min_lots = min(min_lots, loss_streak_cap)
-                    target_lots = min(target_lots, loss_streak_cap)
-                    affordable_lots = min(affordable_lots, max_lots_cap)
+                if self.settings.paper_simple_profit_mode:
+                    min_lots, target_lots, max_lots_cap = simple_lot_bounds(self.settings)
+                    per_unit_risk = max(per_unit_risk, float(self.settings.paper_simple_stop_points))
+                    risk_budget = min(
+                        risk_budget if risk_budget > 0 else float(self.settings.paper_simple_max_loss_inr),
+                        float(self.settings.paper_simple_max_loss_inr) * 1.5,
+                    )
+                    risk_lots = int(risk_budget // (per_unit_risk * lot_size)) if risk_budget > 0 else max_lots_cap
                     risk_lots = min(risk_lots, max_lots_cap)
+                    affordable_lots = min(affordable_lots, max_lots_cap)
+                    effective_min_lots = min_lots
+                    allowed_lots = min(affordable_lots, risk_lots, max_lots_cap)
+                    final_lots = min(allowed_lots, max(min_lots, min(target_lots, allowed_lots)))
+                    quantity = final_lots * lot_size
                 else:
-                    boost = self._win_streak_lot_boost()
-                    if boost > 1.0:
-                        target_lots = min(int(self.settings.paper_quick_profit_max_lots), int(target_lots * boost))
-                        max_lots_cap = min(int(self.settings.paper_quick_profit_max_lots), max(max_lots_cap, target_lots))
-                effective_min_lots = min_lots
-                allowed_lots = min(affordable_lots, risk_lots, max_lots_cap)
-                final_lots = min(allowed_lots, max(min_lots, min(target_lots, allowed_lots)))
-                if self.settings.paper_scalp_kelly_sizing_enabled:
-                    rolling = self._rolling_proof(limit=20)
-                    size_mult = kelly_size_multiplier(float(rolling.get("profitFactor") or 0), enabled=True)
-                    size_mult *= float(candidate.get("advancedScalpSizeMultiplier") or 1.0)
-                    size_mult = max(0.5, min(1.5, size_mult))
-                    final_lots = max(min_lots, int(final_lots * size_mult))
-                quantity = final_lots * lot_size
+                    min_lots = int(self.settings.paper_quick_profit_min_lots)
+                    target_lots = int(self.settings.paper_quick_profit_target_lots)
+                    mode_mult = entry_lot_multiplier(entry_mm_mode, win_boost=1.0)
+                    if entry_mm_mode == "MICRO_BURST":
+                        mode_mult = max(mode_mult, float(self.settings.paper_mastermind_micro_burst_lot_mult))
+                        target_lots = int(self.settings.paper_quick_profit_max_lots)
+                        min_lots = max(min_lots, int(self.settings.paper_quick_profit_target_lots))
+                    elif entry_mm_mode == "RUNNER":
+                        target_lots = int(self.settings.paper_quick_profit_target_lots)
+                    else:
+                        target_lots = min(int(self.settings.paper_quick_profit_max_lots), int(target_lots * mode_mult))
+                        min_lots = max(min_lots, int(min_lots * min(mode_mult, 1.2)))
+                    loss_streak_cap = self._loss_streak_max_lots()
+                    if loss_streak_cap is not None:
+                        max_lots_cap = min(max_lots_cap, loss_streak_cap)
+                        min_lots = min(min_lots, loss_streak_cap)
+                        target_lots = min(target_lots, loss_streak_cap)
+                        affordable_lots = min(affordable_lots, max_lots_cap)
+                        risk_lots = min(risk_lots, max_lots_cap)
+                    else:
+                        boost = self._win_streak_lot_boost()
+                        if boost > 1.0:
+                            target_lots = min(int(self.settings.paper_quick_profit_max_lots), int(target_lots * boost))
+                            max_lots_cap = min(int(self.settings.paper_quick_profit_max_lots), max(max_lots_cap, target_lots))
+                    effective_min_lots = min_lots
+                    allowed_lots = min(affordable_lots, risk_lots, max_lots_cap)
+                    final_lots = min(allowed_lots, max(min_lots, min(target_lots, allowed_lots)))
+                    if self.settings.paper_scalp_kelly_sizing_enabled:
+                        rolling = self._rolling_proof(limit=20)
+                        size_mult = kelly_size_multiplier(float(rolling.get("profitFactor") or 0), enabled=True)
+                        size_mult *= float(candidate.get("advancedScalpSizeMultiplier") or 1.0)
+                        size_mult = max(0.5, min(1.5, size_mult))
+                        final_lots = max(min_lots, int(final_lots * size_mult))
+                    quantity = final_lots * lot_size
             else:
                 quantity = min(desired_quantity, affordable_lots * lot_size, risk_lots * lot_size)
             if risk_budget <= 0 and quantity * premium < min_allocation:
@@ -3040,7 +3067,9 @@ class AutoTraderEngine:
         if quantity < lot_size:
             return None
         min_viable_lots = 3
-        if quick_sizing:
+        if quick_sizing and self.settings.paper_simple_profit_mode:
+            min_viable_lots = int(self.settings.paper_simple_min_lots)
+        elif quick_sizing:
             min_viable_lots = effective_min_lots
         cheap_threshold = float(self.settings.paper_cheap_premium_lot_threshold)
         if premium <= cheap_threshold and (entry_bypass or momentum_explosion or momentum_override):
@@ -3048,6 +3077,13 @@ class AutoTraderEngine:
         if quantity < lot_size * min_viable_lots:
             return None
         charges = self._charges_estimate(premium, premium, max(1, quantity))
+        simple_open = quick_sizing and self.settings.paper_simple_profit_mode
+        open_target = (
+            session_target_points(str(session_adj.get("sessionBucket") or "NORMAL"), self.settings)
+            if simple_open
+            else risk_plan["targetPoints"]
+        )
+        open_stop = float(self.settings.paper_simple_stop_points) if simple_open else risk_plan["stopPoints"]
         trade = PaperTrade(
             id=trade_id,
             symbol=str(candidate.get("symbol")),
@@ -3071,8 +3107,8 @@ class AutoTraderEngine:
                 strategy_type == "SCALP" and self.settings.paper_unified_scalp_session_profile
             ) else "AUTO",
             paper_session_id=self.paper_sessions.current_id(),
-            target_points=risk_plan["targetPoints"],
-            stop_points=risk_plan["stopPoints"],
+            target_points=open_target,
+            stop_points=open_stop,
             breakeven_shift_points=risk_plan["breakevenShiftPoints"],
             trail_points=risk_plan["trailPoints"],
             best_price=premium,
@@ -3140,7 +3176,8 @@ class AutoTraderEngine:
                     exit_mode = trade.exit_mode
             scalp_lock = exit_mode == "SCALP_LOCK" or (not is_runner and style in {"HIGH_WIN_SCALP", "FADE_SCALP"}) or (not is_runner and trade.strategy_type == "SCALP")
             scalp_exits = self._trade_uses_scalp_exits(trade, exit_mode=exit_mode, style=style, is_runner=is_runner)
-            acs_profile = self._scalp_acs_profile(session_adj, trade=trade) if scalp_exits and self.settings.paper_acs_scalp_enabled else {}
+            simple_mode = bool(self.settings.paper_simple_profit_mode and scalp_exits)
+            acs_profile = self._scalp_acs_profile(session_adj, trade=trade) if scalp_exits and self.settings.paper_acs_scalp_enabled and not simple_mode else {}
             stop_points, max_hold_seconds, psych_exit_reason = self._psychology_exit_adjustments(
                 stop_points,
                 psychology,
@@ -3158,8 +3195,13 @@ class AutoTraderEngine:
                 breakeven_shift = min(breakeven_shift, float(acs.get("breakeven") or self.settings.paper_scalp_breakeven_shift_points))
                 if self.settings.paper_acs_scalp_enabled:
                     stop_points = min(stop_points, float(acs.get("stop") or self.settings.paper_scalp_controlled_stop_points))
+            if simple_mode:
+                stop_points = float(self.settings.paper_simple_stop_points)
+                target_points = session_target_points(str(session_adj.get("sessionBucket") or "NORMAL"), self.settings)
+                max_hold_seconds = int(self.settings.paper_simple_max_hold_seconds)
+                breakeven_shift = 999.0
             mastermind_plan = None
-            if scalp_exits and self.settings.paper_trade_mastermind_enabled:
+            if scalp_exits and self.settings.paper_trade_mastermind_enabled and not simple_mode:
                 mastermind_plan = self._evaluate_mastermind(
                     trade,
                     candidate,
@@ -3172,7 +3214,7 @@ class AutoTraderEngine:
                     stop_points = mastermind_plan.stop_points
                     target_points = mastermind_plan.target_points
                     max_hold_seconds = max(max_hold_seconds, int(mastermind_plan.max_hold_seconds))
-            if self.settings.paper_scalp_partial_exit_enabled and scalp_exits:
+            if self.settings.paper_scalp_partial_exit_enabled and scalp_exits and not simple_mode:
                 lot_size = max(1, int((candidate or {}).get("lotSize") or 1))
                 self._maybe_take_scalp_micro_partial(trade, current, lot_size=lot_size, session_adj=session_adj)
                 self._maybe_take_scalp_partial(trade, current, lot_size=lot_size, session_adj=session_adj)
@@ -3194,7 +3236,17 @@ class AutoTraderEngine:
             trail_pts = float(trade.trail_points or (target_points * 0.18 if is_runner and not scalp_lock else scalp_trail))
             trail_arm_at = max(2.0, min(partial_exit_at, target_points * 0.2)) if scalp_lock else max(partial_exit_at, target_points * 0.25)
             in_profitable_trail = trade.best_price >= trade.entry_price + trail_arm_at
-            if mastermind_plan and mastermind_plan.exit_reason:
+            if simple_mode:
+                reason = simple_profit_exit(
+                    entry=float(trade.entry_price),
+                    current=current,
+                    best=float(trade.best_price or trade.entry_price),
+                    age=age,
+                    quantity=int(trade.quantity),
+                    session_bucket=str(session_adj.get("sessionBucket") or "NORMAL"),
+                    settings=self.settings,
+                )
+            elif mastermind_plan and mastermind_plan.exit_reason:
                 reason = mastermind_plan.exit_reason
             else:
                 reason = self._quick_profit_exit_reason(
@@ -3206,25 +3258,25 @@ class AutoTraderEngine:
                     candidate=candidate,
                     mastermind_plan=mastermind_plan,
                 )
-            if not reason and scalp_lock and in_profitable_trail and current <= trade.best_price - trail_pts:
+            if not simple_mode and not reason and scalp_lock and in_profitable_trail and current <= trade.best_price - trail_pts:
                 reason = "AI adaptive scalp profit lock"
-            elif not reason and in_profitable_trail and current <= trade.best_price - trail_pts:
+            elif not simple_mode and not reason and in_profitable_trail and current <= trade.best_price - trail_pts:
                 reason = "elite runner trailing max-points lock" if is_runner else "trailing profit lock"
-            elif not reason and is_runner and trade.best_price >= target_price and trade.best_price > target_price + trail_pts * 0.25:
+            elif not simple_mode and not reason and is_runner and trade.best_price >= target_price and trade.best_price > target_price + trail_pts * 0.25:
                 if current <= trade.best_price - trail_pts:
                     reason = "elite runner trailing max-points lock"
-            elif not reason and scalp_lock and current >= trade.entry_price + max(3.0, target_points * 0.5) and not self.settings.paper_acs_scalp_enabled:
+            elif not simple_mode and not reason and scalp_lock and current >= trade.entry_price + max(3.0, target_points * 0.5) and not self.settings.paper_acs_scalp_enabled:
                 reason = "AI adaptive scalp target hit"
-            elif not reason and current >= target_price:
+            elif not simple_mode and not reason and current >= target_price:
                 reason = "elite runner target profit hit" if is_runner and not scalp_lock else "target profit hit"
-            elif not reason and is_runner and not scalp_lock and age >= max_hold_seconds:
+            elif not simple_mode and not reason and is_runner and not scalp_lock and age >= max_hold_seconds:
                 if current >= trade.entry_price + max(float(self.settings.paper_micro_scalp_min_gain), 2.0):
                     reason = "runner max hold profit lock"
                 elif current >= trade.entry_price + target_points * 0.35:
                     reason = "elite runner max hold profit lock"
                 else:
                     reason = "runner time stop"
-            elif not reason and scalp_lock and age >= min(
+            elif not simple_mode and not reason and scalp_lock and age >= min(
                 max_hold_seconds,
                 int(acs_profile.get("timeLockSeconds") if scalp_exits else self.settings.paper_scalp_time_lock_seconds),
             ) and best_gain >= float(
@@ -3232,20 +3284,20 @@ class AutoTraderEngine:
             ):
                 if not mastermind_plan or mastermind_plan.phase not in {"RUNNER", "GRIND"}:
                     reason = "AI adaptive scalp time lock"
-            elif not reason and trade.breakeven_armed and current <= trade.entry_price + 1.5 and (not is_runner or age >= runner_min_hold):
+            elif not simple_mode and not reason and trade.breakeven_armed and current <= trade.entry_price + 1.5 and (not is_runner or age >= runner_min_hold):
                 if not mastermind_plan or mastermind_plan.phase not in {"RUNNER", "GRIND"}:
                     reason = "breakeven protection after profit move"
-            elif not reason and current <= trade.entry_price - stop_points:
+            elif not simple_mode and not reason and current <= trade.entry_price - stop_points:
                 if not mastermind_plan or age >= float(mastermind_plan.min_hold_seconds):
                     reason = "stop loss hit" if scalp_exits else (psych_exit_reason or "stop loss hit")
-            elif not reason and age >= max_hold_seconds:
+            elif not simple_mode and not reason and age >= max_hold_seconds:
                 if unrealized >= max(2.0, float(self.settings.paper_micro_scalp_min_gain)):
                     reason = "time stop profit lock"
                 elif scalp_exits:
                     reason = "scalp time stop"
                 else:
                     reason = "psychology shortened time stop" if max_hold_seconds < self.settings.max_paper_trade_seconds else "time stop"
-            elif not reason and self._should_chop_exit(trade, candidate, age):
+            elif not simple_mode and not reason and self._should_chop_exit(trade, candidate, age):
                 reason = "liquidity rejection / chop filter exit"
             if reason:
                 trade.status = "EXITED"
