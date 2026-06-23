@@ -271,7 +271,7 @@ def adaptive_decay_should_exit(
     unrealized: float = 0.0,
 ) -> bool:
     if not enabled:
-        return age >= base_decay_seconds and best_gain < min_gain_floor
+        return False
     # Don't scratch greens that peaked — reluctant-market exit will book them
     if unrealized >= 0.25 and best_gain >= 0.8:
         return False
