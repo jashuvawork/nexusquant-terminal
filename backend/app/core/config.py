@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     finnhub_api_key: str | None = None
     news_provider: str = "finnhub"
     upstox_news_enabled: bool = False
-    snapshot_cache_seconds: float = 10.0
+    snapshot_cache_seconds: float = 3.0
     account_snapshot_cache_seconds: float = 30.0
     expiry_cache_seconds: float = 3600.0
     market_snapshot_instrument_keys: str = (
@@ -73,7 +73,7 @@ class Settings(BaseSettings):
         "NSE_EQ|TATACONSUM,NSE_EQ|JIOFIN,NSE_EQ|SHRIRAMFIN,NSE_EQ|ETERNAL,NSE_EQ|BAJAJ-AUTO"
     )
     market_snapshot_monitor_enabled: bool = True
-    market_snapshot_poll_seconds: float = 60.0
+    market_snapshot_poll_seconds: float = 30.0
     # Optimized profiles from high-win optimizer run.
     nifty_opt_min_tqs: int = 74
     nifty_opt_breakout_atr: float = 0.35
@@ -316,7 +316,7 @@ class Settings(BaseSettings):
     paper_min_hold_before_chop_exit_seconds: int = 45
     paper_trading_respects_stop: bool = False
     shadow_trade_all_signals: bool = False
-    market_poll_seconds: float = 8.0
+    market_poll_seconds: float = 3.0
     near_expiry_runner_enabled: bool = True
     near_expiry_runner_max_days: int = 7
     websocket_heartbeat_seconds: float = 10.0

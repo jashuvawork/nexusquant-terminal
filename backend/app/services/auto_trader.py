@@ -262,7 +262,7 @@ class AutoTraderEngine:
             if isinstance(_ns, dict) and _ns.get("available"):
                 self._latest_news_state = _ns
                 break
-        cached_snapshot = self._all_snapshots_cached(snapshots)
+        cached_snapshot = self._snapshots_stale_for_entries(snapshots)
         signal_cooldown_seconds = int(session_adj.get("duplicateCooldownSeconds") or self.settings.paper_duplicate_signal_cooldown_seconds)
         market_phase = str(payload.get("marketPhase") or MarketPhase.LIVE_MARKET.value)
 
@@ -4128,6 +4128,22 @@ class AutoTraderEngine:
             return False
         statuses = [(snapshot.get("cacheStatus") or {}).get("source") for snapshot in snapshots.values() if isinstance(snapshot, dict)]
         return bool(statuses) and all(status == "engine_snapshot_cache" for status in statuses)
+
+    def _snapshots_stale_for_entries(self, snapshots: dict[str, Any]) -> bool:
+        """Skip duplicate paper entries only when cache is older than poll cadence."""
+        if not snapshots:
+            return True
+        max_age = float(self.settings.market_poll_seconds) * 1.15
+        for snapshot in snapshots.values():
+            if not isinstance(snapshot, dict):
+                continue
+            cache = snapshot.get("cacheStatus") or {}
+            if str(cache.get("source") or "") == "fresh":
+                return False
+            age = float(cache.get("ageSeconds") or 0)
+            if age <= max_age:
+                return False
+        return True
 
     def _recent_signal_active(self, signal_id: str, cooldown_seconds: int | None = None) -> bool:
         if not signal_id:
