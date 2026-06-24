@@ -27,6 +27,8 @@ from app.services.advanced_scalp import (
 from app.services.dual_strategy import (
     EXPLOSIVE_MAX_OPEN_TRADES,
     downgrade_runner_to_scalp,
+    dual_explosive_lot_bounds,
+    dual_scalp_lot_bounds,
     explosive_profile,
     is_ultra_elite_explosive,
     passes_scalp_entry_gate,
@@ -2873,6 +2875,18 @@ class AutoTraderEngine:
                 scalp_ok, scalp_reason = passes_scalp_entry_gate(candidate, self.settings, breadth=breadth)
                 if not scalp_ok:
                     reasons.append(scalp_reason)
+                else:
+                    plan = self._daily_improvement_plan()
+                    gates = plan.get("gates") or {}
+                    bucket = str(session_adj.get("sessionBucket") or "")
+                    if bucket in (gates.get("blockedBuckets") or []):
+                        reasons.append(f"scalp gate: {bucket} session blocked — rolling PF calibration")
+                    rolling_pf = float((plan.get("rolling") or {}).get("profitFactor") or 0)
+                    strict_tqs = int(getattr(self.settings, "paper_scalping_min_entry_tqs", 56)) + 2
+                    if rolling_pf < 1.0 and int(candidate.get("tqs") or 0) < strict_tqs:
+                        reasons.append(
+                            f"scalp gate: TQS {int(candidate.get('tqs') or 0)} < {strict_tqs} while rolling PF {rolling_pf:.2f} < 1.0"
+                        )
         if premium <= 0:
             reasons.append("missing premium")
         if candidate.get("chopBlocked") and not tradeable_runner and not strong_runner and not self._scalp_relax_allowed(candidate):
@@ -3074,7 +3088,7 @@ class AutoTraderEngine:
             if self._is_momentum_burst_entry(candidate, runner_sig_inner):
                 alloc_boost = max(alloc_boost, 1.65)
             if quick_sizing:
-                alloc_boost *= float(self.settings.paper_quick_profit_allocation_boost)
+                alloc_boost *= float(self.settings.paper_quick_profit_allocation_boost) if not self.settings.paper_dual_strategy_enabled else 1.0
             allocation_pct = self._allocation_pct_for_pool(pool, session_adj) * alloc_boost
             if tradeable_runner and not quick_sizing:
                 allocation_pct = min(allocation_pct, float(self.settings.paper_runner_max_allocation_pct))
@@ -3107,6 +3121,42 @@ class AutoTraderEngine:
                     risk_budget = min(
                         risk_budget if risk_budget > 0 else float(self.settings.paper_simple_max_loss_inr),
                         float(self.settings.paper_simple_max_loss_inr) * 1.5,
+                    )
+                    risk_lots = int(risk_budget // (per_unit_risk * lot_size)) if risk_budget > 0 else max_lots_cap
+                    risk_lots = min(risk_lots, max_lots_cap)
+                    affordable_lots = min(affordable_lots, max_lots_cap)
+                    effective_min_lots = min_lots
+                    allowed_lots = min(affordable_lots, risk_lots, max_lots_cap)
+                    final_lots = min(allowed_lots, max(min_lots, min(target_lots, allowed_lots)))
+                    quantity = final_lots * lot_size
+                elif self.settings.paper_dual_strategy_enabled and strategy_type == "SCALP":
+                    rolling = self._rolling_proof(limit=int(self.settings.paper_rolling_calibration_trades))
+                    rolling_pf = float(rolling.get("profitFactor") or 0)
+                    min_lots, target_lots, max_lots_cap = dual_scalp_lot_bounds(self.settings, rolling_pf=rolling_pf)
+                    streak = self._consecutive_loss_streak()
+                    if streak >= 2:
+                        target_lots = min_lots
+                        max_lots_cap = min(max_lots_cap, min_lots + 1)
+                    per_unit_risk = max(per_unit_risk, float(scalp_profile(str(session_adj.get("sessionBucket") or "NORMAL"))["stopPoints"]))
+                    risk_budget = min(
+                        risk_budget if risk_budget > 0 else float(self.settings.paper_dual_scalp_max_loss_inr),
+                        float(self.settings.paper_dual_scalp_max_loss_inr) * 1.5,
+                    )
+                    risk_lots = int(risk_budget // (per_unit_risk * lot_size)) if risk_budget > 0 else max_lots_cap
+                    risk_lots = min(risk_lots, max_lots_cap)
+                    affordable_lots = min(affordable_lots, max_lots_cap)
+                    effective_min_lots = min_lots
+                    allowed_lots = min(affordable_lots, risk_lots, max_lots_cap)
+                    final_lots = min(allowed_lots, max(min_lots, min(target_lots, allowed_lots)))
+                    quantity = final_lots * lot_size
+                elif self.settings.paper_dual_strategy_enabled and strategy_type == "EXPLOSIVE_RUNNER":
+                    rolling = self._rolling_proof(limit=int(self.settings.paper_rolling_calibration_trades))
+                    rolling_pf = float(rolling.get("profitFactor") or 0)
+                    min_lots, target_lots, max_lots_cap = dual_explosive_lot_bounds(self.settings, rolling_pf=rolling_pf)
+                    per_unit_risk = max(per_unit_risk, float(explosive_profile()["stopPoints"]))
+                    risk_budget = min(
+                        risk_budget if risk_budget > 0 else float(self.settings.paper_dual_scalp_max_loss_inr) * 2,
+                        float(self.settings.paper_dual_scalp_max_loss_inr) * 2.5,
                     )
                     risk_lots = int(risk_budget // (per_unit_risk * lot_size)) if risk_budget > 0 else max_lots_cap
                     risk_lots = min(risk_lots, max_lots_cap)
@@ -3161,6 +3211,8 @@ class AutoTraderEngine:
         min_viable_lots = 3
         if quick_sizing and self.settings.paper_simple_profit_mode:
             min_viable_lots = int(self.settings.paper_simple_min_lots)
+        elif quick_sizing and self.settings.paper_dual_strategy_enabled:
+            min_viable_lots = int(self.settings.paper_dual_scalp_min_lots)
         elif quick_sizing:
             min_viable_lots = effective_min_lots
         cheap_threshold = float(self.settings.paper_cheap_premium_lot_threshold)
