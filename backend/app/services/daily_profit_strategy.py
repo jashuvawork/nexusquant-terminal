@@ -69,18 +69,18 @@ def build_daily_improvement_plan(
 
     if rolling_trades >= min_trades_for_calibration:
         if rolling_pf < 1.0:
-            min_runner_score = 80.0
-            min_velocity_pct = 2.5
+            min_runner_score = 88.0
+            min_velocity_pct = 3.0
             min_volume_accel = 35.0
             allow_tier_b = False
             allow_tier_c = False
-            actions.append(f"Rolling PF {rolling_pf:.2f} < 1.0 — A+ entries only (score≥80, vel≥2.5%).")
+            actions.append(f"Rolling PF {rolling_pf:.2f} < 1.0 — elite-only entries (score≥88, vel≥3%).")
         elif rolling_pf < target_profit_factor:
-            min_runner_score = 76.0
-            min_velocity_pct = 2.0
-            allow_tier_b = True
+            min_runner_score = 80.0
+            min_velocity_pct = 2.5
+            allow_tier_b = False
             allow_tier_c = False
-            actions.append(f"Rolling PF {rolling_pf:.2f} below target {target_profit_factor} — A/A+ only.")
+            actions.append(f"Rolling PF {rolling_pf:.2f} below target {target_profit_factor} — A+ scalps only.")
         else:
             min_runner_score = 88.0
             min_velocity_pct = 2.5
@@ -95,10 +95,10 @@ def build_daily_improvement_plan(
         for side, summary in by_side.items():
             trades_n = int(summary.get("paperTrades") or summary.get("trades") or 0)
             side_wins = int(summary.get("wins") or 0)
-            if trades_n >= 3 and side_wins == 0 and float(summary.get("netPnl") or 0) < 0:
+            if trades_n >= 2 and side_wins == 0 and float(summary.get("netPnl") or 0) < 0:
                 blocked_sides.append(side)
                 actions.append(f"Block {side} today — 0/{trades_n} wins, net ₹{summary.get('netPnl')}.")
-            elif trades_n >= 5:
+            elif trades_n >= 4:
                 if float(summary.get("netPnl") or 0) < 0 and _pf(summary) < 0.9:
                     if side not in blocked_sides:
                         blocked_sides.append(side)

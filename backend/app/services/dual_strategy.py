@@ -22,6 +22,39 @@ ULTRA_ELITE_MIN_SCORE = 92.0
 ULTRA_ELITE_MIN_VELOCITY_PCT = 3.0
 ULTRA_ELITE_MIN_VOLUME_ACCEL = 30.0
 
+# PF-first scalp sizing — small lots keep losses from dominating gross wins.
+DUAL_SCALP_MIN_LOTS = 2
+DUAL_SCALP_TARGET_LOTS = 4
+DUAL_SCALP_MAX_LOTS = 6
+DUAL_SCALP_MAX_LOSS_INR = 2500.0
+DUAL_SCALP_MIN_VELOCITY_PCT = 1.5
+DUAL_SCALP_PF_STRICT_TQS = 58
+
+
+def dual_scalp_lot_bounds(settings: Any, *, rolling_pf: float = 0.0) -> tuple[int, int, int]:
+    """Scale scalp lots down when rolling PF is weak — protects profit factor."""
+    min_lots = int(getattr(settings, "paper_dual_scalp_min_lots", DUAL_SCALP_MIN_LOTS))
+    target_lots = int(getattr(settings, "paper_dual_scalp_target_lots", DUAL_SCALP_TARGET_LOTS))
+    max_lots = int(getattr(settings, "paper_dual_scalp_max_lots", DUAL_SCALP_MAX_LOTS))
+    target_pf = float(getattr(settings, "paper_target_profit_factor", 2.5))
+    if rolling_pf < 1.0:
+        return min_lots, min_lots, min(min_lots + 1, max_lots)
+    if rolling_pf < target_pf:
+        return min_lots, min(target_lots, min_lots + 2), min(target_lots, max_lots)
+    return min_lots, target_lots, max_lots
+
+
+def dual_explosive_lot_bounds(settings: Any, *, rolling_pf: float = 0.0) -> tuple[int, int, int]:
+    """Explosive sniper stays small until edge is proven."""
+    min_lots = int(getattr(settings, "paper_dual_explosive_min_lots", 2))
+    target_lots = int(getattr(settings, "paper_dual_explosive_target_lots", 3))
+    max_lots = int(getattr(settings, "paper_dual_explosive_max_lots", 4))
+    if rolling_pf < 1.0:
+        return min_lots, min_lots, min_lots + 1
+    if rolling_pf < float(getattr(settings, "paper_target_profit_factor", 2.5)):
+        return min_lots, min(target_lots, 3), min(max_lots, 3)
+    return min_lots, target_lots, max_lots
+
 
 def scalp_profile(session_bucket: str) -> dict[str, float]:
     bucket = str(session_bucket or "NORMAL").upper()
@@ -126,8 +159,11 @@ def passes_scalp_entry_gate(
         return False, f"scalp gate: TQS {tqs} < {min_tqs}"
     runner = candidate.get("runnerSignal") or {}
     vel = float(runner.get("premiumVelocityPct") or (runner.get("metrics") or {}).get("premiumVelocity") or 0)
-    if vel < 1.0 and not runner.get("momentumSurge"):
-        return False, "scalp gate: insufficient premium velocity for +6pt capture"
+    min_vel = float(getattr(settings, "paper_dual_scalp_min_velocity_pct", DUAL_SCALP_MIN_VELOCITY_PCT))
+    if vel < min_vel and not runner.get("momentumSurge"):
+        return False, f"scalp gate: velocity {vel:.1f}% < {min_vel}% for +6pt capture"
+    if not (runner.get("momentumSurge") or runner.get("momentumAligned")):
+        return False, "scalp gate: need momentum surge or aligned tape"
     side = str(candidate.get("side") or "").upper()
     mp = candidate.get("marketProfile") or {}
     spot = float(mp.get("spot") or candidate.get("spot") or 0)
