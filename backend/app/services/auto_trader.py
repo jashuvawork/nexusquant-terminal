@@ -1815,6 +1815,7 @@ class AutoTraderEngine:
         *,
         trade: PaperTrade | None = None,
         lane_override: str | None = None,
+        execution_plan: str | None = None,
     ) -> dict[str, float]:
         session_adj = session_adj or {}
         acs = session_adj.get("scalpAcs") or {}
@@ -1843,7 +1844,8 @@ class AutoTraderEngine:
         }
         lane = str((trade.scalp_lane if trade else "") or lane_override or "")
         profile.update({k: float(v) for k, v in lane_acs_overrides(lane).items()})
-        if self.settings.paper_dual_strategy_enabled:
+        plan = str(execution_plan or (trade.execution_plan if trade else "") or "").strip().upper()
+        if self.settings.paper_dual_strategy_enabled and plan not in {EXEC_ACS, EXEC_MASTERMIND, EXEC_DUAL_EXPLOSIVE}:
             sp = scalp_profile(str(session_adj.get("sessionBucket") or "NORMAL"))
             profile["quickProfit"] = float(sp["quickProfitPoints"])
             profile["timeLockSeconds"] = float(sp["timeLockSeconds"])
@@ -1889,6 +1891,25 @@ class AutoTraderEngine:
         trade.trail_points = max(float(trade.trail_points or 0), plan.target_points * 0.22)
         return plan
 
+    def _resolve_execution_plan(self, trade: PaperTrade, candidate: dict[str, Any] | None = None) -> str:
+        """Per-trade plan from router; infer ACS for legacy/open trades missing executionPlan."""
+        plan = str(trade.execution_plan or (candidate or {}).get("executionPlan") or "").strip().upper()
+        if plan:
+            return plan
+        if not self.settings.paper_unified_strategy_router:
+            if self.settings.paper_simple_profit_mode and not self.settings.paper_dual_strategy_enabled:
+                return EXEC_SIMPLE
+            if self.settings.paper_dual_strategy_enabled:
+                if trade.strategy_type == "EXPLOSIVE_RUNNER":
+                    return EXEC_DUAL_EXPLOSIVE
+                return EXEC_DUAL_SCALP
+            return EXEC_ACS
+        if trade.strategy_type == "EXPLOSIVE_RUNNER":
+            return EXEC_ACS
+        if self.settings.paper_simple_profit_mode:
+            return EXEC_SIMPLE
+        return EXEC_DUAL_SCALP if self.settings.paper_dual_strategy_enabled else EXEC_ACS
+
     def _trade_mastermind_status(self) -> dict[str, Any]:
         unified = bool(self.settings.paper_unified_strategy_router)
         dual = bool(self.settings.paper_dual_strategy_enabled) or unified
@@ -1897,6 +1918,14 @@ class AutoTraderEngine:
         ep = explosive_profile()
         return {
             "unifiedStrategyRouter": unified,
+            "quickProfitEnabled": bool(self.settings.paper_quick_profit_enabled),
+            "acsScalpEnabled": bool(self.settings.paper_acs_scalp_enabled),
+            "acsQuickProfitPoints": float(self.settings.paper_acs_quick_profit_points),
+            "quickProfitLots": {
+                "min": int(self.settings.paper_quick_profit_min_lots),
+                "target": int(self.settings.paper_quick_profit_target_lots),
+                "max": int(self.settings.paper_quick_profit_max_lots),
+            },
             "dualStrategyEnabled": dual,
             "scalpLane": {
                 "targetPoints": sp["targetPoints"],
@@ -3060,6 +3089,15 @@ class AutoTraderEngine:
     def _quick_profit_sizing_active(self, candidate: dict[str, Any], pool: str, strategy_type: str) -> bool:
         if not self.settings.paper_quick_profit_enabled:
             return False
+        exec_plan = str(candidate.get("executionPlan") or "").strip().upper()
+        if self.settings.paper_unified_strategy_router and exec_plan:
+            return exec_plan in {
+                EXEC_SIMPLE,
+                EXEC_ACS,
+                EXEC_DUAL_SCALP,
+                EXEC_DUAL_EXPLOSIVE,
+                EXEC_MASTERMIND,
+            }
         if pool == "scalping" or strategy_type == "SCALP":
             return True
         return bool(self.settings.paper_quick_profit_size_runners and strategy_type == "EXPLOSIVE_RUNNER")
@@ -3294,7 +3332,11 @@ class AutoTraderEngine:
             or (self.settings.paper_simple_profit_mode and not self.settings.paper_dual_strategy_enabled and not unified_open)
         )
         bucket = str(session_adj.get("sessionBucket") or "NORMAL")
-        if quick_sizing and unified_open and exec_plan == EXEC_DUAL_SCALP:
+        if quick_sizing and unified_open and exec_plan == EXEC_ACS:
+            acs = self._scalp_acs_profile(session_adj)
+            open_target = float(acs.get("cap") or self.settings.paper_scalp_runner_cap_points)
+            open_stop = float(acs.get("stop") or self.settings.paper_scalp_controlled_stop_points)
+        elif quick_sizing and unified_open and exec_plan == EXEC_DUAL_SCALP:
             sp = scalp_profile(bucket)
             open_target = sp["targetPoints"]
             open_stop = sp["stopPoints"]
@@ -3435,17 +3477,25 @@ class AutoTraderEngine:
                     exit_mode = trade.exit_mode
             scalp_lock = exit_mode == "SCALP_LOCK" or (not is_runner and style in {"HIGH_WIN_SCALP", "FADE_SCALP"}) or (not is_runner and trade.strategy_type == "SCALP")
             scalp_exits = self._trade_uses_scalp_exits(trade, exit_mode=exit_mode, style=style, is_runner=is_runner)
-            trade_plan = str(trade.execution_plan or (candidate or {}).get("executionPlan") or "")
+            trade_plan = self._resolve_execution_plan(trade, candidate)
             unified_exit = bool(self.settings.paper_unified_strategy_router)
-            if unified_exit and trade_plan:
+            if unified_exit:
                 simple_mode = trade_plan == EXEC_SIMPLE
                 dual_scalp_exit = trade_plan == EXEC_DUAL_SCALP
                 dual_explosive_exit = trade_plan in {EXEC_DUAL_EXPLOSIVE, EXEC_MASTERMIND}
             else:
-                simple_mode = bool(self.settings.paper_simple_profit_mode and scalp_exits and not self.settings.paper_dual_strategy_enabled)
+                simple_mode = bool(
+                    self.settings.paper_simple_profit_mode
+                    and scalp_exits
+                    and not self.settings.paper_dual_strategy_enabled
+                )
                 dual_scalp_exit = False
                 dual_explosive_exit = False
-            acs_profile = self._scalp_acs_profile(session_adj, trade=trade) if scalp_exits and self.settings.paper_acs_scalp_enabled and not simple_mode else {}
+            acs_profile = self._scalp_acs_profile(
+                session_adj, trade=trade, execution_plan=trade_plan,
+            ) if (
+                scalp_exits and self.settings.paper_acs_scalp_enabled and not simple_mode
+            ) else {}
             stop_points, max_hold_seconds, psych_exit_reason = self._psychology_exit_adjustments(
                 stop_points,
                 psychology,
