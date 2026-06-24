@@ -7,10 +7,10 @@ from __future__ import annotations
 from typing import Any
 
 SESSION_TARGETS: dict[str, float] = {
-    "OPEN_DRIVE": 5.0,
-    "NORMAL": 4.0,
-    "MIDDAY_CHOP": 3.0,
-    "CLOSING_MOMENTUM": 4.5,
+    "OPEN_DRIVE": 7.0,
+    "NORMAL": 6.0,
+    "MIDDAY_CHOP": 5.0,
+    "CLOSING_MOMENTUM": 6.5,
 }
 
 
@@ -79,6 +79,8 @@ def simple_profit_exit(
     stop = float(getattr(settings, "paper_simple_stop_points", 3.0))
     trail_arm = float(getattr(settings, "paper_simple_trail_arm_points", 2.0))
     trail_retain = float(getattr(settings, "paper_simple_trail_retain_pct", 0.50))
+    micro_target = float(getattr(settings, "paper_simple_micro_target_points", 3.0))
+    micro_trail = float(getattr(settings, "paper_simple_micro_trail_points", 1.25))
     emergency_inr = float(getattr(settings, "paper_simple_emergency_loss_inr", 4000.0))
 
     if loss_inr >= emergency_inr:
@@ -90,6 +92,10 @@ def simple_profit_exit(
     # No progress after 90s — scratch before full time stop bleeds charges
     if age >= 90 and best_gain < 0.5 and unrealized < 0:
         return "simple no-progress scratch"
+
+    if best_gain >= micro_target and unrealized >= micro_target * 0.45:
+        if current <= best - micro_trail or unrealized <= best_gain * 0.55:
+            return "simple micro profit lock"
 
     if unrealized >= target:
         return "simple profit target hit"
