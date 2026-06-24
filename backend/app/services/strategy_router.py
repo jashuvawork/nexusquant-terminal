@@ -46,13 +46,7 @@ def allocate_trade_strategy(
             return _pack(candidate, "EXPLOSIVE_RUNNER", EXEC_MASTERMIND, bucket, "strong runner — mastermind lane")
         return _pack(candidate, "EXPLOSIVE_RUNNER", EXEC_ACS, bucket, "strong runner — ACS lane")
 
-    # Simple profit workhorse (high velocity + momentum)
-    simple_ok, _ = passes_simple_entry(candidate, bucket, settings)
-    breadth_ok, _ = passes_simple_breadth(candidate, breadth)
-    if simple_ok and breadth_ok and bool(getattr(settings, "paper_simple_profit_mode", True)):
-        return _pack(candidate, "SCALP", EXEC_SIMPLE, bucket, "simple profit — momentum + breadth aligned")
-
-    # Dual scalp workhorse (ATM / TQS / VAH-VAL)
+    # Dual scalp workhorse (ATM / TQS / VAH-VAL) — before simple so runners don't inherit 14-lot simple sizing
     scalp_ok, _ = passes_scalp_entry_gate(candidate, settings, breadth=breadth)
     if scalp_ok and bool(getattr(settings, "paper_dual_strategy_enabled", True)):
         downgraded = downgrade_runner_to_scalp(candidate, bucket) if strategy == "EXPLOSIVE_RUNNER" else dict(candidate)
@@ -65,19 +59,30 @@ def allocate_trade_strategy(
         if scalp_ok2:
             return _pack(downgraded, "SCALP", EXEC_DUAL_SCALP, bucket, "runner downgraded — dual scalp workhorse")
 
-    # Catch / burst runners (max-catch or momentum burst)
+    # Catch / burst runners (max-catch or momentum burst) — ACS pro quick book
     if strategy == "EXPLOSIVE_RUNNER":
         if bool(getattr(settings, "paper_max_catch_mode", False)) and score >= float(getattr(settings, "paper_max_catch_min_runner_score", 88)):
-            return _pack(candidate, "EXPLOSIVE_RUNNER", EXEC_ACS, bucket, "max-catch runner — ACS exits")
+            return _pack(candidate, "EXPLOSIVE_RUNNER", EXEC_ACS, bucket, "max-catch runner — ACS pro quick book")
         if vel >= float(getattr(settings, "paper_momentum_burst_min_velocity_pct", 2.0)) and score >= float(
             getattr(settings, "paper_momentum_burst_min_runner_score", 65)
         ):
-            return _pack(candidate, "EXPLOSIVE_RUNNER", EXEC_ACS, bucket, "momentum burst — ACS runner")
+            return _pack(candidate, "EXPLOSIVE_RUNNER", EXEC_ACS, bucket, "momentum burst — ACS pro quick book")
+        # Strong tape runners: ACS exits (not simple) — avoids yesterday's simple time-stop bleed on NIFTY
+        if score >= 72 and vel >= float(getattr(settings, "paper_simple_min_velocity_pct", 2.0)):
+            return _pack(candidate, "EXPLOSIVE_RUNNER", EXEC_ACS, bucket, "active runner — ACS pro quick book")
 
-    # Default ACS scalp
+    # Simple profit — SCALP lane only (never raw EXPLOSIVE_RUNNER)
+    if strategy == "SCALP" and bool(getattr(settings, "paper_simple_profit_mode", True)):
+        simple_ok, _ = passes_simple_entry(candidate, bucket, settings)
+        breadth_ok, _ = passes_simple_breadth(candidate, breadth)
+        if simple_ok and breadth_ok:
+            return _pack(candidate, "SCALP", EXEC_SIMPLE, bucket, "simple profit — momentum + breadth aligned")
+
+    # Default ACS scalp / quick book
     if strategy == "SCALP" or bool(getattr(settings, "paper_acs_scalp_enabled", True)):
         body = downgrade_runner_to_scalp(candidate, bucket) if strategy == "EXPLOSIVE_RUNNER" else dict(candidate)
-        return _pack(body, "SCALP", EXEC_ACS, bucket, "default ACS scalp lane")
+        lane = "SCALP" if strategy == "SCALP" else "SCALP"
+        return _pack(body, lane, EXEC_ACS, bucket, "default ACS pro quick book lane")
 
     return None
 
