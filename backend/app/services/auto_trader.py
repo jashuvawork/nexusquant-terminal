@@ -35,6 +35,14 @@ from app.services.dual_strategy import (
     scalp_profile,
 )
 from app.services.simple_profit import passes_simple_breadth, passes_simple_entry, simple_lot_bounds, simple_profit_exit, session_target_points
+from app.services.strategy_router import (
+    EXEC_ACS,
+    EXEC_DUAL_EXPLOSIVE,
+    EXEC_DUAL_SCALP,
+    EXEC_MASTERMIND,
+    EXEC_SIMPLE,
+    allocate_trade_strategy,
+)
 from app.services.trade_mastermind import (
     SESSION_RUNNER_TARGETS,
     classify_entry_mode,
@@ -108,6 +116,7 @@ class PaperTrade:
     mastermind_phase: str = ""
     mastermind_plan: dict[str, Any] = field(default_factory=dict)
     scalp_lane: str = ""
+    execution_plan: str = ""
     entry_regime: str = ""
     partial_realized_pnl: float = 0.0
     lifecycle: list[LifecycleEvent] = field(default_factory=list)
@@ -159,6 +168,7 @@ class PaperTrade:
             mastermind_phase=str(payload.get("mastermindPhase") or ""),
             mastermind_plan=dict(payload.get("mastermindPlan") or {}),
             scalp_lane=str(payload.get("scalpLane") or ""),
+            execution_plan=str(payload.get("executionPlan") or ""),
             entry_regime=str(payload.get("entryRegime") or ""),
             partial_realized_pnl=float(payload.get("partialRealizedPnl") or 0),
             lifecycle=lifecycle,
@@ -200,6 +210,7 @@ class PaperTrade:
             "mastermindPhase": self.mastermind_phase or None,
             "mastermindPlan": self.mastermind_plan or None,
             "scalpLane": self.scalp_lane or None,
+            "executionPlan": self.execution_plan or None,
             "entryRegime": self.entry_regime or None,
             "partialRealizedPnl": round(self.partial_realized_pnl, 2) if self.partial_realized_pnl else None,
             "lifecycle": [event.__dict__ for event in self.lifecycle],
@@ -335,8 +346,11 @@ class AutoTraderEngine:
                 explosion_entry = self._runner_entry_bypass(candidate)
                 can_bypass = (
                     not is_hard_block
-                    and not self.settings.paper_simple_profit_mode
-                    and not self.settings.paper_dual_strategy_enabled
+                    and not (
+                        self.settings.paper_simple_profit_mode
+                        and not self.settings.paper_dual_strategy_enabled
+                        and not self.settings.paper_unified_strategy_router
+                    )
                     and (
                         (explosion_entry and not is_position_limit and not is_chase)
                         or (self._runner_may_bypass_quality(candidate, reason_text, market_phase) and not is_position_limit)
@@ -1876,11 +1890,13 @@ class AutoTraderEngine:
         return plan
 
     def _trade_mastermind_status(self) -> dict[str, Any]:
-        dual = bool(self.settings.paper_dual_strategy_enabled)
-        simple = bool(self.settings.paper_simple_profit_mode) and not dual
+        unified = bool(self.settings.paper_unified_strategy_router)
+        dual = bool(self.settings.paper_dual_strategy_enabled) or unified
+        simple = bool(self.settings.paper_simple_profit_mode) and (not dual or unified)
         sp = scalp_profile(str((getattr(self, "_latest_session_adj", None) or {}).get("sessionBucket") or "NORMAL"))
         ep = explosive_profile()
         return {
+            "unifiedStrategyRouter": unified,
             "dualStrategyEnabled": dual,
             "scalpLane": {
                 "targetPoints": sp["targetPoints"],
@@ -1944,7 +1960,19 @@ class AutoTraderEngine:
         return True
 
     def _prepare_execution_candidate(self, candidate: dict[str, Any]) -> dict[str, Any] | None:
-        """Route weak runners to scalping; only ultra-elite stays explosive (sniper lane)."""
+        """Route weak runners to scalping; unified router picks lane per market tape."""
+        session_bucket = str((getattr(self, "_latest_session_adj", None) or {}).get("sessionBucket") or "NORMAL")
+        if self.settings.paper_unified_strategy_router:
+            side = str(candidate.get("side") or "")
+            symbol = str(candidate.get("symbol") or "")
+            breadth = self._breadth_confirmation(side, symbol=symbol)
+            routed = allocate_trade_strategy(
+                candidate,
+                self.settings,
+                session_bucket=session_bucket,
+                breadth=breadth,
+            )
+            return routed
         strategy = str(candidate.get("strategyType") or "SCALP").upper()
         runner = candidate.get("runnerSignal") or {}
         session_bucket = str((getattr(self, "_latest_session_adj", None) or {}).get("sessionBucket") or "NORMAL")
@@ -2849,7 +2877,27 @@ class AutoTraderEngine:
         runner_momentum_override = bool(runner.get("momentumOverride")) or momentum_explosion or strong_runner
         symbol = str(candidate.get("symbol") or "")
         breadth = self._breadth_confirmation(side, symbol=symbol)
-        if self.settings.paper_simple_profit_mode:
+        unified = bool(self.settings.paper_unified_strategy_router)
+        execution_plan = str(candidate.get("executionPlan") or "")
+        if unified and execution_plan:
+            if execution_plan == EXEC_SIMPLE:
+                simple_ok, simple_reason = passes_simple_entry(
+                    candidate, str(session_adj.get("sessionBucket") or "NORMAL"), self.settings
+                )
+                if not simple_ok:
+                    reasons.append(simple_reason)
+                breadth_ok, breadth_reason = passes_simple_breadth(candidate, breadth)
+                if not breadth_ok:
+                    reasons.append(breadth_reason)
+            elif execution_plan == EXEC_DUAL_SCALP:
+                scalp_ok, scalp_reason = passes_scalp_entry_gate(candidate, self.settings, breadth=breadth)
+                if not scalp_ok:
+                    reasons.append(scalp_reason)
+            elif execution_plan in {EXEC_DUAL_EXPLOSIVE, EXEC_MASTERMIND}:
+                if not is_ultra_elite_explosive(candidate, self.settings) and execution_plan == EXEC_DUAL_EXPLOSIVE:
+                    reasons.append("explosive gate: not ultra-elite (92+ score / 3%+ velocity / aligned tape)")
+            # ACS / MASTERMIND runners: base quality checks below still apply
+        elif self.settings.paper_simple_profit_mode:
             simple_ok, simple_reason = passes_simple_entry(
                 candidate, str(session_adj.get("sessionBucket") or "NORMAL"), self.settings
             )
@@ -2866,7 +2914,7 @@ class AutoTraderEngine:
             breadth_ok, breadth_reason = passes_simple_breadth(candidate, breadth)
             if not breadth_ok and not elite_bypass:
                 reasons.append(breadth_reason)
-        dual_lane = self.settings.paper_dual_strategy_enabled
+        dual_lane = self.settings.paper_dual_strategy_enabled and not unified
         dual_scalp = dual_lane and str(candidate.get("strategyType") or "SCALP").upper() != "EXPLOSIVE_RUNNER"
         dual_explosive = dual_lane and str(candidate.get("strategyType") or "").upper() == "EXPLOSIVE_RUNNER"
         if dual_lane:
@@ -3061,6 +3109,8 @@ class AutoTraderEngine:
         if self._is_explosion_chase(candidate, runner_sig) and not self.settings.paper_max_catch_mode:
             return None
         if quality.get("blocked"):
+            if self.settings.paper_unified_strategy_router:
+                return None
             if self.settings.paper_simple_profit_mode or self.settings.paper_dual_strategy_enabled:
                 return None
             if not entry_bypass and not momentum_explosion and not momentum_override:
@@ -3113,7 +3163,11 @@ class AutoTraderEngine:
             affordable_lots = min(affordable_lots, max_lots_cap)
             risk_lots = min(risk_lots, max_lots_cap)
             if quick_sizing:
-                if self.settings.paper_simple_profit_mode:
+                exec_plan = str(candidate.get("executionPlan") or "")
+                unified_sizing = bool(self.settings.paper_unified_strategy_router)
+                if (unified_sizing and exec_plan == EXEC_SIMPLE) or (
+                    not unified_sizing and self.settings.paper_simple_profit_mode
+                ):
                     min_lots, target_lots, max_lots_cap = simple_lot_bounds(self.settings)
                     streak = int((self.paper_sessions.current() or {}).get("consecutiveLosses") or 0)
                     if streak >= 2:
@@ -3131,7 +3185,9 @@ class AutoTraderEngine:
                     allowed_lots = min(affordable_lots, risk_lots, max_lots_cap)
                     final_lots = min(allowed_lots, max(min_lots, min(target_lots, allowed_lots)))
                     quantity = final_lots * lot_size
-                elif self.settings.paper_dual_strategy_enabled and strategy_type == "SCALP":
+                elif (unified_sizing and exec_plan == EXEC_DUAL_SCALP) or (
+                    not unified_sizing and self.settings.paper_dual_strategy_enabled and strategy_type == "SCALP"
+                ):
                     rolling = self._rolling_proof(limit=int(self.settings.paper_rolling_calibration_trades))
                     rolling_pf = float(rolling.get("profitFactor") or 0)
                     min_lots, target_lots, max_lots_cap = dual_scalp_lot_bounds(self.settings, rolling_pf=rolling_pf)
@@ -3151,7 +3207,9 @@ class AutoTraderEngine:
                     allowed_lots = min(affordable_lots, risk_lots, max_lots_cap)
                     final_lots = min(allowed_lots, max(min_lots, min(target_lots, allowed_lots)))
                     quantity = final_lots * lot_size
-                elif self.settings.paper_dual_strategy_enabled and strategy_type == "EXPLOSIVE_RUNNER":
+                elif (unified_sizing and exec_plan in {EXEC_DUAL_EXPLOSIVE, EXEC_MASTERMIND}) or (
+                    not unified_sizing and self.settings.paper_dual_strategy_enabled and strategy_type == "EXPLOSIVE_RUNNER"
+                ):
                     rolling = self._rolling_proof(limit=int(self.settings.paper_rolling_calibration_trades))
                     rolling_pf = float(rolling.get("profitFactor") or 0)
                     min_lots, target_lots, max_lots_cap = dual_explosive_lot_bounds(self.settings, rolling_pf=rolling_pf)
@@ -3211,9 +3269,15 @@ class AutoTraderEngine:
         if quantity < lot_size:
             return None
         min_viable_lots = 3
-        if quick_sizing and self.settings.paper_simple_profit_mode:
+        exec_plan = str(candidate.get("executionPlan") or "")
+        if quick_sizing and self.settings.paper_unified_strategy_router and exec_plan == EXEC_SIMPLE:
             min_viable_lots = int(self.settings.paper_simple_min_lots)
-        elif quick_sizing and self.settings.paper_dual_strategy_enabled:
+        elif quick_sizing and self.settings.paper_simple_profit_mode and not self.settings.paper_unified_strategy_router:
+            min_viable_lots = int(self.settings.paper_simple_min_lots)
+        elif quick_sizing and (
+            (self.settings.paper_unified_strategy_router and exec_plan == EXEC_DUAL_SCALP)
+            or (self.settings.paper_dual_strategy_enabled and not self.settings.paper_unified_strategy_router)
+        ):
             min_viable_lots = int(self.settings.paper_dual_scalp_min_lots)
         elif quick_sizing:
             min_viable_lots = effective_min_lots
@@ -3223,13 +3287,26 @@ class AutoTraderEngine:
         if quantity < lot_size * min_viable_lots:
             return None
         charges = self._charges_estimate(premium, premium, max(1, quantity))
-        simple_open = quick_sizing and self.settings.paper_simple_profit_mode and not self.settings.paper_dual_strategy_enabled
+        exec_plan = str(candidate.get("executionPlan") or "")
+        unified_open = bool(self.settings.paper_unified_strategy_router)
+        simple_open = quick_sizing and (
+            (unified_open and exec_plan == EXEC_SIMPLE)
+            or (self.settings.paper_simple_profit_mode and not self.settings.paper_dual_strategy_enabled and not unified_open)
+        )
         bucket = str(session_adj.get("sessionBucket") or "NORMAL")
-        if quick_sizing and self.settings.paper_dual_strategy_enabled and strategy_type == "SCALP":
+        if quick_sizing and unified_open and exec_plan == EXEC_DUAL_SCALP:
             sp = scalp_profile(bucket)
             open_target = sp["targetPoints"]
             open_stop = sp["stopPoints"]
-        elif quick_sizing and self.settings.paper_dual_strategy_enabled and strategy_type == "EXPLOSIVE_RUNNER":
+        elif quick_sizing and unified_open and exec_plan in {EXEC_DUAL_EXPLOSIVE, EXEC_MASTERMIND}:
+            ep = explosive_profile()
+            open_target = ep["targetPoints"]
+            open_stop = ep["stopPoints"]
+        elif quick_sizing and self.settings.paper_dual_strategy_enabled and strategy_type == "SCALP" and not unified_open:
+            sp = scalp_profile(bucket)
+            open_target = sp["targetPoints"]
+            open_stop = sp["stopPoints"]
+        elif quick_sizing and self.settings.paper_dual_strategy_enabled and strategy_type == "EXPLOSIVE_RUNNER" and not unified_open:
             ep = explosive_profile()
             open_target = ep["targetPoints"]
             open_stop = ep["stopPoints"]
@@ -3268,12 +3345,22 @@ class AutoTraderEngine:
             trail_points=risk_plan["trailPoints"],
             best_price=premium,
             scalp_lane=str(candidate.get("scalpLane") or LANE_MOMENTUM),
+            execution_plan=exec_plan,
             mastermind_phase=entry_mm_mode if quick_sizing else "",
             entry_regime=normalize_regime(str(self._latest_process_payload.get("regime") or "NORMAL")),
         )
         trade.lifecycle.extend([
             LifecycleEvent("RISK_CHECKED", trade.opened_at, quality["reason"], {**quality, "riskPlan": risk_plan}),
-            LifecycleEvent("PAPER_OPENED", trade.opened_at, "Shadow trade opened; no broker order placed", {"entry": trade.entry_price}),
+            LifecycleEvent(
+                "PAPER_OPENED",
+                trade.opened_at,
+                str(candidate.get("executionPlanReason") or "Shadow trade opened; no broker order placed"),
+                {
+                    "entry": trade.entry_price,
+                    "executionPlan": exec_plan or None,
+                    "executionPlanReason": candidate.get("executionPlanReason"),
+                },
+            ),
         ])
         self.open_paper[trade.id] = trade
         self._persist_paper_trades_file()
@@ -3348,7 +3435,16 @@ class AutoTraderEngine:
                     exit_mode = trade.exit_mode
             scalp_lock = exit_mode == "SCALP_LOCK" or (not is_runner and style in {"HIGH_WIN_SCALP", "FADE_SCALP"}) or (not is_runner and trade.strategy_type == "SCALP")
             scalp_exits = self._trade_uses_scalp_exits(trade, exit_mode=exit_mode, style=style, is_runner=is_runner)
-            simple_mode = bool(self.settings.paper_simple_profit_mode and scalp_exits and not self.settings.paper_dual_strategy_enabled)
+            trade_plan = str(trade.execution_plan or (candidate or {}).get("executionPlan") or "")
+            unified_exit = bool(self.settings.paper_unified_strategy_router)
+            if unified_exit and trade_plan:
+                simple_mode = trade_plan == EXEC_SIMPLE
+                dual_scalp_exit = trade_plan == EXEC_DUAL_SCALP
+                dual_explosive_exit = trade_plan in {EXEC_DUAL_EXPLOSIVE, EXEC_MASTERMIND}
+            else:
+                simple_mode = bool(self.settings.paper_simple_profit_mode and scalp_exits and not self.settings.paper_dual_strategy_enabled)
+                dual_scalp_exit = False
+                dual_explosive_exit = False
             acs_profile = self._scalp_acs_profile(session_adj, trade=trade) if scalp_exits and self.settings.paper_acs_scalp_enabled and not simple_mode else {}
             stop_points, max_hold_seconds, psych_exit_reason = self._psychology_exit_adjustments(
                 stop_points,
@@ -3372,18 +3468,22 @@ class AutoTraderEngine:
                 target_points = session_target_points(str(session_adj.get("sessionBucket") or "NORMAL"), self.settings)
                 max_hold_seconds = int(self.settings.paper_simple_max_hold_seconds)
                 breakeven_shift = 999.0
-            elif self.settings.paper_dual_strategy_enabled and scalp_exits and not is_runner:
+            elif (dual_scalp_exit or (self.settings.paper_dual_strategy_enabled and scalp_exits and not is_runner)) and not simple_mode:
                 sp = scalp_profile(str(session_adj.get("sessionBucket") or "NORMAL"))
                 stop_points = sp["stopPoints"]
                 target_points = sp["targetPoints"]
                 max_hold_seconds = int(sp["maxHoldSeconds"])
                 breakeven_shift = min(breakeven_shift, sp["targetPoints"] * 0.4)
-            elif self.settings.paper_dual_strategy_enabled and is_runner and exit_mode != "SCALP_LOCK":
+            elif (dual_explosive_exit or (self.settings.paper_dual_strategy_enabled and is_runner and exit_mode != "SCALP_LOCK")) and not simple_mode:
                 ep = explosive_profile()
                 max_hold_seconds = max(max_hold_seconds, int(ep["maxHoldSeconds"]))
                 target_points = max(target_points, ep["targetPoints"])
             mastermind_plan = None
-            if scalp_exits and self.settings.paper_trade_mastermind_enabled and not simple_mode:
+            use_mastermind = self.settings.paper_trade_mastermind_enabled and not simple_mode and (
+                (unified_exit and trade_plan in {EXEC_MASTERMIND, EXEC_DUAL_EXPLOSIVE})
+                or (not unified_exit and scalp_exits)
+            )
+            if use_mastermind:
                 mastermind_plan = self._evaluate_mastermind(
                     trade,
                     candidate,
