@@ -2784,11 +2784,19 @@ class AutoTraderEngine:
         momentum_explosion = self._is_momentum_explosion(candidate, runner)
         strong_runner = self._runner_entry_bypass(candidate, runner)
         runner_momentum_override = bool(runner.get("momentumOverride")) or momentum_explosion or strong_runner
-        if self.settings.paper_simple_profit_mode and not tradeable_runner:
+        if self.settings.paper_simple_profit_mode:
             simple_ok, simple_reason = passes_simple_entry(
                 candidate, str(session_adj.get("sessionBucket") or "NORMAL"), self.settings
             )
-            if not simple_ok and not runner_momentum_override and not burst_entry:
+            metrics = runner.get("metrics") or {}
+            vel = float(runner.get("premiumVelocityPct") or metrics.get("premiumVelocity") or 0)
+            elite_bypass = (
+                tradeable_runner
+                and runner_score >= float(self.settings.paper_high_confidence_min_runner_score)
+                and vel >= float(self.settings.paper_simple_min_velocity_pct)
+                and bool(runner.get("momentumSurge") or runner.get("momentumAligned"))
+            )
+            if not simple_ok and not elite_bypass:
                 reasons.append(simple_reason)
         if premium <= 0:
             reasons.append("missing premium")
@@ -2804,6 +2812,8 @@ class AutoTraderEngine:
         blocked_sides = plan.get("gates", {}).get("blockedSides") or []
         if str(candidate.get("side") or "") in blocked_sides:
             reasons.append(f"daily calibration blocked {candidate.get('side')} side (underperforming)")
+        if self.settings.paper_simple_profit_mode and {"CALL", "PUT"}.issubset(set(blocked_sides)):
+            reasons.append("daily calibration: both sides blocked — no new entries until reset")
         momentum_ok, momentum_reason = self._passes_scalp_momentum_entry_gate(candidate, session_adj)
         if not momentum_ok and not tradeable_runner and not runner_momentum_override:
             reasons.append(momentum_reason)
@@ -2959,8 +2969,11 @@ class AutoTraderEngine:
             return None
         if self._is_explosion_chase(candidate, runner_sig) and not self.settings.paper_max_catch_mode:
             return None
-        if quality.get("blocked") and not entry_bypass and not momentum_explosion and not momentum_override:
-            return None
+        if quality.get("blocked"):
+            if self.settings.paper_simple_profit_mode:
+                return None
+            if not entry_bypass and not momentum_explosion and not momentum_override:
+                return None
         trade_id = str(candidate.get("id") or uuid4())
         if trade_id in self.open_paper:
             return None
@@ -3139,6 +3152,23 @@ class AutoTraderEngine:
                 self._index_price_payload(candidate, price_by_id, price_by_instrument)
         for trade_id, trade in list(self.open_paper.items()):
             candidate = price_by_id.get(trade_id) or price_by_instrument.get(str(trade.instrument_key or ""))
+            age = self._age_seconds(trade.opened_at)
+            today_ist = datetime.now(IST).date().isoformat()
+            expired = bool(trade.expiry and str(trade.expiry) < today_ist)
+            if not candidate and (expired or age >= max(7200.0, float(self.settings.paper_simple_max_hold_seconds) * 2)):
+                trade.status = "EXITED"
+                trade.exit_price = float(trade.best_price or trade.entry_price)
+                trade.exit_reason = "stale/expired option flattened"
+                trade.exited_at = datetime.now(timezone.utc).isoformat()
+                charges = self._charges_estimate(trade.entry_price, trade.exit_price, trade.quantity)
+                trade.charges_estimate = charges
+                remainder_pnl = ((trade.exit_price - trade.entry_price - trade.spread_cost - trade.slippage_estimate) * trade.quantity) - charges
+                trade.pnl = round(float(trade.partial_realized_pnl or 0) + remainder_pnl, 2)
+                trade.lifecycle.append(LifecycleEvent("EXITED", trade.exited_at, trade.exit_reason, {"exit": trade.exit_price, "pnl": trade.pnl, "stale": True}))
+                self.closed_paper.append(trade)
+                del self.open_paper[trade_id]
+                exits.append(trade.to_dict())
+                continue
             if not candidate:
                 continue
             current = float((candidate or {}).get("lastPremium") or (candidate or {}).get("premium") or 0)
