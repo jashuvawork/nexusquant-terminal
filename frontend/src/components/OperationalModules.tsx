@@ -1084,11 +1084,11 @@ export function MorningChecklistPanel() {
           <p className="mt-2 text-xs text-slate-500">NIFTY/BANKNIFTY: weekly Thursday · SENSEX: weekly Thursday. Update env file on rollover day.</p>
         </div>
         <div className="rounded-2xl border border-slate-700 bg-slate-950/60 p-4">
-          <p className="text-sm font-bold text-white mb-1">3. Reset Paper Trades</p>
-          <p className="text-xs text-slate-400 mb-3">Fresh start each day for clean daily performance tracking.</p>
-          <a href={`${apiUrl}/api/auto-trader/reset`} target="_blank" rel="noreferrer"
+          <p className="text-sm font-bold text-white mb-1">3. Refresh 100-trade proof</p>
+          <p className="text-xs text-slate-400 mb-3">Clears paper history and starts a fresh rolling 100-trade live-readiness window (PF ≥ 2.0).</p>
+          <a href={`${apiUrl}/api/auto-trader/refresh-proof`} target="_blank" rel="noreferrer"
             className="inline-block rounded-lg border border-rose-300/30 bg-rose-300/10 px-3 py-1.5 text-xs font-bold text-rose-200 hover:bg-rose-300/20">
-            Reset Paper Trades →
+            Refresh 100 trades →
           </a>
         </div>
       </div>
