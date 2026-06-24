@@ -38,6 +38,18 @@ def passes_simple_entry(candidate: dict[str, Any], session_bucket: str, settings
     return True, ""
 
 
+def passes_simple_breadth(candidate: dict[str, Any], breadth: dict[str, Any] | None) -> tuple[bool, str]:
+    """CALL only when breadth bullish; PUT only when bearish — matches today's only win."""
+    if not breadth or not breadth.get("available"):
+        return True, ""
+    side = str(candidate.get("side") or "").upper()
+    if side == "CALL" and not breadth.get("aligned") and str(breadth.get("bias") or "").upper() != "BULLISH":
+        return False, f"simple gate: CALL needs bullish breadth (got {breadth.get('bias')})"
+    if side == "PUT" and not breadth.get("aligned") and str(breadth.get("bias") or "").upper() != "BEARISH":
+        return False, f"simple gate: PUT needs bearish breadth (got {breadth.get('bias')})"
+    return True, ""
+
+
 def simple_lot_bounds(settings: Any) -> tuple[int, int, int]:
     return (
         int(getattr(settings, "paper_simple_min_lots", 2)),
@@ -74,6 +86,10 @@ def simple_profit_exit(
 
     if age < min_hold:
         return None
+
+    # No progress after 90s — scratch before full time stop bleeds charges
+    if age >= 90 and best_gain < 0.5 and unrealized < 0:
+        return "simple no-progress scratch"
 
     if unrealized >= target:
         return "simple profit target hit"

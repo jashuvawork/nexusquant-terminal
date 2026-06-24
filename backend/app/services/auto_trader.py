@@ -24,7 +24,7 @@ from app.services.advanced_scalp import (
     reluctant_market_profit_exit,
     volatility_scale_acs,
 )
-from app.services.simple_profit import passes_simple_entry, simple_lot_bounds, simple_profit_exit, session_target_points
+from app.services.simple_profit import passes_simple_breadth, passes_simple_entry, simple_lot_bounds, simple_profit_exit, session_target_points
 from app.services.trade_mastermind import (
     SESSION_RUNNER_TARGETS,
     classify_entry_mode,
@@ -325,6 +325,7 @@ class AutoTraderEngine:
                 explosion_entry = self._runner_entry_bypass(candidate)
                 can_bypass = (
                     not is_hard_block
+                    and not self.settings.paper_simple_profit_mode
                     and (
                         (explosion_entry and not is_position_limit and not is_chase)
                         or (self._runner_may_bypass_quality(candidate, reason_text, market_phase) and not is_position_limit)
@@ -2378,6 +2379,8 @@ class AutoTraderEngine:
             "below high-confidence minimum",
             "chop filter",
             "breadth does not confirm",
+            "daily calibration",
+            "simple gate",
             "max open",
             "max capacity",
             "tqs ",
@@ -2798,6 +2801,10 @@ class AutoTraderEngine:
             )
             if not simple_ok and not elite_bypass:
                 reasons.append(simple_reason)
+            breadth = self._breadth_confirmation(side, symbol=str(candidate.get("symbol") or ""))
+            breadth_ok, breadth_reason = passes_simple_breadth(candidate, breadth)
+            if not breadth_ok and not elite_bypass:
+                reasons.append(breadth_reason)
         if premium <= 0:
             reasons.append("missing premium")
         if candidate.get("chopBlocked") and not tradeable_runner and not strong_runner and not self._scalp_relax_allowed(candidate):
@@ -3024,6 +3031,10 @@ class AutoTraderEngine:
             if quick_sizing:
                 if self.settings.paper_simple_profit_mode:
                     min_lots, target_lots, max_lots_cap = simple_lot_bounds(self.settings)
+                    streak = int((self.paper_sessions.current() or {}).get("consecutiveLosses") or 0)
+                    if streak >= 2:
+                        target_lots = min_lots
+                        max_lots_cap = min(max_lots_cap, min_lots + 1)
                     per_unit_risk = max(per_unit_risk, float(self.settings.paper_simple_stop_points))
                     risk_budget = min(
                         risk_budget if risk_budget > 0 else float(self.settings.paper_simple_max_loss_inr),
