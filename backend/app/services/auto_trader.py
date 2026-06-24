@@ -1902,6 +1902,8 @@ class AutoTraderEngine:
             "simpleTargetPoints": float(self.settings.paper_simple_target_points),
             "simpleStopPoints": float(self.settings.paper_simple_stop_points),
             "simpleMaxLots": int(self.settings.paper_simple_max_lots),
+            "simpleMicroTargetPoints": float(self.settings.paper_simple_micro_target_points),
+            "simpleMicroTrailPoints": float(self.settings.paper_simple_micro_trail_points),
             "enabled": bool(self.settings.paper_trade_mastermind_enabled) and not simple,
             "runnerTargetPoints": float(self.settings.paper_mastermind_runner_target_points),
             "minHoldSeconds": float(self.settings.paper_mastermind_min_hold_seconds),
