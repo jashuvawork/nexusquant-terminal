@@ -55,7 +55,6 @@ def dual_explosive_lot_bounds(settings: Any, *, rolling_pf: float = 0.0) -> tupl
         return min_lots, min(target_lots, 3), min(max_lots, 3)
     return min_lots, target_lots, max_lots
 
-
 def scalp_profile(session_bucket: str) -> dict[str, float]:
     bucket = str(session_bucket or "NORMAL").upper()
     target = SCALP_TARGET_POINTS
