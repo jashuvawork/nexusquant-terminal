@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     sensex_expiry_date: str | None = None
     banknifty_expiry_date: str | None = None
     enable_live_trading: bool = False
-    aggressive_mode: bool = False
+    aggressive_mode: bool = True
     aggression_profile: str = "balanced_pro"
     ai_score_threshold: int = 82
     safe_mode_threshold: int = 86
@@ -179,7 +179,7 @@ class Settings(BaseSettings):
     paper_scalp_stale_min_unrealized: float = 0.3
     paper_scalp_fade_lane_enabled: bool = True
     paper_scalp_kelly_sizing_enabled: bool = True
-    paper_scalp_ml_exit_overlay_enabled: bool = False
+    paper_scalp_ml_exit_overlay_enabled: bool = True
     paper_quick_profit_enabled: bool = True
     paper_quick_profit_points: float = 12.0
     paper_micro_scalp_min_gain: float = 5.0
@@ -244,7 +244,7 @@ class Settings(BaseSettings):
     paper_rolling_calibration_trades: int = 8
     paper_target_profit_factor: float = 2.5
     paper_target_win_rate_pct: float = 45.0
-    paper_max_catch_mode: bool = False
+    paper_max_catch_mode: bool = True
     paper_max_catch_min_runner_score: float = 88.0
     paper_max_catch_runner_emit_limit: int = 2
     paper_elite_runner_only: bool = True
@@ -254,7 +254,7 @@ class Settings(BaseSettings):
     paper_high_confidence_min_tqs: int = 86
     paper_min_entry_tqs: int = 58
     paper_momentum_min_entry_tqs: int = 52
-    paper_runner_bypass_quality_gates: bool = False
+    paper_runner_bypass_quality_gates: bool = True
     paper_momentum_min_premium_ltp: float = 25.0
     paper_momentum_max_entry_premium: float = 175.0
     paper_momentum_chase_premium_floor: float = 165.0
@@ -272,14 +272,14 @@ class Settings(BaseSettings):
     paper_scalp_chop_breadth_low: float = 45.0
     paper_scalp_chop_breadth_high: float = 55.0
     paper_scalp_win_streak_lot_boost: float = 1.35
-    paper_trade_mastermind_enabled: bool = False
+    paper_trade_mastermind_enabled: bool = True
     paper_mastermind_runner_target_points: float = 6.0
     paper_mastermind_min_hold_seconds: float = 45.0
     paper_mastermind_micro_burst_target: float = 4.0
     paper_mastermind_max_stop_points: float = 6.0
     paper_mastermind_min_stop_points: float = 2.0
     paper_mastermind_micro_burst_lot_mult: float = 1.45
-    paper_dual_strategy_enabled: bool = False
+    paper_dual_strategy_enabled: bool = True
     paper_dual_scalp_min_lots: int = 2
     paper_dual_scalp_target_lots: int = 4
     paper_dual_scalp_max_lots: int = 6
@@ -304,6 +304,7 @@ class Settings(BaseSettings):
     paper_simple_max_lots: int = 14
     paper_simple_max_loss_inr: float = 12000.0
     paper_simple_emergency_loss_inr: float = 18000.0
+    paper_unified_strategy_router: bool = True
     paper_momentum_explosion_velocity_pct: float = 1.5
     paper_momentum_explosion_volume_accel: float = 15.0
     paper_momentum_override_min_velocity_pct: float = 1.5
@@ -326,7 +327,7 @@ class Settings(BaseSettings):
     paper_always_trade_explosive_runners: bool = True
     paper_min_hold_before_chop_exit_seconds: int = 45
     paper_trading_respects_stop: bool = False
-    shadow_trade_all_signals: bool = False
+    shadow_trade_all_signals: bool = True
     market_poll_seconds: float = 3.0
     near_expiry_runner_enabled: bool = True
     near_expiry_runner_max_days: int = 7
