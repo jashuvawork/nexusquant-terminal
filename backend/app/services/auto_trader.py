@@ -34,7 +34,14 @@ from app.services.dual_strategy import (
     passes_scalp_entry_gate,
     scalp_profile,
 )
-from app.services.simple_profit import passes_simple_breadth, passes_simple_entry, simple_lot_bounds, simple_profit_exit, session_target_points
+from app.services.simple_profit import (
+    passes_simple_breadth,
+    passes_simple_entry,
+    reference_ledger_enabled,
+    simple_lot_bounds,
+    simple_profit_exit,
+    session_target_points,
+)
 from app.services.strategy_router import (
     EXEC_ACS,
     EXEC_DUAL_EXPLOSIVE,
@@ -401,10 +408,10 @@ class AutoTraderEngine:
                 momentum_override = bool(entry_bypass and self._is_profit_tier_entry(candidate, runner_sig))
             else:
                 momentum_override = bool(runner_sig.get("momentumOverride") and str(runner_sig.get("confidence") or "").upper() == "HIGH") or entry_bypass
-            if pre_trade_psychology.get("tradePermission") == "BLOCK_NEW_TRADES" and not momentum_override:
+            if pre_trade_psychology.get("tradePermission") == "BLOCK_NEW_TRADES" and not momentum_override and not self.settings.paper_reference_ledger_mode:
                 skipped.append({"candidate": candidate.get("id"), "reason": "psychology gate: BLOCK_NEW_TRADES", "quality": quality})
                 continue
-            if pre_trade_psychology.get("tradePermission") == "WAIT" and not momentum_override:
+            if pre_trade_psychology.get("tradePermission") == "WAIT" and not momentum_override and not self.settings.paper_reference_ledger_mode:
                 skipped.append({"candidate": candidate.get("id"), "reason": f"psychology gate: {pre_trade_psychology.get('tradePermission')}", "quality": quality})
                 continue
             if self.settings.paper_trading or not self.settings.enable_live_trading:
@@ -1927,6 +1934,15 @@ class AutoTraderEngine:
         ep = explosive_profile()
         return {
             "unifiedStrategyRouter": unified,
+            "referenceLedgerMode": bool(self.settings.paper_reference_ledger_mode),
+            "referenceLedger": {
+                "enabled": bool(self.settings.paper_reference_ledger_mode),
+                "fixedLots": int(self.settings.paper_reference_fixed_lots),
+                "microArmPoints": float(self.settings.paper_reference_micro_arm_points),
+                "runnerTargetPoints": float(self.settings.paper_reference_runner_target_points),
+                "stopPoints": float(self.settings.paper_reference_stop_points),
+                "edge": "100-lot micro scalp — micro lock, trail lock, no-progress scratch",
+            } if self.settings.paper_reference_ledger_mode else None,
             "quickProfitEnabled": bool(self.settings.paper_quick_profit_enabled),
             "acsScalpEnabled": bool(self.settings.paper_acs_scalp_enabled),
             "acsQuickProfitPoints": float(self.settings.paper_acs_quick_profit_points),
@@ -2956,7 +2972,7 @@ class AutoTraderEngine:
                 )
                 if not simple_ok:
                     reasons.append(simple_reason)
-                breadth_ok, breadth_reason = passes_simple_breadth(candidate, breadth)
+                breadth_ok, breadth_reason = passes_simple_breadth(candidate, breadth, self.settings)
                 if not breadth_ok:
                     reasons.append(breadth_reason)
             elif execution_plan == EXEC_DUAL_SCALP:
@@ -2991,7 +3007,7 @@ class AutoTraderEngine:
             )
             if not simple_ok and not elite_bypass:
                 reasons.append(simple_reason)
-            breadth_ok, breadth_reason = passes_simple_breadth(candidate, breadth)
+            breadth_ok, breadth_reason = passes_simple_breadth(candidate, breadth, self.settings)
             if not breadth_ok and not elite_bypass:
                 reasons.append(breadth_reason)
         dual_lane = self.settings.paper_dual_strategy_enabled and not unified
@@ -3138,6 +3154,8 @@ class AutoTraderEngine:
         }
 
     def _quick_profit_sizing_active(self, candidate: dict[str, Any], pool: str, strategy_type: str) -> bool:
+        if self.settings.paper_reference_ledger_mode:
+            return True
         if not self.settings.paper_quick_profit_enabled:
             return False
         exec_plan = str(candidate.get("executionPlan") or "").strip().upper()
@@ -3255,7 +3273,20 @@ class AutoTraderEngine:
             risk_lots = min(risk_lots, max_lots_cap)
             exec_plan = str(candidate.get("executionPlan") or "")
             is_swing_trade = exec_plan == EXEC_SWING or strategy_type == "SWING"
-            if is_swing_trade:
+            if self.settings.paper_reference_ledger_mode:
+                min_lots, target_lots, max_lots_cap = simple_lot_bounds(self.settings)
+                per_unit_risk = max(per_unit_risk, float(self.settings.paper_reference_stop_points))
+                risk_budget = min(
+                    risk_budget if risk_budget > 0 else float(self.settings.paper_reference_max_loss_inr),
+                    float(self.settings.paper_reference_max_loss_inr),
+                )
+                risk_lots = int(risk_budget // (per_unit_risk * lot_size)) if risk_budget > 0 else max_lots_cap
+                risk_lots = min(risk_lots, max_lots_cap)
+                affordable_lots = min(affordable_lots, max_lots_cap)
+                allowed_lots = min(affordable_lots, risk_lots, max_lots_cap)
+                final_lots = max(min_lots, min(allowed_lots, target_lots))
+                quantity = final_lots * lot_size
+            elif is_swing_trade:
                 rolling = self._rolling_proof(limit=int(self.settings.paper_rolling_calibration_trades))
                 rolling_pf = float(rolling.get("profitFactor") or 0)
                 min_lots, target_lots, max_lots_cap = swing_lot_bounds(self.settings, rolling_pf=rolling_pf)
@@ -3282,10 +3313,10 @@ class AutoTraderEngine:
                     if streak >= 2:
                         target_lots = min_lots
                         max_lots_cap = min(max_lots_cap, min_lots + 1)
-                    per_unit_risk = max(per_unit_risk, float(self.settings.paper_simple_stop_points))
+                    per_unit_risk = max(per_unit_risk, float(self.settings.paper_reference_stop_points if self.settings.paper_reference_ledger_mode else self.settings.paper_simple_stop_points))
                     risk_budget = min(
-                        risk_budget if risk_budget > 0 else float(self.settings.paper_simple_max_loss_inr),
-                        float(self.settings.paper_simple_max_loss_inr) * 1.5,
+                        risk_budget if risk_budget > 0 else float(self.settings.paper_reference_max_loss_inr if self.settings.paper_reference_ledger_mode else self.settings.paper_simple_max_loss_inr),
+                        float(self.settings.paper_reference_max_loss_inr if self.settings.paper_reference_ledger_mode else self.settings.paper_simple_max_loss_inr),
                     )
                     risk_lots = int(risk_budget // (per_unit_risk * lot_size)) if risk_budget > 0 else max_lots_cap
                     risk_lots = min(risk_lots, max_lots_cap)
@@ -3556,7 +3587,14 @@ class AutoTraderEngine:
             scalp_exits = self._trade_uses_scalp_exits(trade, exit_mode=exit_mode, style=style, is_runner=is_runner)
             trade_plan = self._resolve_execution_plan(trade, candidate)
             unified_exit = bool(self.settings.paper_unified_strategy_router)
-            if unified_exit:
+            ref_ledger = bool(self.settings.paper_reference_ledger_mode)
+            if ref_ledger:
+                simple_mode = True
+                swing_mode = False
+                dual_scalp_exit = False
+                dual_explosive_exit = False
+                scalp_exits = False
+            elif unified_exit:
                 simple_mode = trade_plan == EXEC_SIMPLE
                 swing_mode = trade_plan == EXEC_SWING
                 dual_scalp_exit = trade_plan == EXEC_DUAL_SCALP
@@ -3570,11 +3608,16 @@ class AutoTraderEngine:
                 swing_mode = self._is_swing_strategy(trade.strategy_type)
                 dual_scalp_exit = False
                 dual_explosive_exit = False
-            acs_profile = self._scalp_acs_profile(
-                session_adj, trade=trade, execution_plan=trade_plan,
-            ) if (
+            if ref_ledger:
+                acs_profile = {}
+            elif (
                 scalp_exits and self.settings.paper_acs_scalp_enabled and not simple_mode and not swing_mode
-            ) else {}
+            ):
+                acs_profile = self._scalp_acs_profile(
+                    session_adj, trade=trade, execution_plan=trade_plan,
+                )
+            else:
+                acs_profile = {}
             stop_points, max_hold_seconds, psych_exit_reason = self._psychology_exit_adjustments(
                 stop_points,
                 psychology,
