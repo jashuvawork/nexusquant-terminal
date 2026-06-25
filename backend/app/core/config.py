@@ -136,7 +136,7 @@ class Settings(BaseSettings):
     paper_suggested_trade_dedupe: bool = True
     paper_ai_adaptive_exit_enabled: bool = True
     paper_adaptive_scalp_lock_min_gain_points: float = 4.0
-    paper_acs_quick_profit_points: float = 6.0
+    paper_acs_quick_profit_points: float = 5.0
     paper_scalp_time_lock_seconds: int = 75
     paper_scalp_time_lock_min_gain: float = 2.5
     paper_adaptive_momentum_fade_velocity_pct: float = 1.2
