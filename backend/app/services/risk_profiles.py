@@ -387,6 +387,7 @@ def paper_session_adjustments(
     block_reason: str | None = None
     midday_runner_bypass_score = 90.0
     scalp_relaxed_gates = False
+    scalp: dict[str, Any] = {}
     profit_fallback_pct: float | None = None
     profit_secondary_pct: float | None = None
     profit_primary_pct: float | None = None
@@ -492,7 +493,7 @@ def paper_session_adjustments(
         "blockReason": block_reason,
         "middayRunnerBypassScore": midday_runner_bypass_score,
         "scalpRelaxedGates": scalp_relaxed_gates if unified_scalp_profile and bucket in LIVE_SCALP_BUCKETS else False,
-        "momentumBurstCatch": bool(scalp.get("momentum_burst_catch")) if unified_scalp_profile and bucket in LIVE_SCALP_BUCKETS else False,
+        "momentumBurstCatch": bool(scalp.get("momentum_burst_catch")) if unified_scalp_profile and bucket in LIVE_SCALP_BUCKETS and scalp else False,
         "minEntryTqs": int(min_entry_tqs),
         "minRunnerScore": round(min_runner_score, 2),
         "allocationPctMultiplier": round(allocation_multiplier, 3),

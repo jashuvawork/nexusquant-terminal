@@ -278,10 +278,13 @@ async def market_snapshots(engine: RealTimeMarketEngine = Depends(get_market_eng
         "marketSnapshot": market_snapshot,
     }
     session_state = current_session_state()
-    if session_state.phase == "LIVE_MARKET":
-        payload["autoTrader"] = await auto_engine.process(payload)
-    else:
-        payload["autoTrader"] = {**auto_engine.status(), "processingPaused": True, "pauseReason": "Market is closed; replay/learning mutations paused."}
+    try:
+        if session_state.phase == "LIVE_MARKET":
+            payload["autoTrader"] = await auto_engine.process(payload)
+        else:
+            payload["autoTrader"] = {**auto_engine.status(), "processingPaused": True, "pauseReason": "Market is closed; replay/learning mutations paused."}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Auto-trader process failed during poll: {exc}") from exc
     return payload
 
 
