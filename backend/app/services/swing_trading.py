@@ -84,11 +84,11 @@ def passes_swing_entry(
 
 
 def swing_lot_bounds(settings: Any, *, rolling_pf: float = 0.0) -> tuple[int, int, int]:
-    min_lots = int(getattr(settings, "paper_swing_min_lots", 4))
-    target_lots = int(getattr(settings, "paper_swing_target_lots", 6))
-    max_lots = int(getattr(settings, "paper_swing_max_lots", 8))
+    min_lots = int(getattr(settings, "paper_swing_min_lots", 20))
+    target_lots = int(getattr(settings, "paper_swing_target_lots", 22))
+    max_lots = int(getattr(settings, "paper_swing_max_lots", 26))
     if rolling_pf < 1.0:
-        return min_lots, min_lots, min(min_lots + 1, max_lots)
+        return min_lots, min_lots, min(min_lots + 2, max_lots)
     if rolling_pf < float(getattr(settings, "paper_target_profit_factor", 2.5)):
         return min_lots, min(target_lots, min_lots + 2), min(target_lots, max_lots)
     return min_lots, target_lots, max_lots

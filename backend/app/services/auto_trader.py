@@ -2309,14 +2309,17 @@ class AutoTraderEngine:
         return False, ""
 
     def _loss_streak_max_lots(self) -> int | None:
+        """Only shrink lots after consecutive losses — not merely because rolling PF < 1."""
         streak = self._consecutive_loss_streak()
         if streak >= int(self.settings.paper_scalp_loss_streak_lot_cap_after):
             return int(self.settings.paper_scalp_loss_streak_lot_cap)
-        rolling = self._rolling_proof(limit=8)
-        if int(rolling.get("paperTrades") or 0) >= 3:
-            pf = float(rolling.get("profitFactor") or 0)
-            if pf < float(self.settings.paper_scalp_loss_streak_pf_cap):
-                return int(self.settings.paper_scalp_loss_streak_lot_cap)
+        pf_cap = float(self.settings.paper_scalp_loss_streak_pf_cap or 0)
+        if pf_cap > 0:
+            rolling = self._rolling_proof(limit=8)
+            if int(rolling.get("paperTrades") or 0) >= 3:
+                pf = float(rolling.get("profitFactor") or 0)
+                if pf < pf_cap:
+                    return int(self.settings.paper_scalp_loss_streak_lot_cap)
         return None
 
     def _runner_metrics(self, runner: dict[str, Any]) -> dict[str, Any]:
@@ -4155,6 +4158,9 @@ class AutoTraderEngine:
                 runner_score=float(runner.get("score") or 0),
                 regime=str(trade.entry_regime or self._latest_process_payload.get("regime") or "NORMAL"),
                 enabled=True,
+                min_unrealized_points=float(self.settings.paper_scalp_ml_exit_min_unrealized_points),
+                min_best_gain_points=float(self.settings.paper_scalp_ml_exit_min_best_gain_points),
+                score_threshold=float(self.settings.paper_scalp_ml_exit_score_threshold),
             )
             if should_exit and ml_reason:
                 return ml_reason
