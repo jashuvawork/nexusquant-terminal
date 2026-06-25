@@ -110,7 +110,7 @@ def _scalp_acs_session_params(bucket: str, *, block_closing_momentum: bool = Fal
             "runnerCapPoints": 9.0,
             "runnerRetainPct": 0.72,
             "runnerArmPoints": 2.75,
-            "controlledStopPoints": 3.5,
+            "controlledStopPoints": 2.75,
             "quickProfitPoints": 5.0,
             "partialExitPct": 0.68,
             "microPartialPoints": 1.75,
