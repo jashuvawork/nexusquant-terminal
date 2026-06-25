@@ -73,10 +73,10 @@ def simple_profit_exit(
     best_gain = max(0.0, best - entry)
     qty = max(1, int(quantity))
     loss_inr = max(0.0, -unrealized * qty)
-    min_hold = float(getattr(settings, "paper_simple_min_hold_seconds", 30.0))
+    min_hold = float(getattr(settings, "paper_simple_min_hold_seconds", 45.0))
     max_hold = float(getattr(settings, "paper_simple_max_hold_seconds", 180.0))
     target = session_target_points(session_bucket, settings)
-    stop = float(getattr(settings, "paper_simple_stop_points", 3.0))
+    stop = float(getattr(settings, "paper_simple_stop_points", 4.5))
     trail_arm = float(getattr(settings, "paper_simple_trail_arm_points", 2.0))
     trail_retain = float(getattr(settings, "paper_simple_trail_retain_pct", 0.50))
     micro_target = float(getattr(settings, "paper_simple_micro_target_points", 3.0))
@@ -89,8 +89,8 @@ def simple_profit_exit(
     if age < min_hold:
         return None
 
-    # No progress after 90s — scratch before full time stop bleeds charges
-    if age >= 90 and best_gain < 0.5 and unrealized < 0:
+    # No progress after 2min — scratch only if never moved (avoid instant loss control)
+    if age >= 120 and best_gain < 1.0 and unrealized < -1.0:
         return "simple no-progress scratch"
 
     if best_gain >= micro_target and unrealized >= micro_target * 0.45:

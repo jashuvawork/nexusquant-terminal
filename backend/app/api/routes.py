@@ -191,6 +191,7 @@ async def deployment_status(
             "/api/auto-trader/status",
             "/api/auto-trader/performance-analysis",
             "/api/auto-trader/reset",
+            "/api/auto-trader/refresh-proof",
             "/api/ai-learning/status",
             "/api/ai-learning/export",
             "/api/ai-learning/reset",
@@ -277,10 +278,13 @@ async def market_snapshots(engine: RealTimeMarketEngine = Depends(get_market_eng
         "marketSnapshot": market_snapshot,
     }
     session_state = current_session_state()
-    if session_state.phase == "LIVE_MARKET":
-        payload["autoTrader"] = await auto_engine.process(payload)
-    else:
-        payload["autoTrader"] = {**auto_engine.status(), "processingPaused": True, "pauseReason": "Market is closed; replay/learning mutations paused."}
+    try:
+        if session_state.phase == "LIVE_MARKET":
+            payload["autoTrader"] = await auto_engine.process(payload)
+        else:
+            payload["autoTrader"] = {**auto_engine.status(), "processingPaused": True, "pauseReason": "Market is closed; replay/learning mutations paused."}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Auto-trader process failed during poll: {exc}") from exc
     return payload
 
 
@@ -1193,6 +1197,23 @@ async def auto_trader_reset(engine: AutoTraderEngine = Depends(get_auto_trader),
 @router.get("/auto-trader/reset")
 async def auto_trader_reset_get(engine: AutoTraderEngine = Depends(get_auto_trader), preserve_history: bool = True) -> dict:
     return engine.reset(preserve_history=preserve_history)
+
+
+@router.post("/auto-trader/refresh-proof")
+async def auto_trader_refresh_proof(engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
+    """Clear paper trade history and start a fresh 100-trade live-readiness proof window."""
+    result = engine.reset(preserve_history=False)
+    rolling = engine.performance_analysis().get("rollingProof") or {}
+    return {
+        **result,
+        "rollingProof": rolling,
+        "message": f"Fresh {rolling.get('windowTrades', 100)}-trade proof window started.",
+    }
+
+
+@router.get("/auto-trader/refresh-proof")
+async def auto_trader_refresh_proof_get(engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
+    return await auto_trader_refresh_proof(engine)
 
 
 @router.get("/auto-trader/daily-report")

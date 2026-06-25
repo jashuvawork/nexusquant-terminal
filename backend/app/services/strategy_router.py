@@ -11,12 +11,14 @@ from app.services.dual_strategy import (
     scalp_profile,
 )
 from app.services.simple_profit import passes_simple_breadth, passes_simple_entry
+from app.services.swing_trading import passes_swing_entry
 
 EXEC_SIMPLE = "SIMPLE"
 EXEC_DUAL_SCALP = "DUAL_SCALP"
 EXEC_DUAL_EXPLOSIVE = "DUAL_EXPLOSIVE"
 EXEC_ACS = "ACS"
 EXEC_MASTERMIND = "MASTERMIND"
+EXEC_SWING = "SWING"
 
 
 def allocate_trade_strategy(
@@ -25,6 +27,7 @@ def allocate_trade_strategy(
     *,
     session_bucket: str,
     breadth: dict[str, Any] | None = None,
+    regime: str = "NORMAL",
 ) -> dict[str, Any] | None:
     """Choose strategy type + exit engine from live tape — one plan per trade."""
     runner = candidate.get("runnerSignal") or {}
@@ -45,6 +48,13 @@ def allocate_trade_strategy(
         if bool(getattr(settings, "paper_trade_mastermind_enabled", False)):
             return _pack(candidate, "EXPLOSIVE_RUNNER", EXEC_MASTERMIND, bucket, "strong runner — mastermind lane")
         return _pack(candidate, "EXPLOSIVE_RUNNER", EXEC_ACS, bucket, "strong runner — ACS lane")
+
+    # Swing trend ride — sustained momentum + breadth (catches midday rallies scalp misses)
+    swing_ok, _ = passes_swing_entry(
+        candidate, bucket, settings, breadth=breadth, regime=str(regime or "NORMAL"),
+    )
+    if swing_ok and bool(getattr(settings, "paper_swing_trading_enabled", True)):
+        return _pack(candidate, "SWING", EXEC_SWING, bucket, "swing — sustained trend ride with trail")
 
     # Dual scalp workhorse (ATM / TQS / VAH-VAL) — before simple so runners don't inherit 14-lot simple sizing
     scalp_ok, _ = passes_scalp_entry_gate(candidate, settings, breadth=breadth)
@@ -98,6 +108,12 @@ def _pack(candidate: dict[str, Any], strategy_type: str, execution_plan: str, bu
     elif execution_plan == EXEC_DUAL_SCALP:
         sp = scalp_profile(bucket)
         opt["executionStyle"] = "HIGH_WIN_SCALP"
+        opt["targetPoints"] = sp["targetPoints"]
+        opt["stopPoints"] = sp["stopPoints"]
+    elif execution_plan == EXEC_SWING:
+        from app.services.swing_trading import swing_profile
+        sp = swing_profile(bucket)
+        opt["executionStyle"] = "SWING_TREND"
         opt["targetPoints"] = sp["targetPoints"]
         opt["stopPoints"] = sp["stopPoints"]
     elif execution_plan in {EXEC_DUAL_EXPLOSIVE, EXEC_MASTERMIND, EXEC_ACS}:

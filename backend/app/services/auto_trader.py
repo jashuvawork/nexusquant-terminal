@@ -41,7 +41,14 @@ from app.services.strategy_router import (
     EXEC_DUAL_SCALP,
     EXEC_MASTERMIND,
     EXEC_SIMPLE,
+    EXEC_SWING,
     allocate_trade_strategy,
+)
+from app.services.swing_trading import (
+    passes_swing_entry,
+    swing_lot_bounds,
+    swing_profile,
+    swing_profit_exit,
 )
 from app.services.trade_mastermind import (
     SESSION_RUNNER_TARGETS,
@@ -1904,6 +1911,8 @@ class AutoTraderEngine:
                     return EXEC_DUAL_EXPLOSIVE
                 return EXEC_DUAL_SCALP
             return EXEC_ACS
+        if trade.strategy_type == "SWING":
+            return EXEC_SWING
         if trade.strategy_type == "EXPLOSIVE_RUNNER":
             return EXEC_ACS
         if self.settings.paper_simple_profit_mode:
@@ -1925,6 +1934,12 @@ class AutoTraderEngine:
                 "min": int(self.settings.paper_quick_profit_min_lots),
                 "target": int(self.settings.paper_quick_profit_target_lots),
                 "max": int(self.settings.paper_quick_profit_max_lots),
+            },
+            "swingTradingEnabled": bool(self.settings.paper_swing_trading_enabled),
+            "swingLane": {
+                **swing_profile(str((getattr(self, "_latest_session_adj", None) or {}).get("sessionBucket") or "NORMAL"), self.settings),
+                "maxOpenTrades": int(self.settings.paper_swing_max_open_trades),
+                "edge": "sustained trend + breadth — ride pullbacks, book on trail",
             },
             "dualStrategyEnabled": dual,
             "scalpLane": {
@@ -2000,6 +2015,7 @@ class AutoTraderEngine:
                 self.settings,
                 session_bucket=session_bucket,
                 breadth=breadth,
+                regime=str((getattr(self, "_latest_process_payload", None) or {}).get("regime") or "NORMAL"),
             )
             return routed
         strategy = str(candidate.get("strategyType") or "SCALP").upper()
@@ -2293,14 +2309,17 @@ class AutoTraderEngine:
         return False, ""
 
     def _loss_streak_max_lots(self) -> int | None:
+        """Only shrink lots after consecutive losses — not merely because rolling PF < 1."""
         streak = self._consecutive_loss_streak()
         if streak >= int(self.settings.paper_scalp_loss_streak_lot_cap_after):
             return int(self.settings.paper_scalp_loss_streak_lot_cap)
-        rolling = self._rolling_proof(limit=8)
-        if int(rolling.get("paperTrades") or 0) >= 3:
-            pf = float(rolling.get("profitFactor") or 0)
-            if pf < float(self.settings.paper_scalp_loss_streak_pf_cap):
-                return int(self.settings.paper_scalp_loss_streak_lot_cap)
+        pf_cap = float(self.settings.paper_scalp_loss_streak_pf_cap or 0)
+        if pf_cap > 0:
+            rolling = self._rolling_proof(limit=8)
+            if int(rolling.get("paperTrades") or 0) >= 3:
+                pf = float(rolling.get("profitFactor") or 0)
+                if pf < pf_cap:
+                    return int(self.settings.paper_scalp_loss_streak_lot_cap)
         return None
 
     def _runner_metrics(self, runner: dict[str, Any]) -> dict[str, Any]:
@@ -2595,6 +2614,20 @@ class AutoTraderEngine:
             return True
         if self._is_tradeable_explosive_runner(candidate, market_phase):
             return True
+        if self.settings.paper_swing_trading_enabled:
+            side = str(candidate.get("side") or "")
+            symbol = str(candidate.get("symbol") or "")
+            breadth = self._breadth_confirmation(side, symbol=symbol)
+            regime = str((getattr(self, "_latest_process_payload", None) or {}).get("regime") or "NORMAL")
+            swing_ok, _ = passes_swing_entry(
+                candidate,
+                str(session_adj.get("sessionBucket") or "NORMAL"),
+                self.settings,
+                breadth=breadth,
+                regime=regime,
+            )
+            if swing_ok:
+                return True
         if self._is_momentum_burst_entry(candidate):
             return True
         if self._elite_runner_only_mode():
@@ -2715,6 +2748,14 @@ class AutoTraderEngine:
             )
             if len(explosive_open) >= max_explosive:
                 return f"explosive lane at max capacity ({max_explosive})"
+        if strategy == "SWING":
+            swing_open = [
+                trade for trade in self.open_paper.values()
+                if str(trade.strategy_type or "").upper() == "SWING"
+            ]
+            max_swing = int(self.settings.paper_swing_max_open_trades)
+            if len(swing_open) >= max_swing:
+                return f"swing lane at max capacity ({max_swing})"
         # For momentum override: allow up to 3 same-side (all 3 symbols crashing/surging simultaneously)
         same_side_cap = 3 if is_momentum_override else int(self.settings.paper_max_open_same_side_trades)
         same_side_open = [trade for trade in self.open_paper.values() if str(trade.side or "").upper() == side]
@@ -2925,6 +2966,16 @@ class AutoTraderEngine:
             elif execution_plan in {EXEC_DUAL_EXPLOSIVE, EXEC_MASTERMIND}:
                 if not is_ultra_elite_explosive(candidate, self.settings) and execution_plan == EXEC_DUAL_EXPLOSIVE:
                     reasons.append("explosive gate: not ultra-elite (92+ score / 3%+ velocity / aligned tape)")
+            elif execution_plan == EXEC_SWING:
+                swing_ok, swing_reason = passes_swing_entry(
+                    candidate,
+                    str(session_adj.get("sessionBucket") or "NORMAL"),
+                    self.settings,
+                    breadth=breadth,
+                    regime=str((self._latest_process_payload or {}).get("regime") or "NORMAL"),
+                )
+                if not swing_ok:
+                    reasons.append(swing_reason)
             # ACS / MASTERMIND runners: base quality checks below still apply
         elif self.settings.paper_simple_profit_mode:
             simple_ok, simple_reason = passes_simple_entry(
@@ -3098,6 +3149,8 @@ class AutoTraderEngine:
                 EXEC_DUAL_EXPLOSIVE,
                 EXEC_MASTERMIND,
             }
+        if exec_plan == EXEC_SWING or strategy_type == "SWING":
+            return False
         if pool == "scalping" or strategy_type == "SCALP":
             return True
         return bool(self.settings.paper_quick_profit_size_runners and strategy_type == "EXPLOSIVE_RUNNER")
@@ -3200,8 +3253,26 @@ class AutoTraderEngine:
             max_lots_cap = int(self.settings.paper_quick_profit_max_lots) if quick_sizing else affordable_lots
             affordable_lots = min(affordable_lots, max_lots_cap)
             risk_lots = min(risk_lots, max_lots_cap)
-            if quick_sizing:
-                exec_plan = str(candidate.get("executionPlan") or "")
+            exec_plan = str(candidate.get("executionPlan") or "")
+            is_swing_trade = exec_plan == EXEC_SWING or strategy_type == "SWING"
+            if is_swing_trade:
+                rolling = self._rolling_proof(limit=int(self.settings.paper_rolling_calibration_trades))
+                rolling_pf = float(rolling.get("profitFactor") or 0)
+                min_lots, target_lots, max_lots_cap = swing_lot_bounds(self.settings, rolling_pf=rolling_pf)
+                sp = swing_profile(str(session_adj.get("sessionBucket") or "NORMAL"), self.settings)
+                per_unit_risk = max(per_unit_risk, float(sp["stopPoints"]))
+                risk_budget = min(
+                    risk_budget if risk_budget > 0 else float(self.settings.paper_swing_max_loss_inr),
+                    float(self.settings.paper_swing_max_loss_inr) * 1.5,
+                )
+                risk_lots = int(risk_budget // (per_unit_risk * lot_size)) if risk_budget > 0 else max_lots_cap
+                risk_lots = min(risk_lots, max_lots_cap)
+                affordable_lots = min(affordable_lots, max_lots_cap)
+                effective_min_lots = min_lots
+                allowed_lots = min(affordable_lots, risk_lots, max_lots_cap)
+                final_lots = min(allowed_lots, max(min_lots, min(target_lots, allowed_lots)))
+                quantity = final_lots * lot_size
+            elif quick_sizing:
                 unified_sizing = bool(self.settings.paper_unified_strategy_router)
                 if (unified_sizing and exec_plan == EXEC_SIMPLE) or (
                     not unified_sizing and self.settings.paper_simple_profit_mode
@@ -3312,6 +3383,8 @@ class AutoTraderEngine:
             min_viable_lots = int(self.settings.paper_simple_min_lots)
         elif quick_sizing and self.settings.paper_simple_profit_mode and not self.settings.paper_unified_strategy_router:
             min_viable_lots = int(self.settings.paper_simple_min_lots)
+        elif exec_plan == EXEC_SWING or strategy_type == "SWING":
+            min_viable_lots = int(self.settings.paper_swing_min_lots)
         elif quick_sizing and (
             (self.settings.paper_unified_strategy_router and exec_plan == EXEC_DUAL_SCALP)
             or (self.settings.paper_dual_strategy_enabled and not self.settings.paper_unified_strategy_router)
@@ -3332,7 +3405,11 @@ class AutoTraderEngine:
             or (self.settings.paper_simple_profit_mode and not self.settings.paper_dual_strategy_enabled and not unified_open)
         )
         bucket = str(session_adj.get("sessionBucket") or "NORMAL")
-        if quick_sizing and unified_open and exec_plan == EXEC_ACS:
+        if unified_open and exec_plan == EXEC_SWING:
+            sp = swing_profile(bucket, self.settings)
+            open_target = sp["targetPoints"]
+            open_stop = sp["stopPoints"]
+        elif quick_sizing and unified_open and exec_plan == EXEC_ACS:
             acs = self._scalp_acs_profile(session_adj)
             open_target = float(acs.get("cap") or self.settings.paper_scalp_runner_cap_points)
             open_stop = float(acs.get("stop") or self.settings.paper_scalp_controlled_stop_points)
@@ -3481,6 +3558,7 @@ class AutoTraderEngine:
             unified_exit = bool(self.settings.paper_unified_strategy_router)
             if unified_exit:
                 simple_mode = trade_plan == EXEC_SIMPLE
+                swing_mode = trade_plan == EXEC_SWING
                 dual_scalp_exit = trade_plan == EXEC_DUAL_SCALP
                 dual_explosive_exit = trade_plan in {EXEC_DUAL_EXPLOSIVE, EXEC_MASTERMIND}
             else:
@@ -3489,12 +3567,13 @@ class AutoTraderEngine:
                     and scalp_exits
                     and not self.settings.paper_dual_strategy_enabled
                 )
+                swing_mode = self._is_swing_strategy(trade.strategy_type)
                 dual_scalp_exit = False
                 dual_explosive_exit = False
             acs_profile = self._scalp_acs_profile(
                 session_adj, trade=trade, execution_plan=trade_plan,
             ) if (
-                scalp_exits and self.settings.paper_acs_scalp_enabled and not simple_mode
+                scalp_exits and self.settings.paper_acs_scalp_enabled and not simple_mode and not swing_mode
             ) else {}
             stop_points, max_hold_seconds, psych_exit_reason = self._psychology_exit_adjustments(
                 stop_points,
@@ -3518,6 +3597,12 @@ class AutoTraderEngine:
                 target_points = session_target_points(str(session_adj.get("sessionBucket") or "NORMAL"), self.settings)
                 max_hold_seconds = int(self.settings.paper_simple_max_hold_seconds)
                 breakeven_shift = 999.0
+            elif swing_mode:
+                sp = swing_profile(str(session_adj.get("sessionBucket") or "NORMAL"), self.settings)
+                stop_points = float(sp["stopPoints"])
+                target_points = float(sp["targetPoints"])
+                max_hold_seconds = int(sp["maxHoldSeconds"])
+                breakeven_shift = float(sp["trailArmPoints"]) * 0.5
             elif (dual_scalp_exit or (self.settings.paper_dual_strategy_enabled and scalp_exits and not is_runner)) and not simple_mode:
                 sp = scalp_profile(str(session_adj.get("sessionBucket") or "NORMAL"))
                 stop_points = sp["stopPoints"]
@@ -3529,7 +3614,7 @@ class AutoTraderEngine:
                 max_hold_seconds = max(max_hold_seconds, int(ep["maxHoldSeconds"]))
                 target_points = max(target_points, ep["targetPoints"])
             mastermind_plan = None
-            use_mastermind = self.settings.paper_trade_mastermind_enabled and not simple_mode and (
+            use_mastermind = self.settings.paper_trade_mastermind_enabled and not simple_mode and not swing_mode and (
                 (unified_exit and trade_plan in {EXEC_MASTERMIND, EXEC_DUAL_EXPLOSIVE})
                 or (not unified_exit and scalp_exits)
             )
@@ -3546,7 +3631,10 @@ class AutoTraderEngine:
                     stop_points = mastermind_plan.stop_points
                     target_points = mastermind_plan.target_points
                     max_hold_seconds = max(max_hold_seconds, int(mastermind_plan.max_hold_seconds))
-            if self.settings.paper_scalp_partial_exit_enabled and scalp_exits and not simple_mode:
+            if swing_mode and self.settings.paper_scalp_partial_exit_enabled:
+                lot_size = max(1, int((candidate or {}).get("lotSize") or 1))
+                self._maybe_take_swing_partial(trade, current, lot_size=lot_size, session_adj=session_adj)
+            if self.settings.paper_scalp_partial_exit_enabled and scalp_exits and not simple_mode and not swing_mode:
                 lot_size = max(1, int((candidate or {}).get("lotSize") or 1))
                 self._maybe_take_scalp_micro_partial(trade, current, lot_size=lot_size, session_adj=session_adj)
                 self._maybe_take_scalp_partial(trade, current, lot_size=lot_size, session_adj=session_adj)
@@ -3568,7 +3656,17 @@ class AutoTraderEngine:
             trail_pts = float(trade.trail_points or (target_points * 0.18 if is_runner and not scalp_lock else scalp_trail))
             trail_arm_at = max(2.0, min(partial_exit_at, target_points * 0.2)) if scalp_lock else max(partial_exit_at, target_points * 0.25)
             in_profitable_trail = trade.best_price >= trade.entry_price + trail_arm_at
-            if simple_mode:
+            if swing_mode:
+                reason = swing_profit_exit(
+                    entry=float(trade.entry_price),
+                    current=current,
+                    best=float(trade.best_price or trade.entry_price),
+                    age=age,
+                    session_bucket=str(session_adj.get("sessionBucket") or "NORMAL"),
+                    settings=self.settings,
+                    partial_taken=bool(trade.partial_exit_taken),
+                )
+            elif simple_mode:
                 reason = simple_profit_exit(
                     entry=float(trade.entry_price),
                     current=current,
@@ -3616,18 +3714,18 @@ class AutoTraderEngine:
             ):
                 if not mastermind_plan or mastermind_plan.phase not in {"RUNNER", "GRIND"}:
                     reason = "AI adaptive scalp time lock"
-            elif not simple_mode and not reason and trade.breakeven_armed and current <= trade.entry_price + 1.5 and (not is_runner or age >= runner_min_hold):
+            elif not simple_mode and not reason and trade.breakeven_armed and best_gain >= 2.0 and current <= trade.entry_price + 1.5 and (not is_runner or age >= runner_min_hold):
                 if not mastermind_plan or mastermind_plan.phase not in {"RUNNER", "GRIND"}:
                     reason = "breakeven protection after profit move"
             elif not simple_mode and not reason and current <= trade.entry_price - stop_points:
-                scalp_min_hold = float(scalp_profile(str(session_adj.get("sessionBucket") or "NORMAL")).get("minHoldSeconds") or 0)
-                if (
-                    self.settings.paper_dual_strategy_enabled
-                    and scalp_exits
-                    and not is_runner
-                    and age < scalp_min_hold
-                    and unrealized > -stop_points * 1.25
-                ):
+                scalp_min_hold = float(
+                    scalp_profile(str(session_adj.get("sessionBucket") or "NORMAL")).get("minHoldSeconds")
+                    or self.settings.paper_scalp_min_hold_before_stop_seconds
+                )
+                if swing_mode:
+                    scalp_min_hold = max(scalp_min_hold, float(swing_profile(str(session_adj.get("sessionBucket") or "NORMAL"), self.settings)["minHoldSeconds"]))
+                # Let trade breathe — don't stop out on first tick noise (was causing immediate losses)
+                if scalp_exits and age < scalp_min_hold and unrealized > -stop_points * 1.5:
                     pass
                 elif not mastermind_plan or age >= float(mastermind_plan.min_hold_seconds):
                     reason = "stop loss hit" if scalp_exits else (psych_exit_reason or "stop loss hit")
@@ -3747,8 +3845,14 @@ class AutoTraderEngine:
     def _is_explosive_strategy(self, strategy_type: str | None) -> bool:
         return str(strategy_type or "").upper() == "EXPLOSIVE_RUNNER"
 
+    def _is_swing_strategy(self, strategy_type: str | None) -> bool:
+        return str(strategy_type or "").upper() == "SWING"
+
     def _capital_pool_for(self, strategy_type: str | None) -> str:
-        return "explosive" if self._is_explosive_strategy(strategy_type) else "scalping"
+        st = str(strategy_type or "").upper()
+        if st in {"EXPLOSIVE_RUNNER", "SWING"}:
+            return "explosive"
+        return "scalping"
 
     def _pool_capital(self, pool: str, trading_capital: float | None = None) -> float:
         if not self.settings.paper_dual_capital_enabled:
@@ -3872,6 +3976,36 @@ class AutoTraderEngine:
                 mastermind_plan=mastermind_plan,
             )
         return self._legacy_quick_profit_exit_reason(trade, current, age)
+
+    def _maybe_take_swing_partial(self, trade: PaperTrade, current: float, *, lot_size: int = 1, session_adj: dict[str, Any] | None = None) -> bool:
+        if not self.settings.paper_scalp_partial_exit_enabled or trade.partial_exit_taken:
+            return False
+        sp = swing_profile(str((session_adj or {}).get("sessionBucket") or "NORMAL"), self.settings)
+        entry = float(trade.entry_price)
+        trigger = float(sp["partialPoints"])
+        if current < entry + trigger:
+            return False
+        pct = float(sp["partialPct"])
+        lot_size = max(1, lot_size)
+        partial_qty = max(lot_size, int(round(trade.quantity * pct / lot_size) * lot_size))
+        if partial_qty >= trade.quantity:
+            return False
+        per_unit_cost = (float(trade.spread_cost) + float(trade.slippage_estimate)) / max(trade.quantity, 1)
+        partial_charges = self._charges_estimate(entry, current, partial_qty)
+        partial_pnl = ((current - entry - per_unit_cost) * partial_qty) - partial_charges
+        trade.partial_realized_pnl += partial_pnl
+        trade.quantity -= partial_qty
+        trade.partial_exit_taken = True
+        trade.breakeven_armed = True
+        trade.lifecycle.append(
+            LifecycleEvent(
+                "PARTIAL_FILL",
+                datetime.now(timezone.utc).isoformat(),
+                f"Swing partial exit at +{trigger:.1f}pt on {partial_qty} units",
+                {"partialQty": partial_qty, "partialPnl": round(partial_pnl, 2), "remainingQty": trade.quantity, "price": current, "swing": True},
+            )
+        )
+        return True
 
     def _maybe_take_scalp_micro_partial(self, trade: PaperTrade, current: float, *, lot_size: int = 1, session_adj: dict[str, Any] | None = None) -> bool:
         """Early partial — book profit before market fades in chop."""
@@ -4024,6 +4158,9 @@ class AutoTraderEngine:
                 runner_score=float(runner.get("score") or 0),
                 regime=str(trade.entry_regime or self._latest_process_payload.get("regime") or "NORMAL"),
                 enabled=True,
+                min_unrealized_points=float(self.settings.paper_scalp_ml_exit_min_unrealized_points),
+                min_best_gain_points=float(self.settings.paper_scalp_ml_exit_min_best_gain_points),
+                score_threshold=float(self.settings.paper_scalp_ml_exit_score_threshold),
             )
             if should_exit and ml_reason:
                 return ml_reason

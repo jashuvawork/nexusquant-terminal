@@ -342,11 +342,14 @@ def ml_exit_recommendation(
     runner_score: float,
     regime: str,
     enabled: bool,
+    min_unrealized_points: float = 4.0,
+    min_best_gain_points: float = 3.0,
+    score_threshold: float = 75.0,
 ) -> tuple[bool, str | None]:
-    """Return (should_exit, reason). Conservative heuristic using learner priors until enough samples."""
+    """Return (should_exit, reason). Only book when profit is meaningful — avoid +2pt scratches."""
     if not enabled:
         return False, None
-    if best_gain < 1.0:
+    if best_gain < min_best_gain_points or unrealized < min_unrealized_points:
         return False, None
     prior = (learner_state.get("prior") or {}).get("regimePriors") or {}
     regime_prior = prior.get(normalize_regime(regime)) or prior.get(REGIME_RANGE) or {}
@@ -368,7 +371,7 @@ def ml_exit_recommendation(
         exit_score += 10
     exit_score *= max(0.6, min(1.4, 2.0 - trail_bias))
     exit_score += max(0, (50 - learning_score) * 0.2)
-    if exit_score >= 65 and unrealized >= 2.0:
+    if exit_score >= score_threshold and unrealized >= min_unrealized_points:
         return True, "ML exit overlay: momentum/score decay with profit on table"
     return False, None
 
