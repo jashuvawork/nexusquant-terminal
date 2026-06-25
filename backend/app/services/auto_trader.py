@@ -3711,18 +3711,18 @@ class AutoTraderEngine:
             ):
                 if not mastermind_plan or mastermind_plan.phase not in {"RUNNER", "GRIND"}:
                     reason = "AI adaptive scalp time lock"
-            elif not simple_mode and not reason and trade.breakeven_armed and current <= trade.entry_price + 1.5 and (not is_runner or age >= runner_min_hold):
+            elif not simple_mode and not reason and trade.breakeven_armed and best_gain >= 2.0 and current <= trade.entry_price + 1.5 and (not is_runner or age >= runner_min_hold):
                 if not mastermind_plan or mastermind_plan.phase not in {"RUNNER", "GRIND"}:
                     reason = "breakeven protection after profit move"
             elif not simple_mode and not reason and current <= trade.entry_price - stop_points:
-                scalp_min_hold = float(scalp_profile(str(session_adj.get("sessionBucket") or "NORMAL")).get("minHoldSeconds") or 0)
-                if (
-                    self.settings.paper_dual_strategy_enabled
-                    and scalp_exits
-                    and not is_runner
-                    and age < scalp_min_hold
-                    and unrealized > -stop_points * 1.25
-                ):
+                scalp_min_hold = float(
+                    scalp_profile(str(session_adj.get("sessionBucket") or "NORMAL")).get("minHoldSeconds")
+                    or self.settings.paper_scalp_min_hold_before_stop_seconds
+                )
+                if swing_mode:
+                    scalp_min_hold = max(scalp_min_hold, float(swing_profile(str(session_adj.get("sessionBucket") or "NORMAL"), self.settings)["minHoldSeconds"]))
+                # Let trade breathe — don't stop out on first tick noise (was causing immediate losses)
+                if scalp_exits and age < scalp_min_hold and unrealized > -stop_points * 1.5:
                     pass
                 elif not mastermind_plan or age >= float(mastermind_plan.min_hold_seconds):
                     reason = "stop loss hit" if scalp_exits else (psych_exit_reason or "stop loss hit")

@@ -141,8 +141,9 @@ class Settings(BaseSettings):
     paper_scalp_time_lock_min_gain: float = 2.5
     paper_adaptive_momentum_fade_velocity_pct: float = 1.2
     paper_acs_scalp_enabled: bool = True
-    paper_scalp_controlled_stop_points: float = 3.0
-    paper_scalp_breakeven_shift_points: float = 2.5
+    paper_scalp_controlled_stop_points: float = 4.0
+    paper_scalp_breakeven_shift_points: float = 3.0
+    paper_scalp_min_hold_before_stop_seconds: float = 45.0
     paper_scalp_runner_arm_points: float = 3.5
     paper_scalp_runner_min_lock_points: float = 2.0
     paper_scalp_runner_retain_pct: float = 0.65
@@ -292,8 +293,8 @@ class Settings(BaseSettings):
     paper_simple_min_velocity_pct: float = 2.0
     paper_simple_min_runner_score: float = 72.0
     paper_simple_target_points: float = 6.0
-    paper_simple_stop_points: float = 3.0
-    paper_simple_min_hold_seconds: float = 30.0
+    paper_simple_stop_points: float = 4.5
+    paper_simple_min_hold_seconds: float = 45.0
     paper_simple_max_hold_seconds: float = 180.0
     paper_simple_trail_arm_points: float = 3.0
     paper_simple_trail_retain_pct: float = 0.55
