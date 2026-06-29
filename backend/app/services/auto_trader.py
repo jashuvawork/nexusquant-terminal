@@ -66,6 +66,7 @@ from app.services.trade_mastermind import (
 from app.services.ai_learning import ContinuousAILearner
 from app.services.daily_profit_strategy import build_daily_improvement_plan
 from app.services.paper_session_manager import PaperSessionManager
+from app.services.progressive_profit_lock import progressive_profit_lock_status
 from app.services.risk_profiles import paper_session_adjustments
 from app.services.session import IST, MarketPhase
 from app.services.trading_control import TradingControl
@@ -248,6 +249,7 @@ class AutoTraderEngine:
     _shared_last_learning_update: str | None = None
     _shared_recent_signal_times: dict[str, float] = {}
     _shared_missed_runners: deque[dict[str, Any]] = deque(maxlen=500)  # near-miss runner log
+    _shared_session_peak_net_pnl: float = 0.0
 
     def __init__(self, settings: Settings, trading_control: TradingControl, learner: ContinuousAILearner | None = None) -> None:
         self.settings = settings
@@ -308,6 +310,7 @@ class AutoTraderEngine:
             exits.extend(target_lock["lockedTrades"])
         rotation_event = self._maybe_rotate_paper_session(snapshots, session_adj, trading_capital)
         risk_halt = self._paper_risk_halt(trading_capital, session_adj)
+        profit_lock = self.profit_lock_status(trading_capital, session_adj, snapshots=snapshots)
         pre_trade_psychology = self._psychology_report([], [], risk_halt, session_adj)
 
         signal_events = []
@@ -398,6 +401,9 @@ class AutoTraderEngine:
             if risk_halt["blocked"]:
                 skipped.append({"candidate": candidate.get("id"), "reason": risk_halt["reason"], "quality": quality})
                 continue
+            if profit_lock.get("blockNewTrades"):
+                skipped.append({"candidate": candidate.get("id"), "reason": profit_lock.get("message") or "progressive profit floor active", "quality": quality})
+                continue
             runner_sig = (candidate.get("runnerSignal") or {})
             entry_bypass = self._runner_entry_bypass(candidate, runner_sig)
             loss_guard = self._intraday_loss_guard(risk_halt)
@@ -442,7 +448,7 @@ class AutoTraderEngine:
                     signal_events.append(opened.lifecycle[-1])
         online_learning = await self.learner.update_from_tick(payload, exits, "live" if self.settings.enable_live_trading and not self.settings.paper_trading else "paper")
         self._learn_every_tick(payload, exits)
-        profit_lock = self.profit_lock_status(capital.get("tradingCapital", 0), session_adj)
+        profit_lock = self.profit_lock_status(capital.get("tradingCapital", 0), session_adj, snapshots=snapshots)
         psychology = self._psychology_report(candidates, skipped, risk_halt, session_adj)
         return {
             "paperTrading": self.settings.paper_trading,
@@ -565,6 +571,7 @@ class AutoTraderEngine:
         self.lifecycle_events.clear()
         AutoTraderEngine._shared_recent_signal_times.clear()
         AutoTraderEngine._shared_missed_runners.clear()
+        AutoTraderEngine._shared_session_peak_net_pnl = 0.0
         self._daily_plan_cache = None
         self._daily_plan_day = None
         self._persist_paper_trades_file()
@@ -943,7 +950,13 @@ class AutoTraderEngine:
                     break
         return prices
 
-    def profit_lock_status(self, capital: float | None = None, session_adj: dict[str, Any] | None = None) -> dict[str, Any]:
+    def profit_lock_status(
+        self,
+        capital: float | None = None,
+        session_adj: dict[str, Any] | None = None,
+        *,
+        snapshots: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         session_adj = session_adj or {}
         capital = float(capital or self.settings.trading_capital_default or 0)
         rotation_enabled = bool(self.settings.paper_session_rotation_enabled)
@@ -957,6 +970,29 @@ class AutoTraderEngine:
             net = float(report.get("grossProfit", 0)) - float(report.get("grossLoss", 0))
             session_id = report.get("sessionId")
             session_number = report.get("sessionNumber")
+
+        if snapshots:
+            day_net = float(self._day_aggregate_from_trades().get("netPnl") or net)
+            open_marked, _ = self._open_marked_pnl(snapshots)
+            projected = day_net + open_marked
+            AutoTraderEngine._shared_session_peak_net_pnl = max(
+                AutoTraderEngine._shared_session_peak_net_pnl,
+                projected,
+                day_net,
+                net,
+            )
+            net = day_net
+
+        if bool(getattr(self.settings, "paper_progressive_profit_lock_enabled", True)):
+            return progressive_profit_lock_status(
+                capital=capital,
+                net_pnl=net,
+                peak_net_pnl=AutoTraderEngine._shared_session_peak_net_pnl,
+                settings=self.settings,
+                session_id=str(session_id) if session_id else None,
+                session_number=int(session_number) if session_number is not None else None,
+            )
+
         tiers = [
             {
                 "name": "fallback",
@@ -982,7 +1018,12 @@ class AutoTraderEngine:
         block_new = bool(active and net <= locked_profit)
         daily_target = self._daily_profit_target()
         daily_target_amount = float(daily_target.get("targetAmount") or self.settings.paper_daily_profit_target_amount or 0)
-        daily_target_locked = bool(self.settings.paper_daily_target_lock_enabled and daily_target_amount > 0 and net >= daily_target_amount)
+        daily_target_locked = bool(
+            self.settings.paper_daily_target_lock_enabled
+            and daily_target_amount > 0
+            and net >= daily_target_amount
+            and not getattr(self.settings, "paper_progressive_profit_lock_enabled", True)
+        )
         if daily_target_locked:
             active = {"name": "daily_target", "pct": round(daily_target_amount / capital * 100, 2) if capital else 0, "amount": round(daily_target_amount, 2)}
             locked_profit = max(locked_profit, daily_target_amount)
@@ -1464,6 +1505,8 @@ class AutoTraderEngine:
 
     def _maybe_lock_daily_profit_target(self, snapshots: dict[str, Any]) -> dict[str, Any]:
         status = self._target_lock_status(snapshots)
+        if bool(getattr(self.settings, "paper_progressive_profit_lock_enabled", True)):
+            return {**status, "lockedTrades": [], "progressiveLockActive": True}
         if not status.get("enabled") or not status.get("projectedLocked") or not self.open_paper:
             return {**status, "lockedTrades": []}
         price_by_id, price_by_instrument = self._price_maps_from_snapshots(snapshots)
@@ -4308,7 +4351,11 @@ class AutoTraderEngine:
             reasons.append(f"{consecutive_losses} consecutive paper losses")
         daily_target = self._daily_profit_target()
         daily_profit_target_amount = float(daily_target.get("targetAmount") or self.settings.paper_daily_profit_target_amount or 0)
-        if daily_profit_target_amount > 0 and day_net >= daily_profit_target_amount:
+        if (
+            not bool(getattr(self.settings, "paper_progressive_profit_lock_enabled", True))
+            and daily_profit_target_amount > 0
+            and day_net >= daily_profit_target_amount
+        ):
             reasons.append(f"paper daily profit target INR {daily_profit_target_amount:,.0f} reached")
         profit_target_pct = float(session_adj.get("sessionProfitStopPct") or self.settings.paper_daily_profit_stop_pct)
         session_profit_pct = float(session_report.get("profitPct") or 0)

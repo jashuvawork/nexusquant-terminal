@@ -100,6 +100,11 @@ class Settings(BaseSettings):
     profit_target_fallback_pct: float = 6.0
     profit_target_secondary_pct: float = 12.0
     profit_target_primary_pct: float = 18.0
+    paper_progressive_profit_lock_enabled: bool = True
+    paper_profit_lock_minimum_inr: float = 25000.0
+    paper_profit_lock_minimum_retain_pct: float = 100.0
+    paper_profit_lock_tier_pcts: str = "22,55,78,112"
+    paper_profit_lock_tier_retain_pcts: str = "50,75,100,100"
     open_drive_profit_target_fallback_pct: float = 11.0
     open_drive_profit_target_secondary_pct: float = 22.0
     open_drive_profit_target_primary_pct: float = 33.0
@@ -235,7 +240,7 @@ class Settings(BaseSettings):
     paper_trades_persist_limit: int = 2000
     paper_session_rotation_enabled: bool = False
     paper_single_daily_session: bool = True
-    paper_daily_target_lock_enabled: bool = True
+    paper_daily_target_lock_enabled: bool = False
     paper_trading: bool = True
     paper_session_adjustments_enabled: bool = True
     paper_unified_scalp_session_profile: bool = True
