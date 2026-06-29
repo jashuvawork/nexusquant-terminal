@@ -34,7 +34,13 @@ def passes_reference_entry(candidate: dict[str, Any], session_bucket: str, setti
     if premium <= 0:
         return False, "reference gate: missing premium"
     if vel < min_vel and not runner.get("momentumOverride"):
-        return False, f"reference gate: velocity {vel:.1f}% < {min_vel}%"
+        aligned_grind = (
+            runner.get("momentumAligned")
+            and score >= min_score
+            and vel >= max(0.5, min_vel * 0.5)
+        )
+        if not aligned_grind:
+            return False, f"reference gate: velocity {vel:.1f}% < {min_vel}%"
     if score < min_score and not runner.get("momentumOverride"):
         return False, f"reference gate: score {score:.0f} < {min_score}"
     if vel < min_vel and not (
@@ -137,6 +143,7 @@ def simple_profit_exit(
         runner_extend_gain = 999.0
 
     effective_max_hold = runner_max_hold if ref and best_gain >= runner_extend_gain else max_hold
+    runner_mode = ref and best_gain >= runner_extend_gain
 
     if loss_inr >= emergency_inr:
         return "stop loss" if ref else "simple emergency INR stop"
@@ -146,6 +153,29 @@ def simple_profit_exit(
 
     if ref and age >= no_progress_age and best_gain < 0.5 and unrealized <= 0:
         return "no progress"
+
+    if runner_mode:
+        # Explosive PE/CALL runner — wide trailing SL, no early +3pt micro scratch (23950 PE 45→108 style).
+        if best_gain >= 40.0:
+            dynamic_retain = 0.75
+            dynamic_trail = 4.0
+        elif best_gain >= 20.0:
+            dynamic_retain = 0.65
+            dynamic_trail = 3.0
+        else:
+            dynamic_retain = max(trail_retain, 0.55)
+            dynamic_trail = max(micro_trail, 2.5)
+        scaled_runner_target = max(runner_target, min(60.0, best_gain * 0.85))
+        if unrealized <= -stop:
+            return "stop loss"
+        floor_price = entry + max(2.0, best_gain * dynamic_retain)
+        if current <= floor_price or current <= best - dynamic_trail:
+            return "trail lock"
+        if unrealized >= scaled_runner_target and best_gain >= 50.0:
+            return "profit target hit"
+        if age >= effective_max_hold:
+            return "time profit" if unrealized > 0 else "time stop"
+        return None
 
     if ref and unrealized >= runner_target:
         return "profit target hit"

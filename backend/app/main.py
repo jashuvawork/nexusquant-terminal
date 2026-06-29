@@ -361,6 +361,7 @@ async def daily_market_open_reset() -> None:
             # Reset at 09:15 IST (market open) if not already done today
             if (now_ist.hour == 9 and now_ist.minute >= 15 and last_reset_date != today):
                 auto_trader.reset(preserve_history=True)
+                AutoTraderEngine._shared_session_peak_net_pnl = 0.0
                 last_reset_date = today
                 log.info(f"[daily_reset] Auto-reset at market open — {today} 09:15 IST. History preserved.")
         except Exception as exc:
