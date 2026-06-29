@@ -4,6 +4,7 @@ import asyncio
 import os
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, time
+from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -210,17 +211,33 @@ async def emit_journal_events(payload: dict) -> list[dict]:
             emitted.append(event)
     return emitted
 
+async def _load_symbol_snapshot(symbol: str) -> tuple[str, dict[str, Any] | None, str | None]:
+    last_error: str | None = None
+    for attempt in range(2):
+        try:
+            return symbol, await market_engine.snapshot(symbol), None
+        except Exception as exc:
+            last_error = str(exc)
+            if attempt == 0 and ("429" in last_error or "Too Many Request" in last_error):
+                await asyncio.sleep(1.5)
+                continue
+    stale = market_engine.stale_snapshot(symbol)
+    if stale:
+        return symbol, stale, None
+    return symbol, None, last_error or "snapshot failed"
+
+
 async def build_multi_symbol_snapshot(*, include_auto_trader: bool | None = None) -> dict:
     symbols = settings.trading_symbol_list
-    results = await asyncio.gather(*(market_engine.snapshot(symbol) for symbol in symbols), return_exceptions=True)
+    loaded = await asyncio.gather(*(_load_symbol_snapshot(symbol) for symbol in symbols))
     snapshots: dict[str, dict] = {}
     errors: dict[str, str] = {}
-    for symbol, result in zip(symbols, results, strict=True):
-        if isinstance(result, Exception):
-            errors[symbol] = str(result)
-        else:
-            snapshots[symbol] = result
-            await storage.persist_snapshot(result)
+    for symbol, snapshot, error in loaded:
+        if snapshot is not None:
+            snapshots[symbol] = snapshot
+            await storage.persist_snapshot(snapshot)
+        elif error:
+            errors[symbol] = error
 
     if not snapshots:
         message = "; ".join(f"{symbol}: {error}" for symbol, error in errors.items()) or "No Upstox market snapshots available."
