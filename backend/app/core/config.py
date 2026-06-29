@@ -310,8 +310,8 @@ class Settings(BaseSettings):
     paper_simple_emergency_loss_inr: float = 18000.0
     paper_reference_ledger_mode: bool = True
     paper_reference_fixed_lots: int = 100
-    paper_reference_min_velocity_pct: float = 1.0
-    paper_reference_min_runner_score: float = 50.0
+    paper_reference_min_velocity_pct: float = 0.75
+    paper_reference_min_runner_score: float = 45.0
     paper_reference_min_hold_seconds: float = 15.0
     paper_reference_max_hold_seconds: float = 480.0
     paper_reference_runner_max_hold_seconds: float = 10000.0
@@ -323,10 +323,14 @@ class Settings(BaseSettings):
     paper_reference_micro_trail_points: float = 1.5
     paper_reference_trail_arm_points: float = 2.0
     paper_reference_trail_retain_pct: float = 0.50
-    paper_reference_no_progress_seconds: float = 75.0
+    paper_reference_no_progress_seconds: float = 55.0
     paper_reference_emergency_loss_inr: float = 22000.0
-    paper_reference_runner_emit_limit: int = 3
+    paper_reference_runner_emit_limit: int = 5
     paper_reference_max_loss_inr: float = 30000.0
+    paper_reference_max_open_trades: int = 2
+    paper_reference_duplicate_cooldown_seconds: int = 20
+    paper_reference_same_side_entry_cooldown_seconds: int = 120
+    paper_reference_same_side_loss_cooldown_seconds: int = 300
     paper_unified_strategy_router: bool = True
     paper_swing_trading_enabled: bool = False
     paper_swing_min_runner_score: float = 78.0

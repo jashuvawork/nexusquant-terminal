@@ -37,11 +37,10 @@ def passes_reference_entry(candidate: dict[str, Any], session_bucket: str, setti
         return False, f"reference gate: velocity {vel:.1f}% < {min_vel}%"
     if score < min_score and not runner.get("momentumOverride"):
         return False, f"reference gate: score {score:.0f} < {min_score}"
-    if not (
+    if vel < min_vel and not (
         runner.get("momentumSurge")
         or runner.get("momentumAligned")
         or runner.get("momentumOverride")
-        or vel >= min_vel * 1.5
     ):
         return False, "reference gate: no momentum on tape"
     return True, ""
