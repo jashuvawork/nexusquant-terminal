@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import os
 from contextlib import asynccontextmanager, suppress
+from copy import deepcopy
 from datetime import datetime, time
+from time import monotonic
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -53,6 +55,70 @@ ACTIVE_WS = Gauge("nexusquant_active_websocket_clients", "Active WebSocket termi
 LATEST_TQS = Gauge("nexusquant_latest_trade_quality_score", "Latest Trade Quality Score")
 MARKET_SNAPSHOT_CACHE: dict = {"available": False, "reason": "not_refreshed_yet"}
 _market_snapshot_tick = 0.0
+_poll_snapshot_cache: dict[str, Any] | None = None
+_poll_snapshot_cached_at = 0.0
+_poll_snapshot_lock = asyncio.Lock()
+_poll_snapshot_refreshing = False
+
+
+async def warm_poll_snapshot_cache() -> None:
+    """Pre-build first HTTP poll payload so Vercel/browser does not wait on a cold start."""
+    import logging
+
+    log = logging.getLogger("nexusquant.poll_cache")
+    try:
+        await refresh_market_snapshot_cache()
+        await build_poll_snapshot(force_refresh=True)
+        log.info("[poll_cache] warm snapshot ready")
+    except Exception as exc:
+        log.warning("[poll_cache] warm snapshot skipped: %s", exc)
+
+
+async def build_poll_snapshot(*, force_refresh: bool = False) -> dict:
+    """HTTP poll path with stale-while-refresh so slow Upstox builds do not blank the UI."""
+    global _poll_snapshot_cache, _poll_snapshot_cached_at, _poll_snapshot_refreshing
+
+    now = monotonic()
+    max_stale_age = max(30.0, float(settings.market_poll_seconds or 3) * 10)
+    if not force_refresh and _poll_snapshot_cache is not None and now - _poll_snapshot_cached_at <= max_stale_age:
+        payload = deepcopy(_poll_snapshot_cache)
+        payload["pollCache"] = {
+            "source": "http_poll_cache",
+            "ageSeconds": round(now - _poll_snapshot_cached_at, 2),
+            "refreshing": _poll_snapshot_refreshing,
+        }
+        return payload
+
+    if _poll_snapshot_refreshing and _poll_snapshot_cache is not None:
+        payload = deepcopy(_poll_snapshot_cache)
+        payload["pollCache"] = {
+            "source": "stale_while_refresh",
+            "ageSeconds": round(now - _poll_snapshot_cached_at, 2),
+            "refreshing": True,
+        }
+        return payload
+
+    async with _poll_snapshot_lock:
+        now = monotonic()
+        if not force_refresh and _poll_snapshot_cache is not None and now - _poll_snapshot_cached_at <= max_stale_age:
+            payload = deepcopy(_poll_snapshot_cache)
+            payload["pollCache"] = {
+                "source": "http_poll_cache",
+                "ageSeconds": round(now - _poll_snapshot_cached_at, 2),
+                "refreshing": _poll_snapshot_refreshing,
+            }
+            return payload
+
+        _poll_snapshot_refreshing = True
+        try:
+            payload = await build_multi_symbol_snapshot()
+            _poll_snapshot_cache = payload
+            _poll_snapshot_cached_at = monotonic()
+            payload = deepcopy(payload)
+            payload["pollCache"] = {"source": "fresh", "ageSeconds": 0.0, "refreshing": False}
+            return payload
+        finally:
+            _poll_snapshot_refreshing = False
 
 
 @asynccontextmanager
@@ -60,9 +126,14 @@ async def lifespan(app: FastAPI):
     await storage.connect()
     await event_journal.connect()
     await auth_service.warm_token_cache()
+    await refresh_market_snapshot_cache()
+    warm_poll_task = asyncio.create_task(warm_poll_snapshot_cache())
     monitor_task = asyncio.create_task(background_market_monitor()) if settings.background_market_monitor_enabled else None
     daily_reset_task = asyncio.create_task(daily_market_open_reset())
     yield
+    warm_poll_task.cancel()
+    with suppress(BaseException):
+        await warm_poll_task
     daily_reset_task.cancel()
     with suppress(BaseException):
         await daily_reset_task
