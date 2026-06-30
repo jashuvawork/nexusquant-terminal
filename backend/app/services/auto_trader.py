@@ -1146,7 +1146,7 @@ class AutoTraderEngine:
         all_closed = list(self.closed_paper)
         trades = all_closed[-limit:]
         summary = self._summarize_trades(trades)
-        # Total all-time count (for 100-trade gate progress across resets)
+        # Total all-time count (for live-readiness gate progress across resets)
         all_time_total = len(all_closed)
         capital = float(self.settings.trading_capital_default or 0)
         max_drawdown_pct = (float(summary.get("maxDrawdown") or 0) / capital * 100) if capital > 0 else 0.0

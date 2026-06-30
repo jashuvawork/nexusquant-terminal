@@ -1138,13 +1138,14 @@ async def auto_trader_reset_get(engine: AutoTraderEngine = Depends(get_auto_trad
 
 @router.post("/auto-trader/refresh-proof")
 async def auto_trader_refresh_proof(engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
-    """Clear paper trade history and start a fresh 100-trade live-readiness proof window."""
+    """Clear paper trade history and start a fresh live-readiness proof window."""
     result = engine.reset(preserve_history=False)
     rolling = engine.performance_analysis().get("rollingProof") or {}
+    window = rolling.get("windowTrades") or engine.settings.paper_live_readiness_min_trades
     return {
         **result,
         "rollingProof": rolling,
-        "message": f"Fresh {rolling.get('windowTrades', 100)}-trade proof window started.",
+        "message": f"Fresh {window}-trade proof window started.",
     }
 
 

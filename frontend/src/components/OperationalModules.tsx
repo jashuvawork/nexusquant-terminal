@@ -646,7 +646,7 @@ export function PaperTradingPanel({ snapshot }: { snapshot: TerminalSnapshot }) 
           </div>
           {performance.liveReadiness && (
             <div className="mt-4 rounded-2xl border border-slate-700 bg-slate-950/60 p-4 text-xs text-slate-300">
-              <p className="font-bold uppercase tracking-[0.18em] text-cyan-200">100-trade proof gate</p>
+              <p className="font-bold uppercase tracking-[0.18em] text-cyan-200">{performance.rollingProof?.windowTrades ?? 20}-trade proof gate</p>
               <p className="mt-2">{performance.liveReadiness.message}</p>
               <div className="mt-3 grid gap-2 md:grid-cols-2">
                 {performance.liveReadiness.checks.map((check) => (
@@ -985,6 +985,7 @@ export function LiveReadinessGate({ snapshot }: { snapshot: TerminalSnapshot }) 
   const perf = auto?.performanceAnalysis;
   const lr = perf?.liveReadiness;
   const rp = perf?.rollingProof;
+  const windowTrades = rp?.windowTrades ?? 20;
   const current = rp?.paperTrades ?? 0;
   const pf = rp?.profitFactor ?? 0;
   const winRate = rp?.winRate ?? 0;
@@ -994,7 +995,7 @@ export function LiveReadinessGate({ snapshot }: { snapshot: TerminalSnapshot }) 
   const isReady = lr?.ready ?? false;
 
   const checks = [
-    { name: '100 clean trades', value: current, required: 100, passed: current >= 100, pct: Math.min(100, (current / 100) * 100) },
+    { name: `${windowTrades} clean trades`, value: current, required: windowTrades, passed: current >= windowTrades, pct: Math.min(100, (current / windowTrades) * 100) },
     { name: 'Profit factor ≥ 2.0', value: pf.toFixed(3), required: '≥ 2.0', passed: pf >= 2.0, pct: Math.min(100, (pf / 2.0) * 100) },
     { name: 'Win rate ≥ 50%', value: `${winRate.toFixed(1)}%`, required: '≥ 50%', passed: winRate >= 50, pct: Math.min(100, (winRate / 50) * 100) },
     { name: 'Max drawdown ≤ 5%', value: `${dd.toFixed(2)}%`, required: '≤ 5%', passed: dd <= 5 && dd > 0 || dd === 0, pct: dd === 0 ? 100 : Math.min(100, ((5 - Math.min(dd, 5)) / 5) * 100) },
@@ -1008,7 +1009,7 @@ export function LiveReadinessGate({ snapshot }: { snapshot: TerminalSnapshot }) 
     >
       <div className={`mb-4 rounded-2xl border p-4 text-center ${isReady ? 'border-emerald-300/30 bg-emerald-300/10' : 'border-rose-300/20 bg-rose-300/8'}`}>
         <p className={`text-2xl font-black ${isReady ? 'text-emerald-300' : 'text-rose-300'}`}>{isReady ? 'LIVE READY' : 'PAPER ONLY'}</p>
-        <p className="mt-1 text-xs text-slate-400">{lr?.message ?? 'Complete 100 clean paper trades with PF ≥ 2.0 to unlock live trading'}</p>
+        <p className="mt-1 text-xs text-slate-400">{lr?.message ?? `Complete ${windowTrades} clean paper trades with PF ≥ 2.0 to unlock live trading`}</p>
       </div>
       <div className="space-y-3">
         {checks.map((c) => (
@@ -1028,7 +1029,7 @@ export function LiveReadinessGate({ snapshot }: { snapshot: TerminalSnapshot }) 
         ))}
       </div>
       <div className="mt-4 rounded-2xl border border-slate-700 bg-slate-950/60 p-3 text-xs text-slate-400">
-        Rolling proof: <span className="font-mono text-cyan-200">{current}/{rp?.windowTrades ?? 100}</span> trades.
+        Rolling proof: <span className="font-mono text-cyan-200">{current}/{windowTrades}</span> trades.
         {' '}Expectancy: <span className={`font-mono ${(rp?.expectancy ?? 0) >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>{formatCurrency(rp?.expectancy ?? 0)}/trade</span>.
         {' '}When all gates pass → set <span className="font-mono text-amber-200">ENABLE_LIVE_TRADING=true</span>.
       </div>
@@ -1084,11 +1085,11 @@ export function MorningChecklistPanel() {
           <p className="mt-2 text-xs text-slate-500">NIFTY/BANKNIFTY: weekly Thursday · SENSEX: weekly Thursday. Update env file on rollover day.</p>
         </div>
         <div className="rounded-2xl border border-slate-700 bg-slate-950/60 p-4">
-          <p className="text-sm font-bold text-white mb-1">3. Refresh 100-trade proof</p>
-          <p className="text-xs text-slate-400 mb-3">Clears paper history and starts a fresh rolling 100-trade live-readiness window (PF ≥ 2.0).</p>
+          <p className="text-sm font-bold text-white mb-1">3. Refresh paper proof window</p>
+          <p className="text-xs text-slate-400 mb-3">Clears paper history and starts a fresh rolling live-readiness window (default 20 trades, PF ≥ 2.0).</p>
           <a href={`${apiUrl}/api/auto-trader/refresh-proof`} target="_blank" rel="noreferrer"
             className="inline-block rounded-lg border border-rose-300/30 bg-rose-300/10 px-3 py-1.5 text-xs font-bold text-rose-200 hover:bg-rose-300/20">
-            Refresh 100 trades →
+            Refresh proof window →
           </a>
         </div>
       </div>
