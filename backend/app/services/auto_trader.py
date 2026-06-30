@@ -578,6 +578,9 @@ class AutoTraderEngine:
         AutoTraderEngine._shared_learning_samples = 0
         AutoTraderEngine._shared_learning_score = 50.0
         AutoTraderEngine._shared_last_learning_update = None
+        if self.paper_sessions.current_id():
+            session_report = self._session_report()
+            self.paper_sessions.close_session(session_report, "DAILY_RESET")
         self.paper_sessions.start_session("daily_reset")
         return {"reset": True, "preservedHistory": preserve_history,
                 "allTimeTrades": len(self.closed_paper), "status": self.status()}
