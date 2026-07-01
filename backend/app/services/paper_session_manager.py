@@ -175,7 +175,7 @@ class PaperSessionManager:
         }
 
     def evaluate_rotation(self, session_report: dict[str, Any], session_adj: dict[str, Any] | None = None) -> dict[str, Any]:
-        if not self.settings.paper_session_rotation_enabled:
+        if self.settings.paper_single_daily_session or not self.settings.paper_session_rotation_enabled:
             return {"shouldRotate": False}
         session_adj = session_adj or {}
         consecutive = int(session_report.get("consecutiveLosses") or 0)
