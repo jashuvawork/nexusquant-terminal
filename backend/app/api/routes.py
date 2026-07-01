@@ -214,15 +214,15 @@ async def deployment_status(
 
 @router.get("/market/snapshots")
 async def market_snapshots() -> dict:
-    """Fast poll path: parallel symbol snapshots + cached market movers (no per-request full quote)."""
-    from app.main import build_multi_symbol_snapshot
+    """Fast poll path: cached/stale-while-refresh + parallel symbol snapshots."""
+    from app.main import build_poll_snapshot
 
     try:
-        return await build_multi_symbol_snapshot()
-    except UpstoxDataError as exc:
+        return await build_poll_snapshot()
+    except (UpstoxDataError, MarketConfigurationError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except MarketConfigurationError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Snapshot poll failed: {exc}") from exc
 
 
 @router.get("/market/news/{symbol}")
