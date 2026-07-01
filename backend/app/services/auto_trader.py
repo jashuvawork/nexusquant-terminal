@@ -329,11 +329,14 @@ class AutoTraderEngine:
                 or self._is_momentum_explosion(candidate, runner_sig)
                 or self._is_catchable_runner(candidate, runner_sig)
             )
-            if cached_snapshot and not is_runner_burst:
+            if cached_snapshot and not is_runner_burst and not self.settings.paper_reference_ledger_mode:
                 skipped.append({"candidate": signal_id, "reason": "cached snapshot; paper open skipped to avoid duplicate training sample"})
                 continue
             # Momentum override uses shorter cooldown (20s) to catch continuation moves
-            effective_cooldown = 20 if runner_sig.get("momentumOverride") else signal_cooldown_seconds
+            ref_cooldown = int(getattr(self.settings, "paper_reference_duplicate_cooldown_seconds", 20))
+            effective_cooldown = 20 if runner_sig.get("momentumOverride") else (
+                ref_cooldown if self.settings.paper_reference_ledger_mode else signal_cooldown_seconds
+            )
             if self._recent_signal_active(signal_id, effective_cooldown):
                 skipped.append({"candidate": signal_id, "reason": "duplicate signal cooldown active"})
                 continue
@@ -422,8 +425,8 @@ class AutoTraderEngine:
                 if pool_open >= pool_max:
                     skipped.append({"candidate": candidate.get("id"), "reason": f"{pool} pool full: {pool_open}/{pool_max} trades open"})
                     continue
-                if len(self.open_paper) >= int(self.settings.paper_max_open_trades):
-                    skipped.append({"candidate": candidate.get("id"), "reason": f"HARD CAP: {len(self.open_paper)}/{self.settings.paper_max_open_trades} trades already open"})
+                if len(self.open_paper) >= self._reference_max_open_trades():
+                    skipped.append({"candidate": candidate.get("id"), "reason": f"HARD CAP: {len(self.open_paper)}/{self._reference_max_open_trades()} trades already open"})
                     continue
                 pool_capital = self._pool_capital(pool, trading_capital)
                 opened = self._open_paper_trade(
@@ -1941,7 +1944,12 @@ class AutoTraderEngine:
                 "microArmPoints": float(self.settings.paper_reference_micro_arm_points),
                 "runnerTargetPoints": float(self.settings.paper_reference_runner_target_points),
                 "stopPoints": float(self.settings.paper_reference_stop_points),
-                "edge": "100-lot micro scalp — micro lock, trail lock, no-progress scratch",
+                "maxOpenTrades": int(getattr(self.settings, "paper_reference_max_open_trades", 2)),
+                "minVelocityPct": float(self.settings.paper_reference_min_velocity_pct),
+                "minRunnerScore": float(self.settings.paper_reference_min_runner_score),
+                "runnerEmitLimit": int(self.settings.paper_reference_runner_emit_limit),
+                "duplicateCooldownSeconds": int(getattr(self.settings, "paper_reference_duplicate_cooldown_seconds", 20)),
+                "edge": "100-lot micro scalp — more entries, micro lock, trail lock, no-progress scratch",
             } if self.settings.paper_reference_ledger_mode else None,
             "quickProfitEnabled": bool(self.settings.paper_quick_profit_enabled),
             "acsScalpEnabled": bool(self.settings.paper_acs_scalp_enabled),
@@ -2742,6 +2750,11 @@ class AutoTraderEngine:
             return f"{side} side underperforming today; best observed side is {best_side} with PF {best_pf:.2f}"
         return None
 
+    def _reference_max_open_trades(self) -> int:
+        if self.settings.paper_reference_ledger_mode:
+            return int(getattr(self.settings, "paper_reference_max_open_trades", 2))
+        return int(self.settings.paper_max_open_trades)
+
     def _entry_correlation_gate(self, candidate: dict[str, Any], session_adj: dict[str, Any]) -> str | None:
         side = str(candidate.get("side") or "").upper()
         bucket = str(session_adj.get("sessionBucket") or "UNKNOWN")
@@ -2749,7 +2762,7 @@ class AutoTraderEngine:
         is_momentum_override = bool(runner_sig.get("momentumOverride"))
         # Momentum override: allow stacking across different symbols (NIFTY+SENSEX+BANKNIFTY all moving)
         # Hard cap at 5 total to prevent runaway stacking
-        hard_cap = 5 if is_momentum_override else int(self.settings.paper_max_open_trades)
+        hard_cap = 5 if is_momentum_override else self._reference_max_open_trades()
         if len(self.open_paper) >= hard_cap:
             return f"max open trades reached ({hard_cap})"
         strategy = str(candidate.get("strategyType") or "").upper()
@@ -2779,8 +2792,12 @@ class AutoTraderEngine:
             return f"{side} side at max capacity ({same_side_cap})"
         now = datetime.now(timezone.utc)
         # Momentum override: 30s entry cooldown (vs 300s) — catch continuation of explosive move
-        entry_cooldown = 30 if is_momentum_override else max(0, int(self.settings.paper_same_side_entry_cooldown_seconds))
-        loss_cooldown = 60 if is_momentum_override else max(0, int(self.settings.paper_same_side_loss_cooldown_seconds))
+        if self.settings.paper_reference_ledger_mode:
+            entry_cooldown = 30 if is_momentum_override else max(0, int(getattr(self.settings, "paper_reference_same_side_entry_cooldown_seconds", 120)))
+            loss_cooldown = 60 if is_momentum_override else max(0, int(getattr(self.settings, "paper_reference_same_side_loss_cooldown_seconds", 300)))
+        else:
+            entry_cooldown = 30 if is_momentum_override else max(0, int(self.settings.paper_same_side_entry_cooldown_seconds))
+            loss_cooldown = 60 if is_momentum_override else max(0, int(self.settings.paper_same_side_loss_cooldown_seconds))
         for trade in reversed(list(self.closed_paper)[-50:]):
             if str(trade.side or "").upper() != side:
                 continue
@@ -2965,6 +2982,30 @@ class AutoTraderEngine:
         breadth = self._breadth_confirmation(side, symbol=symbol)
         unified = bool(self.settings.paper_unified_strategy_router)
         execution_plan = str(candidate.get("executionPlan") or "")
+        if self.settings.paper_reference_ledger_mode:
+            simple_ok, simple_reason = passes_simple_entry(
+                candidate, str(session_adj.get("sessionBucket") or "NORMAL"), self.settings
+            )
+            if not simple_ok:
+                reasons.append(simple_reason)
+            if premium <= 0:
+                reasons.append("missing premium")
+            correlation_gate = self._entry_correlation_gate(candidate, session_adj)
+            if correlation_gate:
+                reasons.append(correlation_gate)
+            return {
+                "blocked": bool(reasons),
+                "paperEligible": not bool(reasons),
+                "reason": ", ".join(reasons) if reasons else "reference ledger quality accepted",
+                "spreadCost": round(spread_cost, 2),
+                "slippageEstimate": round(slippage, 2),
+                "chargesEstimate": round(charges, 2),
+                "chargesPerUnit": round(charges_per_unit, 4),
+                "minimumRequiredMove": round(required_move, 2),
+                "aiPrediction": self._ai_trade_quality_prediction(
+                    candidate, premium=premium, required_move=required_move, session_adj=session_adj, market_phase=market_phase
+                ),
+            }
         if unified and execution_plan:
             if execution_plan == EXEC_SIMPLE:
                 simple_ok, simple_reason = passes_simple_entry(
@@ -3947,6 +3988,8 @@ class AutoTraderEngine:
         return sum(1 for trade in self.open_paper.values() if self._capital_pool_for(trade.strategy_type) == pool)
 
     def _max_open_for_pool(self, pool: str) -> int:
+        if self.settings.paper_reference_ledger_mode:
+            return self._reference_max_open_trades()
         if not self.settings.paper_dual_capital_enabled:
             return int(self.settings.paper_max_open_trades)
         if pool == "explosive":
