@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import os
 from contextlib import asynccontextmanager, suppress
+from copy import deepcopy
 from datetime import datetime, time
+from time import monotonic
+from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -52,6 +55,70 @@ ACTIVE_WS = Gauge("nexusquant_active_websocket_clients", "Active WebSocket termi
 LATEST_TQS = Gauge("nexusquant_latest_trade_quality_score", "Latest Trade Quality Score")
 MARKET_SNAPSHOT_CACHE: dict = {"available": False, "reason": "not_refreshed_yet"}
 _market_snapshot_tick = 0.0
+_poll_snapshot_cache: dict[str, Any] | None = None
+_poll_snapshot_cached_at = 0.0
+_poll_snapshot_lock = asyncio.Lock()
+_poll_snapshot_refreshing = False
+
+
+async def warm_poll_snapshot_cache() -> None:
+    """Pre-build first HTTP poll payload so Vercel/browser does not wait on a cold start."""
+    import logging
+
+    log = logging.getLogger("nexusquant.poll_cache")
+    try:
+        await refresh_market_snapshot_cache()
+        await build_poll_snapshot(force_refresh=True)
+        log.info("[poll_cache] warm snapshot ready")
+    except Exception as exc:
+        log.warning("[poll_cache] warm snapshot skipped: %s", exc)
+
+
+async def build_poll_snapshot(*, force_refresh: bool = False) -> dict:
+    """HTTP poll path with stale-while-refresh so slow Upstox builds do not blank the UI."""
+    global _poll_snapshot_cache, _poll_snapshot_cached_at, _poll_snapshot_refreshing
+
+    now = monotonic()
+    max_stale_age = max(30.0, float(settings.market_poll_seconds or 3) * 10)
+    if not force_refresh and _poll_snapshot_cache is not None and now - _poll_snapshot_cached_at <= max_stale_age:
+        payload = deepcopy(_poll_snapshot_cache)
+        payload["pollCache"] = {
+            "source": "http_poll_cache",
+            "ageSeconds": round(now - _poll_snapshot_cached_at, 2),
+            "refreshing": _poll_snapshot_refreshing,
+        }
+        return payload
+
+    if _poll_snapshot_refreshing and _poll_snapshot_cache is not None:
+        payload = deepcopy(_poll_snapshot_cache)
+        payload["pollCache"] = {
+            "source": "stale_while_refresh",
+            "ageSeconds": round(now - _poll_snapshot_cached_at, 2),
+            "refreshing": True,
+        }
+        return payload
+
+    async with _poll_snapshot_lock:
+        now = monotonic()
+        if not force_refresh and _poll_snapshot_cache is not None and now - _poll_snapshot_cached_at <= max_stale_age:
+            payload = deepcopy(_poll_snapshot_cache)
+            payload["pollCache"] = {
+                "source": "http_poll_cache",
+                "ageSeconds": round(now - _poll_snapshot_cached_at, 2),
+                "refreshing": _poll_snapshot_refreshing,
+            }
+            return payload
+
+        _poll_snapshot_refreshing = True
+        try:
+            payload = await build_multi_symbol_snapshot()
+            _poll_snapshot_cache = payload
+            _poll_snapshot_cached_at = monotonic()
+            payload = deepcopy(payload)
+            payload["pollCache"] = {"source": "fresh", "ageSeconds": 0.0, "refreshing": False}
+            return payload
+        finally:
+            _poll_snapshot_refreshing = False
 
 
 @asynccontextmanager
@@ -59,9 +126,14 @@ async def lifespan(app: FastAPI):
     await storage.connect()
     await event_journal.connect()
     await auth_service.warm_token_cache()
+    await refresh_market_snapshot_cache()
+    warm_poll_task = asyncio.create_task(warm_poll_snapshot_cache())
     monitor_task = asyncio.create_task(background_market_monitor()) if settings.background_market_monitor_enabled else None
     daily_reset_task = asyncio.create_task(daily_market_open_reset())
     yield
+    warm_poll_task.cancel()
+    with suppress(BaseException):
+        await warm_poll_task
     daily_reset_task.cancel()
     with suppress(BaseException):
         await daily_reset_task
@@ -210,17 +282,33 @@ async def emit_journal_events(payload: dict) -> list[dict]:
             emitted.append(event)
     return emitted
 
+async def _load_symbol_snapshot(symbol: str) -> tuple[str, dict[str, Any] | None, str | None]:
+    last_error: str | None = None
+    for attempt in range(2):
+        try:
+            return symbol, await market_engine.snapshot(symbol), None
+        except Exception as exc:
+            last_error = str(exc)
+            if attempt == 0 and ("429" in last_error or "Too Many Request" in last_error):
+                await asyncio.sleep(1.5)
+                continue
+    stale = market_engine.stale_snapshot(symbol)
+    if stale:
+        return symbol, stale, None
+    return symbol, None, last_error or "snapshot failed"
+
+
 async def build_multi_symbol_snapshot(*, include_auto_trader: bool | None = None) -> dict:
     symbols = settings.trading_symbol_list
-    results = await asyncio.gather(*(market_engine.snapshot(symbol) for symbol in symbols), return_exceptions=True)
+    loaded = await asyncio.gather(*(_load_symbol_snapshot(symbol) for symbol in symbols))
     snapshots: dict[str, dict] = {}
     errors: dict[str, str] = {}
-    for symbol, result in zip(symbols, results, strict=True):
-        if isinstance(result, Exception):
-            errors[symbol] = str(result)
-        else:
-            snapshots[symbol] = result
-            await storage.persist_snapshot(result)
+    for symbol, snapshot, error in loaded:
+        if snapshot is not None:
+            snapshots[symbol] = snapshot
+            await storage.persist_snapshot(snapshot)
+        elif error:
+            errors[symbol] = error
 
     if not snapshots:
         message = "; ".join(f"{symbol}: {error}" for symbol, error in errors.items()) or "No Upstox market snapshots available."
@@ -273,6 +361,7 @@ async def daily_market_open_reset() -> None:
             # Reset at 09:15 IST (market open) if not already done today
             if (now_ist.hour == 9 and now_ist.minute >= 15 and last_reset_date != today):
                 auto_trader.reset(preserve_history=True)
+                AutoTraderEngine._shared_session_peak_net_pnl = 0.0
                 last_reset_date = today
                 log.info(f"[daily_reset] Auto-reset at market open — {today} 09:15 IST. History preserved.")
         except Exception as exc:

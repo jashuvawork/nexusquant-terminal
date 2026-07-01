@@ -7,12 +7,29 @@ const forceWebSocket = import.meta.env.VITE_FORCE_WEBSOCKET === 'true';
 const isRailwayBackend = apiUrl.includes('.up.railway.app');
 const streamMode = (usesSameOriginApiProxy || isRailwayBackend) && !forceWebSocket ? 'polling' : configuredStreamMode;
 const pollMs = Number(import.meta.env.VITE_POLL_MS ?? 4000);
+const pollTimeoutMs = Number(import.meta.env.VITE_POLL_TIMEOUT_MS ?? 25000);
 const clientHeartbeatMs = Number(import.meta.env.VITE_WS_CLIENT_HEARTBEAT_MS ?? 5000);
 const reconnectDelays = [1000, 2000, 4000, 8000, 10000];
 
 interface StreamIssue {
   status: string;
   message: string;
+}
+
+function formatApiError(detail: unknown, fallback: unknown): string {
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (item && typeof item === 'object' && 'msg' in item) return String((item as { msg?: unknown }).msg);
+        return JSON.stringify(item);
+      })
+      .join('; ');
+  }
+  if (detail && typeof detail === 'object') return JSON.stringify(detail);
+  if (fallback && typeof fallback === 'object') return JSON.stringify(fallback);
+  return String(fallback ?? 'Unknown API error');
 }
 
 function isVerifiedSnapshot(item: Partial<TerminalSnapshot> | undefined): item is TerminalSnapshot {
@@ -65,8 +82,6 @@ export function useMarketStream() {
 
       const verifiedEntries = Object.entries(incoming).filter(([, item]) => isVerifiedSnapshot(item)) as Array<[MarketSymbol, TerminalSnapshot]>;
       if (verifiedEntries.length === 0) {
-        setSnapshot(null);
-        setSnapshots({});
         setStatus('status');
         const errors = payload.symbolErrors as Record<string, string> | undefined;
         const paused = (payload.autoTrader as { processingPaused?: boolean; pauseReason?: string } | undefined)?.processingPaused;
@@ -116,19 +131,32 @@ export function useMarketStream() {
       const poll = async () => {
         if (disposed || pollingInFlight) return;
         pollingInFlight = true;
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), pollTimeoutMs);
         try {
-          const response = await fetch(`${apiUrl}/api/market/snapshots`, { headers: { Accept: 'application/json' }, cache: 'no-store' });
+          const response = await fetch(`${apiUrl}/api/market/snapshots`, {
+            headers: { Accept: 'application/json' },
+            cache: 'no-store',
+            signal: controller.signal,
+          });
           const payload = await response.json() as Record<string, unknown>;
           if (!response.ok) {
             setStatus('status');
-            setIssue({ status: 'UPSTOX_DATA_ERROR', message: typeof payload.detail === 'string' ? payload.detail : JSON.stringify(payload.detail ?? payload) });
+            setIssue({
+              status: 'UPSTOX_DATA_ERROR',
+              message: formatApiError(payload.detail, payload),
+            });
           } else {
             applyPayload(payload);
           }
         } catch (error) {
+          const message = error instanceof DOMException && error.name === 'AbortError'
+            ? `Polling timed out after ${Math.round(pollTimeoutMs / 1000)}s (backend still building snapshots — retrying)`
+            : `Polling failed: ${error instanceof Error ? error.message : String(error)}`;
           setStatus('connecting');
-          setIssue({ status: 'HTTP_POLL_RECONNECTING', message: `Polling failed: ${error instanceof Error ? error.message : String(error)}` });
+          setIssue({ status: 'HTTP_POLL_RECONNECTING', message });
         } finally {
+          window.clearTimeout(timeoutId);
           pollingInFlight = false;
           if (!disposed) pollingTimer = window.setTimeout(poll, pollMs);
         }

@@ -30,6 +30,17 @@ def allocate_trade_strategy(
     regime: str = "NORMAL",
 ) -> dict[str, Any] | None:
     """Choose strategy type + exit engine from live tape — one plan per trade."""
+    bucket = str(session_bucket or "NORMAL").upper()
+
+    # Reference ledger — single lane: 100-lot micro scalp (matches PF 2.5 reference setup)
+    if bool(getattr(settings, "paper_reference_ledger_mode", False)):
+        simple_ok, _ = passes_simple_entry(candidate, bucket, settings)
+        if not simple_ok:
+            return None
+        body = dict(candidate)
+        body["strategyType"] = "SCALP"
+        return _pack(body, "SCALP", EXEC_SIMPLE, bucket, "reference ledger — 100-lot micro scalp")
+
     runner = candidate.get("runnerSignal") or {}
     strategy = str(candidate.get("strategyType") or "SCALP").upper()
     bucket = str(session_bucket or "NORMAL").upper()
@@ -84,7 +95,7 @@ def allocate_trade_strategy(
     # Simple profit — SCALP lane only (never raw EXPLOSIVE_RUNNER)
     if strategy == "SCALP" and bool(getattr(settings, "paper_simple_profit_mode", True)):
         simple_ok, _ = passes_simple_entry(candidate, bucket, settings)
-        breadth_ok, _ = passes_simple_breadth(candidate, breadth)
+        breadth_ok, _ = passes_simple_breadth(candidate, breadth, settings)
         if simple_ok and breadth_ok:
             return _pack(candidate, "SCALP", EXEC_SIMPLE, bucket, "simple profit — momentum + breadth aligned")
 

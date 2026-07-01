@@ -213,79 +213,16 @@ async def deployment_status(
 
 
 @router.get("/market/snapshots")
-async def market_snapshots(engine: RealTimeMarketEngine = Depends(get_market_engine), auto_engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
-    active_symbols = get_settings().trading_symbol_list
-    snapshots = {}
-    errors = {}
-    for symbol in active_symbols:
-        loaded: dict[str, Any] | None = None
-        last_error: str | None = None
-        for attempt in range(2):
-            try:
-                loaded = await engine.snapshot(symbol)
-                break
-            except Exception as exc:
-                last_error = str(exc)
-                if attempt == 0 and ("429" in last_error or "Too Many Request" in last_error):
-                    await asyncio.sleep(1.5)
-                    continue
-                stale = engine.stale_snapshot(symbol)
-                if stale:
-                    loaded = stale
-                    break
-        if loaded is not None:
-            snapshots[symbol] = loaded
-        elif last_error:
-            errors[symbol] = last_error
-        if symbol != active_symbols[-1]:
-            await asyncio.sleep(0.3)
-    if not snapshots:
-        raise HTTPException(status_code=503, detail=errors)
-    settings = get_settings()
-    primary_symbol = settings.primary_symbol.upper()
-    primary = snapshots.get(primary_symbol) or snapshots.get("NIFTY") or snapshots.get("SENSEX") or next(iter(snapshots.values()))
-    candidates = []
-    seen_instruments: set[str] = set()
-    for symbol, snapshot in snapshots.items():
-        for trade in snapshot.get("suggestedTrades") or []:
-            instrument_key = str(trade.get("instrumentKey") or "")
-            if instrument_key and instrument_key in seen_instruments:
-                continue
-            if instrument_key:
-                seen_instruments.add(instrument_key)
-            candidates.append({"symbol": symbol, **trade})
-    market_snapshot: dict[str, Any] = {"available": False, "reason": "not_loaded"}
+async def market_snapshots() -> dict:
+    """Fast poll path: cached/stale-while-refresh + parallel symbol snapshots."""
+    from app.main import build_poll_snapshot
+
     try:
-        instruments = expanded_market_snapshot_instruments(settings.market_snapshot_instrument_list)
-        if instruments:
-            client = get_upstox(settings, get_upstox_auth(settings))
-            try:
-                quote_payload = await client.full_market_quote_batched(instruments)
-            except Exception:
-                instruments = ["NSE_INDEX|Nifty 50", "BSE_INDEX|SENSEX"]
-                quote_payload = await client.full_market_quote(instruments)
-            market_snapshot = {"available": True, **summarize_market_movers(instruments, quote_payload)}
+        return await build_poll_snapshot()
+    except (UpstoxDataError, MarketConfigurationError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
-        market_snapshot = {"available": False, "reason": str(exc)}
-    payload = {
-        **primary,
-        "type": "multi_snapshot",
-        "displaySymbol": primary.get("symbol"),
-        "backgroundSymbols": active_symbols,
-        "snapshots": snapshots,
-        "symbolErrors": errors,
-        "executionCandidates": candidates,
-        "marketSnapshot": market_snapshot,
-    }
-    session_state = current_session_state()
-    try:
-        if session_state.phase == "LIVE_MARKET":
-            payload["autoTrader"] = await auto_engine.process(payload)
-        else:
-            payload["autoTrader"] = {**auto_engine.status(), "processingPaused": True, "pauseReason": "Market is closed; replay/learning mutations paused."}
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"Auto-trader process failed during poll: {exc}") from exc
-    return payload
+        raise HTTPException(status_code=503, detail=f"Snapshot poll failed: {exc}") from exc
 
 
 @router.get("/market/news/{symbol}")
@@ -1201,13 +1138,14 @@ async def auto_trader_reset_get(engine: AutoTraderEngine = Depends(get_auto_trad
 
 @router.post("/auto-trader/refresh-proof")
 async def auto_trader_refresh_proof(engine: AutoTraderEngine = Depends(get_auto_trader)) -> dict:
-    """Clear paper trade history and start a fresh 100-trade live-readiness proof window."""
+    """Clear paper trade history and start a fresh live-readiness proof window."""
     result = engine.reset(preserve_history=False)
     rolling = engine.performance_analysis().get("rollingProof") or {}
+    window = rolling.get("windowTrades") or engine.settings.paper_live_readiness_min_trades
     return {
         **result,
         "rollingProof": rolling,
-        "message": f"Fresh {rolling.get('windowTrades', 100)}-trade proof window started.",
+        "message": f"Fresh {window}-trade proof window started.",
     }
 
 

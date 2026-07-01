@@ -1456,7 +1456,9 @@ class RealTimeMarketEngine:
         limit: int = 1,
         exclude_instrument_keys: set[str] | None = None,
     ) -> list[dict[str, Any]]:
-        if self.settings.paper_elite_runner_only:
+        if getattr(self.settings, "paper_reference_ledger_mode", False):
+            limit = int(getattr(self.settings, "paper_reference_runner_emit_limit", 3))
+        elif self.settings.paper_elite_runner_only:
             limit = 1
         exclude_instrument_keys = exclude_instrument_keys or set()
         if self.settings.paper_max_catch_mode:
@@ -1486,8 +1488,19 @@ class RealTimeMarketEngine:
             score = as_float(signal.get("score"))
             momentum_surge = bool(signal.get("momentumSurge"))
             momentum_override = bool(signal.get("momentumOverride"))
+            momentum_aligned = bool(signal.get("momentumAligned"))
             confidence = str(signal.get("confidence") or "").upper()
-            if self.settings.paper_elite_runner_only:
+            orderflow = signal.get("orderflow") or {}
+            pv = as_float(signal.get("premiumVelocityPct") or orderflow.get("premiumVelocity"))
+            if getattr(self.settings, "paper_reference_ledger_mode", False):
+                premium = as_float(signal.get("premium") or signal.get("lastPremium"))
+                min_score = float(self.settings.paper_reference_min_runner_score)
+                min_vel = float(self.settings.paper_reference_min_velocity_pct)
+                if premium <= 0 or score < min_score:
+                    continue
+                if not (momentum_surge or momentum_override or momentum_aligned or pv >= min_vel):
+                    continue
+            elif self.settings.paper_elite_runner_only:
                 if not (self._passes_ultra_elite_runner_signal(signal) or self._passes_momentum_burst_signal(signal)):
                     continue
             elif self.settings.paper_max_catch_mode and not self.settings.paper_elite_runner_only:
