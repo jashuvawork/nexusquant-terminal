@@ -37,7 +37,10 @@ from app.services.dual_strategy import (
 from app.services.simple_profit import (
     passes_simple_breadth,
     passes_simple_entry,
+    reference_confidence_lots,
+    reference_entry_confidence,
     reference_ledger_enabled,
+    reference_side_switch_gate,
     simple_lot_bounds,
     simple_profit_exit,
     session_target_points,
@@ -1990,12 +1993,20 @@ class AutoTraderEngine:
                 "microArmPoints": float(self.settings.paper_reference_micro_arm_points),
                 "runnerTargetPoints": float(self.settings.paper_reference_runner_target_points),
                 "stopPoints": float(self.settings.paper_reference_stop_points),
-                "maxOpenTrades": int(getattr(self.settings, "paper_reference_max_open_trades", 2)),
+                "maxOpenTrades": int(getattr(self.settings, "paper_reference_max_open_trades", 6)),
+                "maxOpenSameSide": int(getattr(self.settings, "paper_reference_max_open_same_side", 4)),
+                "sideSwitchEnabled": bool(getattr(self.settings, "paper_reference_side_switch_enabled", True)),
+                "confidenceScaleEnabled": bool(getattr(self.settings, "paper_reference_confidence_scale_enabled", True)),
+                "scaleLots": {
+                    "min": int(getattr(self.settings, "paper_reference_scale_min_lots", 50)),
+                    "mid": int(getattr(self.settings, "paper_reference_scale_mid_lots", 75)),
+                    "full": int(self.settings.paper_reference_fixed_lots),
+                },
                 "minVelocityPct": float(self.settings.paper_reference_min_velocity_pct),
                 "minRunnerScore": float(self.settings.paper_reference_min_runner_score),
                 "runnerEmitLimit": int(self.settings.paper_reference_runner_emit_limit),
-                "duplicateCooldownSeconds": int(getattr(self.settings, "paper_reference_duplicate_cooldown_seconds", 20)),
-                "edge": "100-lot micro scalp — more entries, micro lock, trail lock, no-progress scratch",
+                "duplicateCooldownSeconds": int(getattr(self.settings, "paper_reference_duplicate_cooldown_seconds", 15)),
+                "edge": "CE/PE confidence switch + scaled lots (50–100) — trail lock, no 2-trade pause",
             } if self.settings.paper_reference_ledger_mode else None,
             "quickProfitEnabled": bool(self.settings.paper_quick_profit_enabled),
             "acsScalpEnabled": bool(self.settings.paper_acs_scalp_enabled),
@@ -2359,6 +2370,8 @@ class AutoTraderEngine:
 
     def _scalp_red_streak_pause(self, session_adj: dict[str, Any] | None = None) -> tuple[bool, str]:
         """Pause new scalps after a red streak — all session drives unless momentum burst."""
+        if self.settings.paper_reference_ledger_mode:
+            return False, ""
         session_adj = session_adj or {}
         bucket = str(session_adj.get("sessionBucket") or "UNKNOWN")
         streak = self._consecutive_loss_streak()
@@ -2670,6 +2683,8 @@ class AutoTraderEngine:
         return self._is_scalp_candidate(candidate)
 
     def _session_entry_allowed(self, candidate: dict[str, Any], session_adj: dict[str, Any], market_phase: str | None = None) -> bool:
+        if self.settings.paper_reference_ledger_mode:
+            return True
         runner = candidate.get("runnerSignal") or {}
         burst_entry = self._is_momentum_burst_entry(candidate, runner)
         if self._is_active_scalp_entry(candidate):
@@ -2798,8 +2813,13 @@ class AutoTraderEngine:
 
     def _reference_max_open_trades(self) -> int:
         if self.settings.paper_reference_ledger_mode:
-            return int(getattr(self.settings, "paper_reference_max_open_trades", 2))
+            return int(getattr(self.settings, "paper_reference_max_open_trades", 6))
         return int(self.settings.paper_max_open_trades)
+
+    def _reference_max_same_side_trades(self) -> int:
+        if self.settings.paper_reference_ledger_mode:
+            return int(getattr(self.settings, "paper_reference_max_open_same_side", 4))
+        return int(self.settings.paper_max_open_same_side_trades)
 
     def _entry_correlation_gate(self, candidate: dict[str, Any], session_adj: dict[str, Any]) -> str | None:
         side = str(candidate.get("side") or "").upper()
@@ -2807,8 +2827,7 @@ class AutoTraderEngine:
         runner_sig = (candidate.get("runnerSignal") or {})
         is_momentum_override = bool(runner_sig.get("momentumOverride"))
         # Momentum override: allow stacking across different symbols (NIFTY+SENSEX+BANKNIFTY all moving)
-        # Hard cap at 5 total to prevent runaway stacking
-        hard_cap = 5 if is_momentum_override else self._reference_max_open_trades()
+        hard_cap = 8 if is_momentum_override else self._reference_max_open_trades()
         if len(self.open_paper) >= hard_cap:
             return f"max open trades reached ({hard_cap})"
         strategy = str(candidate.get("strategyType") or "").upper()
@@ -2831,16 +2850,19 @@ class AutoTraderEngine:
             max_swing = int(self.settings.paper_swing_max_open_trades)
             if len(swing_open) >= max_swing:
                 return f"swing lane at max capacity ({max_swing})"
-        # For momentum override: allow up to 3 same-side (all 3 symbols crashing/surging simultaneously)
-        same_side_cap = 3 if is_momentum_override else int(self.settings.paper_max_open_same_side_trades)
+        # For momentum override: allow up to 5 same-side (all symbols moving together)
+        if self.settings.paper_reference_ledger_mode:
+            same_side_cap = 5 if is_momentum_override else self._reference_max_same_side_trades()
+        else:
+            same_side_cap = 5 if is_momentum_override else int(self.settings.paper_max_open_same_side_trades)
         same_side_open = [trade for trade in self.open_paper.values() if str(trade.side or "").upper() == side]
         if same_side_cap > 0 and len(same_side_open) >= same_side_cap:
             return f"{side} side at max capacity ({same_side_cap})"
         now = datetime.now(timezone.utc)
         # Momentum override: 30s entry cooldown (vs 300s) — catch continuation of explosive move
         if self.settings.paper_reference_ledger_mode:
-            entry_cooldown = 30 if is_momentum_override else max(0, int(getattr(self.settings, "paper_reference_same_side_entry_cooldown_seconds", 120)))
-            loss_cooldown = 60 if is_momentum_override else max(0, int(getattr(self.settings, "paper_reference_same_side_loss_cooldown_seconds", 300)))
+            entry_cooldown = 15 if is_momentum_override else max(0, int(getattr(self.settings, "paper_reference_same_side_entry_cooldown_seconds", 60)))
+            loss_cooldown = 45 if is_momentum_override else max(0, int(getattr(self.settings, "paper_reference_same_side_loss_cooldown_seconds", 120)))
         else:
             entry_cooldown = 30 if is_momentum_override else max(0, int(self.settings.paper_same_side_entry_cooldown_seconds))
             loss_cooldown = 60 if is_momentum_override else max(0, int(self.settings.paper_same_side_loss_cooldown_seconds))
@@ -3034,20 +3056,29 @@ class AutoTraderEngine:
             )
             if not simple_ok:
                 reasons.append(simple_reason)
+            side_ok, side_reason, confidence = reference_side_switch_gate(candidate, breadth, self.settings)
+            if not side_ok:
+                reasons.append(side_reason)
             if premium <= 0:
                 reasons.append("missing premium")
             correlation_gate = self._entry_correlation_gate(candidate, session_adj)
             if correlation_gate:
                 reasons.append(correlation_gate)
+            min_lots, target_lots, _ = reference_confidence_lots(self.settings, confidence)
+            accept_reason = side_reason or (simple_reason if not simple_ok else "reference ledger quality accepted")
+            if not reasons:
+                accept_reason = side_reason or f"reference ledger — {side} confidence {confidence:.0f}% → {target_lots} lots"
             return {
                 "blocked": bool(reasons),
                 "paperEligible": not bool(reasons),
-                "reason": ", ".join(reasons) if reasons else "reference ledger quality accepted",
+                "reason": ", ".join(reasons) if reasons else accept_reason,
                 "spreadCost": round(spread_cost, 2),
                 "slippageEstimate": round(slippage, 2),
                 "chargesEstimate": round(charges, 2),
                 "chargesPerUnit": round(charges_per_unit, 4),
                 "minimumRequiredMove": round(required_move, 2),
+                "referenceConfidence": round(confidence, 1),
+                "referenceTargetLots": target_lots,
                 "aiPrediction": self._ai_trade_quality_prediction(
                     candidate, premium=premium, required_move=required_move, session_adj=session_adj, market_phase=market_phase
                 ),
@@ -3361,7 +3392,10 @@ class AutoTraderEngine:
             exec_plan = str(candidate.get("executionPlan") or "")
             is_swing_trade = exec_plan == EXEC_SWING or strategy_type == "SWING"
             if self.settings.paper_reference_ledger_mode:
-                min_lots, target_lots, max_lots_cap = simple_lot_bounds(self.settings)
+                ref_confidence = float(quality.get("referenceConfidence") or reference_entry_confidence(
+                    candidate, self._breadth_confirmation(str(candidate.get("side") or ""), symbol=str(candidate.get("symbol") or ""))
+                ))
+                min_lots, target_lots, max_lots_cap = simple_lot_bounds(self.settings, ref_confidence)
                 per_unit_risk = max(per_unit_risk, float(self.settings.paper_reference_stop_points))
                 risk_budget = min(
                     risk_budget if risk_budget > 0 else float(self.settings.paper_reference_max_loss_inr),

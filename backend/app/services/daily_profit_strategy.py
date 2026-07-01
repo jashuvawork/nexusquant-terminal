@@ -95,7 +95,7 @@ def build_daily_improvement_plan(
         for side, summary in by_side.items():
             trades_n = int(summary.get("paperTrades") or summary.get("trades") or 0)
             side_wins = int(summary.get("wins") or 0)
-            if trades_n >= 2 and side_wins == 0 and float(summary.get("netPnl") or 0) < 0:
+            if trades_n >= 4 and side_wins == 0 and float(summary.get("netPnl") or 0) < 0:
                 blocked_sides.append(side)
                 actions.append(f"Block {side} today — 0/{trades_n} wins, net ₹{summary.get('netPnl')}.")
             elif trades_n >= 4:
