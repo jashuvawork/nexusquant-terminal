@@ -25,6 +25,10 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   echo "ERROR: env file missing: ${ENV_FILE}" >&2
   exit 1
 fi
+if [[ -f "${PERSIST_DIR}/PAUSED" ]]; then
+  echo "ERROR: ${PERSIST_DIR}/PAUSED exists — cluster is paused. Remove flag to redeploy." >&2
+  exit 1
+fi
 if grep -q '^ENABLE_LIVE_TRADING=true' "${ENV_FILE}"; then
   echo "ERROR: ENABLE_LIVE_TRADING=true in ${ENV_FILE}; refusing deploy." >&2
   exit 1
